@@ -1,11 +1,7 @@
 const app = require('./app');
 const scrapeAllSources = require('./scraper/scrape');
 const cron = require('node-cron');
-const cors = require('cors');
-app.use(cors({
-    origin: ['http://localhost:5173', 'https://gulfio-backend.onrender.com/'],
-    credentials: true,
-}));
+
 
 
 app.listen(5002, () => {
