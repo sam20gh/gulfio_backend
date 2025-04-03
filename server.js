@@ -1,7 +1,7 @@
 const app = require('./app');
 const scrapeAllSources = require('./scraper/scrape');
 const cron = require('node-cron');
-import cors from 'cors';
+const cors = require('cors');
 
 app.listen(5002, () => {
     console.log('Server running on http://localhost:5002');
