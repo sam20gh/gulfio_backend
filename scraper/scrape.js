@@ -36,7 +36,7 @@ async function scrapeAllSources(frequency = null) {
 
     for (const source of sources) {
         try {
-            const isDynamicSite = source.name.toLowerCase().includes('gulf news');
+            const isDynamicSite = source.name.toLowerCase().includes('gulfi news');
             console.log(`Scraping source: ${source.name}`);
 
             let homepageHtml, page, browser;
