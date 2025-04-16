@@ -4,6 +4,7 @@ const cors = require('cors');
 const sources = require('./routes/sources');
 const articles = require('./routes/articles');
 const scrapeRoute = require('./routes/scrape');
+const userRoutes = require('./routes/user')
 require('dotenv').config();
 
 const app = express();
@@ -24,5 +25,6 @@ app.use(express.json());
 app.use('/api/sources', sources);
 app.use('/api/articles', articles);
 app.use('/api/scrape', scrapeRoute);
+app.use('/api/users', userRoutes);
 
 module.exports = app;
