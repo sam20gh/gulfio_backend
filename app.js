@@ -4,7 +4,10 @@ const cors = require('cors');
 const sources = require('./routes/sources');
 const articles = require('./routes/articles');
 const scrapeRoute = require('./routes/scrape');
-const userRoutes = require('./routes/user')
+const userRoutes = require('./routes/user');
+const userActions = require('./routes/userActions');
+
+
 require('dotenv').config();
 
 const app = express();
@@ -26,5 +29,6 @@ app.use('/api/sources', sources);
 app.use('/api/articles', articles);
 app.use('/api/scrape', scrapeRoute);
 app.use('/api/users', userRoutes);
+app.use('/api/user', userActions);
 
 module.exports = app;
