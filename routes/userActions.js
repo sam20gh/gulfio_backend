@@ -9,27 +9,39 @@ function validateObjectId(id) {
 }
 
 // Like/Dislike Article
+
 router.post('/article/:id/like', auth, async (req, res) => {
     const userId = req.user.sub;
     const articleId = req.params.id;
-    const { action } = req.body; // 'like' or 'dislike'
+    const { action } = req.body;
 
-    if (!validateObjectId(articleId)) return res.status(400).json({ message: 'Invalid article ID' });
+    console.log('👉 userId:', userId);
+    console.log('👉 articleId:', articleId);
+    console.log('👉 action:', action);
+
+    if (!mongoose.Types.ObjectId.isValid(articleId)) {
+        console.log('❌ Invalid articleId:', articleId);
+        return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
     try {
         const user = await User.findOne({ supabase_id: userId });
+        if (!user) return res.status(404).json({ message: 'User not found' });
 
-        const alreadyLiked = user.liked_articles.includes(articleId);
+        const alreadyLiked = user.liked_articles.some(id => id.equals(articleObjectId));
 
         if (action === 'like' && !alreadyLiked) {
-            user.liked_articles.push(articleId);
+            user.liked_articles.push(articleObjectId);
         } else if (action === 'dislike' && alreadyLiked) {
-            user.liked_articles.pull(articleId);
+            user.liked_articles.pull(articleObjectId);
         }
 
         await user.save();
         res.json({ liked_articles: user.liked_articles });
     } catch (err) {
+        console.error('🔥 Error updating likes:', err.message);
         res.status(500).json({ message: 'Error updating likes' });
     }
 });
