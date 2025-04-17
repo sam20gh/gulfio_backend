@@ -7,7 +7,11 @@ const ArticleSchema = new mongoose.Schema({
     sourceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Source' },
     category: String,
     publishedAt: Date,
-    image: [String] // ✅ now an array of image URLs
+    image: [String], // ✅ now an array of image URLs
+    viewCount: {
+        type: Number,
+        default: 0
+    }
 });
 
 module.exports = mongoose.model('Article', ArticleSchema);

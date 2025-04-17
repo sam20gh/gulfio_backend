@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const auth = require('../middleware/auth');
+const auth = require('../middleware/auth'); // Keep auth for other routes
 const User = require('../models/User');
+const Article = require('../models/Article'); // Import Article model
 const mongoose = require('mongoose');
-const ensureMongoUser = require('../middleware/ensureMongoUser')
+const ensureMongoUser = require('../middleware/ensureMongoUser'); // Keep ensureMongoUser for other routes
 
 function validateObjectId(id) {
     return mongoose.Types.ObjectId.isValid(id);
@@ -33,44 +34,46 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     res.json({ liked_articles: user.liked_articles });
 });
 
-// Mark Article as Viewed
-router.post('/article/:articleId/view', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
+// Mark Article as Viewed (Now just increments view count)
+// Removed auth and ensureMongoUser middleware
+router.post('/article/:articleId/view', async (req, res) => {
     const { articleId } = req.params;
 
     if (!validateObjectId(articleId)) {
         return res.status(400).json({ message: 'Invalid article ID' });
     }
 
-    const articleObjectId = new mongoose.Types.ObjectId(articleId);
+    try {
+        // Find the article and increment its view count
+        const updatedArticle = await Article.findByIdAndUpdate(
+            articleId,
+            { $inc: { viewCount: 1 } }, // Increment the viewCount field
+            { new: true } // Return the updated document
+        );
 
-    // Check if the article is already marked as viewed
-    const alreadyViewed = user.viewed_articles.some(id => id.equals(articleObjectId));
-
-    if (!alreadyViewed) {
-        user.viewed_articles.push(articleObjectId);
-        try {
-            await user.save();
-            res.json({ message: 'Article marked as viewed', viewed_articles: user.viewed_articles });
-        } catch (err) {
-            console.error('Error marking article as viewed:', err);
-            res.status(500).json({ message: 'Error updating viewed articles' });
+        if (!updatedArticle) {
+            return res.status(404).json({ message: 'Article not found' });
         }
-    } else {
-        // Optionally, you could just return success even if already viewed
-        res.json({ message: 'Article already marked as viewed', viewed_articles: user.viewed_articles });
+
+        // Return success message and potentially the new view count
+        res.json({ message: 'Article view count incremented', viewCount: updatedArticle.viewCount });
+
+    } catch (err) {
+        console.error('Error incrementing article view count:', err);
+        res.status(500).json({ message: 'Error updating article view count' });
     }
 });
 
-// Save/Unsave Article
-router.post('/article/:id/save', auth, async (req, res) => {
-    const userId = req.user.sub;
+// Save/Unsave Article (Requires auth and ensureMongoUser)
+router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser; // Use ensureMongoUser result
     const articleId = req.params.id;
 
     if (!validateObjectId(articleId)) return res.status(400).json({ message: 'Invalid article ID' });
 
     try {
-        const user = await User.findOne({ supabase_id: userId });
+        // No need to find user again if ensureMongoUser is used
+        // const user = await User.findOne({ supabase_id: userId });
 
         if (user.saved_articles.includes(articleId)) {
             user.saved_articles.pull(articleId);
@@ -81,19 +84,21 @@ router.post('/article/:id/save', auth, async (req, res) => {
         await user.save();
         res.json({ saved_articles: user.saved_articles });
     } catch (err) {
+        console.error('Error saving article:', err); // Log the error
         res.status(500).json({ message: 'Error saving article' });
     }
 });
 
-// Follow/Unfollow Source
-router.post('/source/:id/follow', auth, async (req, res) => {
-    const userId = req.user.sub;
+// Follow/Unfollow Source (Requires auth and ensureMongoUser)
+router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser; // Use ensureMongoUser result
     const sourceId = req.params.id;
 
     if (!validateObjectId(sourceId)) return res.status(400).json({ message: 'Invalid source ID' });
 
     try {
-        const user = await User.findOne({ supabase_id: userId });
+        // No need to find user again if ensureMongoUser is used
+        // const user = await User.findOne({ supabase_id: userId });
 
         if (user.following_sources.includes(sourceId)) {
             user.following_sources.pull(sourceId);
@@ -104,27 +109,44 @@ router.post('/source/:id/follow', auth, async (req, res) => {
         await user.save();
         res.json({ following_sources: user.following_sources });
     } catch (err) {
+        console.error('Error following source:', err); // Log the error
         res.status(500).json({ message: 'Error following source' });
     }
 });
 
-// Follow/Block Another User
-router.post('/user/:targetId/action', auth, async (req, res) => {
-    const userId = req.user.sub;
-    const { targetId } = req.params;
+// Follow/Block Another User (Requires auth and ensureMongoUser)
+router.post('/user/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser; // Use ensureMongoUser result
+    const { targetSupabaseId } = req.params; // Assuming targetId is supabase_id
     const { action } = req.body; // 'follow' or 'block'
 
-    if (!targetId || targetId === userId) return res.status(400).json({ message: 'Invalid user target' });
+    // Find the target user by supabase_id to ensure they exist
+    const targetUser = await User.findOne({ supabase_id: targetSupabaseId });
+    if (!targetUser) {
+        return res.status(404).json({ message: 'Target user not found' });
+    }
+    const targetMongoId = targetUser._id; // Use the MongoDB _id for relationships
+
+    if (!targetMongoId || targetMongoId.equals(user._id)) {
+        return res.status(400).json({ message: 'Invalid user target or cannot target self' });
+    }
 
     try {
-        const user = await User.findOne({ supabase_id: userId });
+        // Convert targetMongoId to string if storing supabase_id, or keep as ObjectId if storing _id
+        // Assuming following_users and blocked_users store MongoDB _ids
+        const isFollowing = user.following_users.some(id => id.equals(targetMongoId));
+        const isBlocked = user.blocked_users.some(id => id.equals(targetMongoId));
 
         if (action === 'follow') {
-            if (!user.following_users.includes(targetId)) user.following_users.push(targetId);
-            user.blocked_users = user.blocked_users.filter(id => id !== targetId); // unblocks if followed
+            if (!isFollowing) user.following_users.push(targetMongoId);
+            if (isBlocked) user.blocked_users.pull(targetMongoId); // unblocks if followed
+        } else if (action === 'unfollow') {
+            if (isFollowing) user.following_users.pull(targetMongoId);
         } else if (action === 'block') {
-            if (!user.blocked_users.includes(targetId)) user.blocked_users.push(targetId);
-            user.following_users = user.following_users.filter(id => id !== targetId); // unfollows if blocked
+            if (!isBlocked) user.blocked_users.push(targetMongoId);
+            if (isFollowing) user.following_users.pull(targetMongoId); // unfollows if blocked
+        } else if (action === 'unblock') {
+            if (isBlocked) user.blocked_users.pull(targetMongoId);
         } else {
             return res.status(400).json({ message: 'Invalid action' });
         }
@@ -135,6 +157,7 @@ router.post('/user/:targetId/action', auth, async (req, res) => {
             blocked_users: user.blocked_users
         });
     } catch (err) {
+        console.error('Error updating relationship:', err); // Log the error
         res.status(500).json({ message: 'Error updating relationship' });
     }
 });
