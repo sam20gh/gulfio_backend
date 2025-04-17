@@ -33,6 +33,35 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     res.json({ liked_articles: user.liked_articles });
 });
 
+// Mark Article as Viewed
+router.post('/article/:articleId/view', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const { articleId } = req.params;
+
+    if (!validateObjectId(articleId)) {
+        return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    const articleObjectId = new mongoose.Types.ObjectId(articleId);
+
+    // Check if the article is already marked as viewed
+    const alreadyViewed = user.viewed_articles.some(id => id.equals(articleObjectId));
+
+    if (!alreadyViewed) {
+        user.viewed_articles.push(articleObjectId);
+        try {
+            await user.save();
+            res.json({ message: 'Article marked as viewed', viewed_articles: user.viewed_articles });
+        } catch (err) {
+            console.error('Error marking article as viewed:', err);
+            res.status(500).json({ message: 'Error updating viewed articles' });
+        }
+    } else {
+        // Optionally, you could just return success even if already viewed
+        res.json({ message: 'Article already marked as viewed', viewed_articles: user.viewed_articles });
+    }
+});
+
 // Save/Unsave Article
 router.post('/article/:id/save', auth, async (req, res) => {
     const userId = req.user.sub;
