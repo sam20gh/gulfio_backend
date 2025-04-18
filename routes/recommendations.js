@@ -24,16 +24,21 @@ router.get('/:supabaseId', async (req, res) => {
     const engagedSources = [...new Set(engagedArticles.map(a => a.sourceId).filter(Boolean))];
 
     // Recommend fresh articles that match any liked/saved category or source
-    const recommended = await Article.find({
-      _id: { $nin: allEngagedIds },
-      $or: [
-        { category: { $in: engagedCategories } },
-        { sourceId: { $in: engagedSources } }
-      ]
-    })
-      .sort({ publishedAt: -1 })
-      .limit(10)
-      .lean();
+    const recommended = await Article.aggregate([
+      {
+        $match: {
+          _id: { $nin: allEngagedIds },
+          $or: [
+            { category: { $in: engagedCategories } },
+            { sourceId: { $in: engagedSources } }
+          ]
+        }
+      },
+      { $group: { _id: '$_id', doc: { $first: '$$ROOT' } } },
+      { $replaceRoot: { newRoot: '$doc' } },
+      { $sort: { publishedAt: -1 } },
+      { $limit: 5 }
+    ]);
 
     res.json({ recommended });
   } catch (err) {
