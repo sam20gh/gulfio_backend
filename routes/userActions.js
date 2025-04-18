@@ -22,16 +22,26 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     }
 
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
-    const alreadyLiked = user.liked_articles.some(id => id.equals(articleObjectId));
+    const isLiked = user.liked_articles.some(id => id.equals(articleObjectId));
+    const isDisliked = user.disliked_articles?.some(id => id.equals(articleObjectId));
 
-    if (action === 'like' && !alreadyLiked) {
-        user.liked_articles.push(articleObjectId);
-    } else if (action === 'dislike' && alreadyLiked) {
-        user.liked_articles.pull(articleObjectId);
+    if (action === 'like') {
+        if (!isLiked) user.liked_articles.push(articleObjectId);
+        if (isDisliked) user.disliked_articles.pull(articleObjectId);
+    } else if (action === 'dislike') {
+        if (!isDisliked) {
+            user.disliked_articles = user.disliked_articles || [];
+            user.disliked_articles.push(articleObjectId);
+        }
+        if (isLiked) user.liked_articles.pull(articleObjectId);
     }
 
+
     await user.save();
-    res.json({ liked_articles: user.liked_articles });
+    res.json({
+        liked_articles: user.liked_articles,
+        disliked_articles: user.disliked_articles || [],
+    });
 });
 
 // Mark Article as Viewed (Now just increments view count)

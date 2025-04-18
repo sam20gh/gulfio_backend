@@ -6,6 +6,8 @@ const userSchema = new mongoose.Schema({
     name: { type: String },
     avatar_url: { type: String },
     liked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
+    disliked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
+    viewed_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     saved_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     following_sources: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Source' }],
     following_users: [{ type: String }], // supabase_id of followed users
