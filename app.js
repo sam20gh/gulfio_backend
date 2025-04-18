@@ -10,7 +10,7 @@ const userActions = require('./routes/userActions');
 
 
 require('dotenv').config();
-
+const app = express();
 
 app.use(cors({
     origin: '*', // Or specify your app's origin e.g. 'https://your-app-url'
