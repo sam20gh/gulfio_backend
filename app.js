@@ -6,6 +6,8 @@ const articles = require('./routes/articles');
 const scrapeRoute = require('./routes/scrape');
 const userRoutes = require('./routes/user');
 const userActions = require('./routes/userActions');
+const recommendations = require('./routes/recommendations');
+
 
 
 
@@ -38,5 +40,6 @@ app.use('/api/articles', articles);
 app.use('/api/scrape', scrapeRoute);
 app.use('/api/users', userRoutes);
 app.use('/api/user', userActions);
+app.use('/api/recommendations', recommendations);
 
 module.exports = app;
