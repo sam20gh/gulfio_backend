@@ -25,4 +25,17 @@ router.post('/check-or-create', auth, async (req, res) => {
     }
 });
 
+// GET user by Supabase ID
+router.get('/by-supabase/:id', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        res.json(user);
+    } catch (err) {
+        console.error('Error in /by-supabase/:id:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+
 module.exports = router;
