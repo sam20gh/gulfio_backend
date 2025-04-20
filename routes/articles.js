@@ -4,9 +4,22 @@ const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 
 articleRouter.get('/', auth, async (req, res) => {
-  const articles = await Article.find().sort({ publishedAt: -1 });
-  res.json(articles);
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const articles = await Article.find()
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json(articles);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching articles', error: error.message });
+  }
 });
+
 
 // POST: Add a new article
 articleRouter.post('/', auth, async (req, res) => {
