@@ -21,7 +21,7 @@ router.get('/:supabaseId', async (req, res) => {
     const engagedCategories = [...new Set(engagedArticles.map(a => a.category).filter(Boolean))];
     const engagedSources = [...new Set(engagedArticles.map(a => a.sourceId).filter(Boolean))];
 
-    const recommended = await Article.aggregate([
+    let recommended = await Article.aggregate([
       {
         $match: {
           _id: { $nin: allEngagedIds },
@@ -50,17 +50,17 @@ router.get('/:supabaseId', async (req, res) => {
           }
         }
       },
-      // Group by title to avoid duplicates
+      // Sort early by score
+      { $sort: { score: -1, publishedAt: -1 } },
+      // Group by title to eliminate duplicates
       {
         $group: {
           _id: '$title',
           article: { $first: '$$ROOT' }
         }
       },
-      {
-        $replaceRoot: { newRoot: '$article' }
-      },
-      // Limit per source
+      { $replaceRoot: { newRoot: '$article' } },
+      // Limit max 2 per source
       {
         $group: {
           _id: '$sourceId',
@@ -74,9 +74,17 @@ router.get('/:supabaseId', async (req, res) => {
       },
       { $unwind: '$articles' },
       { $replaceRoot: { newRoot: '$articles' } },
-      { $sort: { score: -1, publishedAt: -1 } },
-      { $limit: 10 }
+      // Shuffle for randomness
+      { $sample: { size: 10 } }
     ]);
+
+    // 🔁 Fallback logic if empty
+    if (!recommended || recommended.length === 0) {
+      recommended = await Article.find({})
+        .sort({ views: -1, likes: -1, publishedAt: -1 })
+        .limit(10)
+        .lean();
+    }
 
     res.json({ recommended });
   } catch (err) {

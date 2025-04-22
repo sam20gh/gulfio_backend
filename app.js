@@ -17,7 +17,7 @@ const app = express();
 app.use(cors({
     origin: '*', // Or specify your app's origin e.g. 'https://your-app-url'
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'], // ✅ crucial
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'], // ✅ crucial
 }));
 
 app.use((req, res, next) => {
