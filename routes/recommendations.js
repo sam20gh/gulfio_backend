@@ -17,13 +17,15 @@ router.get('/:supabaseId', async (req, res) => {
     const savedIds = user.saved_articles.map(id => new mongoose.Types.ObjectId(id));
     const allEngagedIds = [...new Set([...likedIds, ...savedIds])];
 
-    // Get categories and sources from liked/saved articles
+    // Get user-engaged categories and sources
     const engagedArticles = await Article.find({ _id: { $in: allEngagedIds } }).lean();
-
     const engagedCategories = [...new Set(engagedArticles.map(a => a.category).filter(Boolean))];
     const engagedSources = [...new Set(engagedArticles.map(a => a.sourceId).filter(Boolean))];
 
-    // Recommend fresh articles that match any liked/saved category or source
+    // Recommend articles by:
+    // - Not yet engaged
+    // - Matching category or source
+    // - High likes/views
     const recommended = await Article.aggregate([
       {
         $match: {
@@ -34,10 +36,25 @@ router.get('/:supabaseId', async (req, res) => {
           ]
         }
       },
-      { $group: { _id: '$_id', doc: { $first: '$$ROOT' } } },
-      { $replaceRoot: { newRoot: '$doc' } },
-      { $sort: { publishedAt: -1 } },
-      { $limit: 5 }
+      {
+        $addFields: {
+          score: {
+            $add: [
+              { $multiply: [{ $ifNull: ['$likes', 0] }, 2] },
+              { $ifNull: ['$views', 0] },
+              {
+                $cond: {
+                  if: { $gt: ['$publishedAt', new Date(Date.now() - 1000 * 60 * 60 * 24 * 7)] }, // past week
+                  then: 5,
+                  else: 0
+                }
+              }
+            ]
+          }
+        }
+      },
+      { $sort: { score: -1, publishedAt: -1 } },
+      { $limit: 10 }
     ]);
 
     res.json({ recommended });
@@ -46,5 +63,6 @@ router.get('/:supabaseId', async (req, res) => {
     res.status(500).json({ message: 'Error generating recommendations' });
   }
 });
+
 
 module.exports = router;
