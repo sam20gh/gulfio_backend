@@ -19,6 +19,7 @@ articleRouter.get('/', auth, async (req, res) => {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
   }
 });
+
 articleRouter.get('/feature', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -42,6 +43,33 @@ articleRouter.get('/feature', auth, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
+  }
+});
+
+// GET: Fetch headline articles with pagination
+articleRouter.get('/headline', auth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5; // Example: Default limit 5 for headlines
+    const skip = (page - 1) * limit;
+
+    const query = { category: 'headline' }; // Filter by category 'headline'
+
+    const articles = await Article.find(query)
+      .sort({ publishedAt: -1 }) // Sort by published date, newest first
+      .skip(skip)
+      .limit(limit);
+
+    // Get total count of headline articles for pagination metadata
+    const totalHeadlineArticles = await Article.countDocuments(query);
+
+    res.json({
+      articles,
+      totalPages: Math.ceil(totalHeadlineArticles / limit),
+      currentPage: page
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching headline articles', error: error.message });
   }
 });
 
