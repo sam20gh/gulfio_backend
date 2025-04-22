@@ -19,7 +19,31 @@ articleRouter.get('/', auth, async (req, res) => {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
   }
 });
+articleRouter.get('/feature', auth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5; // Example: Default limit 5 for features
+    const skip = (page - 1) * limit;
 
+    const query = { category: 'feature' }; // Filter by category 'feature'
+
+    const articles = await Article.find(query)
+      .sort({ publishedAt: -1 }) // Sort by published date, newest first
+      .skip(skip)
+      .limit(limit);
+
+    // Get total count of featured articles for pagination metadata
+    const totalFeaturedArticles = await Article.countDocuments(query);
+
+    res.json({
+      articles,
+      totalPages: Math.ceil(totalFeaturedArticles / limit),
+      currentPage: page
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
+  }
+});
 
 // POST: Add a new article
 articleRouter.post('/', auth, async (req, res) => {
