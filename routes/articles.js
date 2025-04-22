@@ -3,7 +3,6 @@ const Article = require('../models/Article');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 
-// GET: Fetch all articles with pagination
 articleRouter.get('/', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -15,45 +14,12 @@ articleRouter.get('/', auth, async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    // Optionally, get total count for pagination metadata
-    const totalArticles = await Article.countDocuments();
-
-    res.json({
-      articles,
-      totalPages: Math.ceil(totalArticles / limit),
-      currentPage: page
-    });
+    res.json(articles);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
   }
 });
 
-// GET: Fetch featured articles with pagination
-articleRouter.get('/feature', auth, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10; // Adjust limit as needed for features
-    const skip = (page - 1) * limit;
-
-    const query = { category: 'feature' }; // Filter by category
-
-    const articles = await Article.find(query)
-      .sort({ publishedAt: -1 }) // Or maybe a different sort order for features?
-      .skip(skip)
-      .limit(limit);
-
-    // Optionally, get total count for pagination metadata
-    const totalFeaturedArticles = await Article.countDocuments(query);
-
-    res.json({
-      articles,
-      totalPages: Math.ceil(totalFeaturedArticles / limit),
-      currentPage: page
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
-  }
-});
 
 // POST: Add a new article
 articleRouter.post('/', auth, async (req, res) => {
