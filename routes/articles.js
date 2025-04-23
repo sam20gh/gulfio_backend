@@ -23,25 +23,39 @@ articleRouter.get('/', auth, async (req, res) => {
 articleRouter.post('/:id/react', auth, async (req, res) => {
   try {
     const { action } = req.body; // 'like' or 'dislike'
+    const userId = req.user.id;
     const article = await Article.findById(req.params.id);
+
     if (!article) return res.status(404).json({ message: 'Article not found' });
 
+    // Remove user from both lists first
+    article.likedBy = article.likedBy.filter(id => id !== userId);
+    article.dislikedBy = article.dislikedBy.filter(id => id !== userId);
+
     if (action === 'like') {
-      article.likes += 1;
-      if (article.dislikes > 0) article.dislikes -= 1;
+      article.likedBy.push(userId);
     } else if (action === 'dislike') {
-      article.dislikes += 1;
-      if (article.likes > 0) article.likes -= 1;
+      article.dislikedBy.push(userId);
     } else {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
+    // Update counts
+    article.likes = article.likedBy.length;
+    article.dislikes = article.dislikedBy.length;
+
     await article.save();
-    res.json({ likes: article.likes, dislikes: article.dislikes });
+
+    res.json({
+      likes: article.likes,
+      dislikes: article.dislikes,
+      liked_articles: article.likedBy, // optional: filtered for user
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
 });
+
 // POST: Increment article view count
 articleRouter.post('/:id/view', async (req, res) => {
   try {

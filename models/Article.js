@@ -11,6 +11,8 @@ const ArticleSchema = new mongoose.Schema({
     viewCount: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
     dislikes: { type: Number, default: 0 },
+    likedBy: [{ type: String }],      // Supabase user ID or email
+    dislikedBy: [{ type: String }],
 });
 
 
