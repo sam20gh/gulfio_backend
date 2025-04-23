@@ -3,7 +3,7 @@ const Article = require('../models/Article');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 const ensureMongoUser = require('../middleware/ensureMongoUser');
-import cache from '../utils/cache';
+const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 
 articleRouter.get('/', auth, async (req, res) => {
