@@ -64,7 +64,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   }
 });
 // GET: Check if user has liked/disliked this article
-router.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
     const articleId = req.params.id;
     const user = req.mongoUser;
