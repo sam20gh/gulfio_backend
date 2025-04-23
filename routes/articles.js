@@ -3,6 +3,7 @@ const Article = require('../models/Article');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 const ensureMongoUser = require('../middleware/ensureMongoUser');
+const mongoose = require('mongoose');
 
 articleRouter.get('/', auth, async (req, res) => {
   try {
