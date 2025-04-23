@@ -7,12 +7,20 @@ const scrapeRoute = require('./routes/scrape');
 const userRoutes = require('./routes/user');
 const userActions = require('./routes/userActions');
 const recommendations = require('./routes/recommendations');
-
-
-
-
+const Article = require('./models/Article');
 require('dotenv').config();
 const app = express();
+
+
+const createIndexes = async () => {
+    try {
+        await Article.collection.createIndex({ category: 1, publishedAt: -1 });
+        await Article.collection.createIndex({ publishedAt: -1 });
+        console.log('✅ MongoDB indexes created');
+    } catch (error) {
+        console.error('❌ Failed to create indexes:', error);
+    }
+};
 
 app.use(cors({
     origin: '*', // Or specify your app's origin e.g. 'https://your-app-url'
@@ -31,7 +39,10 @@ app.listen(PORT, () => {
 });
 
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('✅ Connected to MongoDB Atlas'))
+    .then(async () => {
+        console.log('✅ Connected to MongoDB Atlas');
+        await createIndexes(); // 👈 Run after DB connection
+    })
     .catch(err => console.error('❌ Failed to connect to MongoDB Atlas:', err));
 
 app.use(express.json());
