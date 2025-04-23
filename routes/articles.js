@@ -63,6 +63,26 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
 });
+// GET: Check if user has liked/disliked this article
+router.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+  try {
+    const articleId = req.params.id;
+    const user = req.mongoUser;
+
+    const isLiked = user.liked_articles?.some(id => id.equals(articleId));
+    const isDisliked = user.disliked_articles?.some(id => id.equals(articleId));
+
+    let userReact = null;
+    if (isLiked) userReact = 'like';
+    else if (isDisliked) userReact = 'dislike';
+
+    res.json({ userReact });
+  } catch (error) {
+    console.error('Error checking user reaction:', error);
+    res.status(500).json({ message: 'Error checking user reaction' });
+  }
+});
+
 
 // POST: Increment article view count
 articleRouter.post('/:id/view', async (req, res) => {
