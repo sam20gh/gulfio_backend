@@ -3,24 +3,34 @@ const Article = require('../models/Article');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 const ensureMongoUser = require('../middleware/ensureMongoUser');
+const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 
 articleRouter.get('/', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    const cacheKey = `articles_page_${page}_limit_${limit}`;
 
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('🧠 Returning cached articles');
+      return res.json(cached);
+    }
+
+    const skip = (page - 1) * limit;
     const articles = await Article.find()
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
+    cache.set(cacheKey, articles);
     res.json(articles);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
   }
 });
+
 // POST: Like or dislike an article
 
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
@@ -64,7 +74,9 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     console.error('Error in react route:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
+  cache.flushAll();
 });
+
 
 // GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
@@ -112,55 +124,75 @@ articleRouter.post('/:id/view', async (req, res) => {
 articleRouter.get('/feature', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 5; // Example: Default limit 5 for features
+    const limit = parseInt(req.query.limit) || 5;
     const skip = (page - 1) * limit;
 
-    const query = { category: 'feature' }; // Filter by category 'feature'
+    const cacheKey = `articles_feature_page_${page}_limit_${limit}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('🧠 Returning cached feature articles');
+      return res.json(cached);
+    }
+
+    const query = { category: 'feature' };
 
     const articles = await Article.find(query)
-      .sort({ publishedAt: -1 }) // Sort by published date, newest first
+      .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // Get total count of featured articles for pagination metadata
     const totalFeaturedArticles = await Article.countDocuments(query);
 
-    res.json({
+    const response = {
       articles,
       totalPages: Math.ceil(totalFeaturedArticles / limit),
-      currentPage: page
-    });
+      currentPage: page,
+    };
+
+    cache.set(cacheKey, response);
+    res.json(response);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
   }
 });
 
+
 // GET: Fetch headline articles with pagination
 articleRouter.get('/headline', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 5; // Example: Default limit 5 for headlines
+    const limit = parseInt(req.query.limit) || 5;
     const skip = (page - 1) * limit;
 
-    const query = { category: 'headline' }; // Filter by category 'headline'
+    const cacheKey = `articles_headline_page_${page}_limit_${limit}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('🧠 Returning cached headline articles');
+      return res.json(cached);
+    }
+
+    const query = { category: 'headline' };
 
     const articles = await Article.find(query)
-      .sort({ publishedAt: -1 }) // Sort by published date, newest first
+      .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // Get total count of headline articles for pagination metadata
     const totalHeadlineArticles = await Article.countDocuments(query);
 
-    res.json({
+    const response = {
       articles,
       totalPages: Math.ceil(totalHeadlineArticles / limit),
-      currentPage: page
-    });
+      currentPage: page,
+    };
+
+    cache.set(cacheKey, response);
+    res.json(response);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching headline articles', error: error.message });
   }
 });
+
 
 // POST: Add a new article
 articleRouter.post('/', auth, async (req, res) => {
@@ -213,6 +245,8 @@ articleRouter.delete('/:id', auth, async (req, res) => {
   } catch (error) {
     res.status(400).json({ message: 'Error deleting article', error: error.message });
   }
+  cache.flushAll();
 });
+
 
 module.exports = articleRouter;
