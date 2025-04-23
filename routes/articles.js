@@ -2,6 +2,7 @@ const express = require('express');
 const Article = require('../models/Article');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
+const ensureMongoUser = require('../middleware/ensureMongoUser');
 
 articleRouter.get('/', auth, async (req, res) => {
   try {
@@ -20,27 +21,32 @@ articleRouter.get('/', auth, async (req, res) => {
   }
 });
 // POST: Like or dislike an article
-articleRouter.post('/:id/react', auth, async (req, res) => {
+
+articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
     const { action } = req.body; // 'like' or 'dislike'
-    const userId = req.user.id;
-    const article = await Article.findById(req.params.id);
+    const userId = req.mongoUser?.supabase_id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorised - user not found' });
 
+    const article = await Article.findById(req.params.id);
     if (!article) return res.status(404).json({ message: 'Article not found' });
 
-    // Remove user from both lists first
-    article.likedBy = article.likedBy.filter(id => id !== userId);
-    article.dislikedBy = article.dislikedBy.filter(id => id !== userId);
+    // Remove user from both lists
+    article.likedBy = (article.likedBy || []).filter(id => id !== userId);
+    article.dislikedBy = (article.dislikedBy || []).filter(id => id !== userId);
 
+    let userReact = null;
     if (action === 'like') {
       article.likedBy.push(userId);
+      userReact = 'like';
     } else if (action === 'dislike') {
       article.dislikedBy.push(userId);
+      userReact = 'dislike';
     } else {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
-    // Update counts
+    // Recalculate counts
     article.likes = article.likedBy.length;
     article.dislikes = article.dislikedBy.length;
 
@@ -49,9 +55,11 @@ articleRouter.post('/:id/react', auth, async (req, res) => {
     res.json({
       likes: article.likes,
       dislikes: article.dislikes,
-      liked_articles: article.likedBy, // optional: filtered for user
+      liked_articles: req.mongoUser.liked_articles,
+      userReact,
     });
   } catch (error) {
+    console.error('Error in react route:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
 });
