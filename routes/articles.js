@@ -65,13 +65,15 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   }
 });
 // GET: Check if user has liked/disliked this article
-articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+router.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
-    const articleId = new mongoose.Types.ObjectId(req.params.id);
-    const user = req.mongoUser;
+    const userId = req.mongoUser.supabase_id; // this is a string
+    const article = await Article.findById(req.params.id);
 
-    const isLiked = user.liked_articles?.some(id => id.equals(articleId));
-    const isDisliked = user.disliked_articles?.some(id => id.equals(articleId));
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    const isLiked = article.likedBy?.includes(userId);
+    const isDisliked = article.dislikedBy?.includes(userId);
 
     let userReact = null;
     if (isLiked) userReact = 'like';
