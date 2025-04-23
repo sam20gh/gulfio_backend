@@ -19,6 +19,45 @@ articleRouter.get('/', auth, async (req, res) => {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
   }
 });
+// POST: Like or dislike an article
+articleRouter.post('/:id/react', auth, async (req, res) => {
+  try {
+    const { action } = req.body; // 'like' or 'dislike'
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    if (action === 'like') {
+      article.likes += 1;
+      if (article.dislikes > 0) article.dislikes -= 1;
+    } else if (action === 'dislike') {
+      article.dislikes += 1;
+      if (article.likes > 0) article.likes -= 1;
+    } else {
+      return res.status(400).json({ message: 'Invalid action' });
+    }
+
+    await article.save();
+    res.json({ likes: article.likes, dislikes: article.dislikes });
+  } catch (error) {
+    res.status(500).json({ message: 'Error reacting to article', error: error.message });
+  }
+});
+// POST: Increment article view count
+articleRouter.post('/:id/view', async (req, res) => {
+  try {
+    const article = await Article.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { viewCount: 1 } },
+      { new: true }
+    );
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    res.json({ viewCount: article.viewCount });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating view count', error: error.message });
+  }
+});
+
 
 articleRouter.get('/feature', auth, async (req, res) => {
   try {
