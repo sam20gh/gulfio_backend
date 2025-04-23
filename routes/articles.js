@@ -65,7 +65,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   }
 });
 // GET: Check if user has liked/disliked this article
-router.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
     const userId = req.mongoUser.supabase_id; // this is a string
     const article = await Article.findById(req.params.id);
