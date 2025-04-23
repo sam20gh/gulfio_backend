@@ -37,7 +37,6 @@ router.get('/by-supabase/:id', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-const Article = require('../models/Article'); // Make sure it's at the top if not already
 
 // ✅ Get liked articles
 router.get('/:id/liked-articles', async (req, res) => {
