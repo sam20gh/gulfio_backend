@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const Article = require('../models/Article');
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
@@ -36,6 +37,23 @@ router.get('/by-supabase/:id', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
+router.get('/:id/liked-articles', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
 
+        const likedIds = user.liked_articles || [];
+        if (likedIds.length === 0) return res.json([]); // Return empty array fast
+
+        const articles = await Article.find({
+            _id: { $in: likedIds }
+        }).sort({ publishedAt: -1 }); // Optional: sort
+
+        res.json(articles);
+    } catch (err) {
+        console.error('Error in /:id/liked-articles:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 
 module.exports = router;
