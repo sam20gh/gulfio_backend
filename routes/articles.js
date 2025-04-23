@@ -29,55 +29,60 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     const userId = req.mongoUser?.supabase_id;
     if (!userId) return res.status(401).json({ message: 'Unauthorised - user not found' });
 
-    const article = await Article.findById(req.params.id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
+    const pullUserFromBoth = {
+      $pull: {
+        likedBy: userId,
+        dislikedBy: userId,
+      }
+    };
 
-    // Remove user from both lists
-    article.likedBy = (article.likedBy || []).filter(id => id !== userId);
-    article.dislikedBy = (article.dislikedBy || []).filter(id => id !== userId);
+    await Article.updateOne({ _id: req.params.id }, pullUserFromBoth); // Remove from both arrays
 
-    let userReact = null;
+    let pushOp = {};
     if (action === 'like') {
-      article.likedBy.push(userId);
-      userReact = 'like';
+      pushOp = { $push: { likedBy: userId } };
     } else if (action === 'dislike') {
-      article.dislikedBy.push(userId);
-      userReact = 'dislike';
+      pushOp = { $push: { dislikedBy: userId } };
     } else {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
-    // Recalculate counts
-    article.likes = article.likedBy.length;
-    article.dislikes = article.dislikedBy.length;
+    await Article.updateOne({ _id: req.params.id }, pushOp); // Add to appropriate array
 
-    await article.save();
+    // Fetch new like/dislike counts
+    const updatedArticle = await Article.findById(req.params.id, 'likes dislikes likedBy dislikedBy');
+
+    const likes = updatedArticle.likedBy?.length || 0;
+    const dislikes = updatedArticle.dislikedBy?.length || 0;
 
     res.json({
-      likes: article.likes,
-      dislikes: article.dislikes,
-      liked_articles: req.mongoUser.liked_articles,
-      userReact,
+      likes,
+      dislikes,
+      userReact: action,
     });
   } catch (error) {
     console.error('Error in react route:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
 });
+
 // GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
-    const userId = req.mongoUser.supabase_id; // this is a string
-    const article = await Article.findById(req.params.id);
+    const userId = req.mongoUser.supabase_id;
+
+    const article = await Article.findById(
+      req.params.id,
+      'likedBy dislikedBy'
+    ).lean(); // Use lean for performance if no virtuals/hooks needed
 
     if (!article) return res.status(404).json({ message: 'Article not found' });
 
-    const isLiked = article.likedBy?.includes(userId);
-    const isDisliked = article.dislikedBy?.includes(userId);
-
-    let userReact = null;
-    if (isLiked) userReact = 'like';
-    else if (isDisliked) userReact = 'dislike';
+    const userReact = article.likedBy?.includes(userId)
+      ? 'like'
+      : article.dislikedBy?.includes(userId)
+        ? 'dislike'
+        : null;
 
     res.json({ userReact });
   } catch (error) {
@@ -85,6 +90,7 @@ articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
     res.status(500).json({ message: 'Error checking user reaction' });
   }
 });
+
 
 // POST: Increment article view count
 articleRouter.post('/:id/view', async (req, res) => {
