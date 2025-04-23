@@ -66,7 +66,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 // GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
-    const articleId = req.params.id;
+    const articleId = new mongoose.Types.ObjectId(req.params.id);
     const user = req.mongoUser;
 
     const isLiked = user.liked_articles?.some(id => id.equals(articleId));
@@ -82,7 +82,6 @@ articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
     res.status(500).json({ message: 'Error checking user reaction' });
   }
 });
-
 
 // POST: Increment article view count
 articleRouter.post('/:id/view', async (req, res) => {
