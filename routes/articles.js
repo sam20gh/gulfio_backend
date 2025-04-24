@@ -39,15 +39,15 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     const userId = req.mongoUser?.supabase_id;
     if (!userId) return res.status(401).json({ message: 'Unauthorised - user not found' });
 
-    const pullUserFromBoth = {
+    // Step 1: Remove user from both arrays
+    await Article.updateOne({ _id: req.params.id }, {
       $pull: {
         likedBy: userId,
         dislikedBy: userId,
       }
-    };
+    });
 
-    await Article.updateOne({ _id: req.params.id }, pullUserFromBoth); // Remove from both arrays
-
+    // Step 2: Push user to the correct array
     let pushOp = {};
     if (action === 'like') {
       pushOp = { $push: { likedBy: userId } };
@@ -57,26 +57,30 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
-    await Article.updateOne({ _id: req.params.id }, pushOp); // Add to appropriate array
+    await Article.updateOne({ _id: req.params.id }, pushOp);
 
-    // Fetch new like/dislike counts
-    const updatedArticle = await Article.findById(req.params.id, 'likes dislikes likedBy dislikedBy');
+    // Step 3: Update the like/dislike counts in DB
+    const updatedArticle = await Article.findById(req.params.id, 'likedBy dislikedBy');
+    const likes = updatedArticle.likedBy.length;
+    const dislikes = updatedArticle.dislikedBy.length;
 
-    const likes = updatedArticle.likedBy?.length || 0;
-    const dislikes = updatedArticle.dislikedBy?.length || 0;
+    updatedArticle.likes = likes;
+    updatedArticle.dislikes = dislikes;
+    await updatedArticle.save();
 
+    // Step 4: Respond
     res.json({
       likes,
       dislikes,
       userReact: action,
     });
+
+    cache.flushAll();
   } catch (error) {
     console.error('Error in react route:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
-  cache.flushAll();
 });
-
 
 // GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
