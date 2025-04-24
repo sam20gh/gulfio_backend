@@ -31,6 +31,7 @@ articleRouter.get('/', auth, async (req, res) => {
   }
 });
 
+
 // POST: Like or dislike an article
 
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
@@ -124,6 +125,18 @@ articleRouter.post('/:id/view', async (req, res) => {
   }
 });
 
+articleRouter.get('/:id', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ message: 'Article not found' });
+    }
+    res.json(article);
+  } catch (error) {
+    console.error('Error fetching article by ID:', error);
+    res.status(500).json({ message: 'Error fetching article', error: error.message });
+  }
+});
 
 articleRouter.get('/feature', auth, async (req, res) => {
   try {
