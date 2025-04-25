@@ -109,67 +109,20 @@ articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
 });
 
 
-// POST: Increment article view count
-articleRouter.post('/:id/view', async (req, res) => {
-  try {
-    const article = await Article.findByIdAndUpdate(
-      req.params.id,
-      { $inc: { viewCount: 1 } },
-      { new: true }
-    );
-    if (!article) return res.status(404).json({ message: 'Article not found' });
 
-    res.json({ viewCount: article.viewCount });
-  } catch (error) {
-    res.status(500).json({ message: 'Error updating view count', error: error.message });
-  }
-});
+articleRouter.get('/feature', auth, async (req, res) => { ... });
 
+// 2. Headline articles
+articleRouter.get('/headline', auth, async (req, res) => { ... });
+
+// ✅ KEEP THIS LAST
 articleRouter.get('/:id', async (req, res) => {
   try {
     const article = await Article.findById(req.params.id);
-    if (!article) {
-      return res.status(404).json({ message: 'Article not found' });
-    }
+    if (!article) return res.status(404).json({ message: 'Not found' });
     res.json(article);
   } catch (error) {
-    console.error('Error fetching article by ID:', error);
     res.status(500).json({ message: 'Error fetching article', error: error.message });
-  }
-});
-
-articleRouter.get('/feature', auth, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 5;
-    const skip = (page - 1) * limit;
-
-    const cacheKey = `articles_feature_page_${page}_limit_${limit}`;
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      console.log('🧠 Returning cached feature articles');
-      return res.json(cached);
-    }
-
-    const query = { category: 'feature' };
-
-    const articles = await Article.find(query)
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const totalFeaturedArticles = await Article.countDocuments(query);
-
-    const response = {
-      articles,
-      totalPages: Math.ceil(totalFeaturedArticles / limit),
-      currentPage: page,
-    };
-
-    cache.set(cacheKey, response);
-    res.json(response);
-  } catch (error) {
-    res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
   }
 });
 
@@ -207,6 +160,36 @@ articleRouter.get('/headline', auth, async (req, res) => {
     res.json(response);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching headline articles', error: error.message });
+  }
+});
+
+
+articleRouter.get('/:id', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ message: 'Article not found' });
+    }
+    res.json(article);
+  } catch (error) {
+    console.error('Error fetching article by ID:', error);
+    res.status(500).json({ message: 'Error fetching article', error: error.message });
+  }
+});
+
+
+articleRouter.post('/:id/view', async (req, res) => {
+  try {
+    const article = await Article.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { viewCount: 1 } },
+      { new: true }
+    );
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    res.json({ viewCount: article.viewCount });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating view count', error: error.message });
   }
 });
 
