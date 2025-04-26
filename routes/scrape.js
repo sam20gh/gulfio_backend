@@ -22,6 +22,15 @@ const validateApiKey = (req, res, next) => {
 };
 
 // GET endpoint for daily scraping (for Render Cron Job)
+router.get('/hourly', validateApiKey, async (req, res) => {
+    try {
+        await scrapeAllSources('hourly');
+        res.send('✅ Hourly scrape complete');
+    } catch (err) {
+        console.error('❌ Daily scrape error:', err);
+        res.status(500).send('❌ Daily scrape failed');
+    }
+});
 router.get('/daily', validateApiKey, async (req, res) => {
     try {
         await scrapeAllSources('daily');
@@ -31,7 +40,6 @@ router.get('/daily', validateApiKey, async (req, res) => {
         res.status(500).send('❌ Daily scrape failed');
     }
 });
-
 // GET endpoint for weekly scraping (for Render Cron Job)
 router.get('/weekly', validateApiKey, async (req, res) => {
     try {
