@@ -171,5 +171,44 @@ router.post('/user/:targetSupabaseId/action', auth, ensureMongoUser, async (req,
         res.status(500).json({ message: 'Error updating relationship' });
     }
 });
+// Follow/Unfollow Source Group
+router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const { groupName } = req.body;
+
+    if (!groupName) return res.status(400).json({ message: 'groupName is required' });
+
+    try {
+        const sources = await Source.find({ groupName });
+
+        if (!sources.length) return res.status(404).json({ message: 'No sources found for this group' });
+
+        const isFollowing = user.following_sources.includes(groupName);
+
+        if (isFollowing) {
+            // Unfollow: Remove groupName from user's following_sources
+            user.following_sources.pull(groupName);
+            // Decrement followers for all sources in the group
+            await Source.updateMany({ groupName }, { $inc: { followers: -1 } });
+        } else {
+            // Follow: Add groupName to user's following_sources
+            user.following_sources.push(groupName);
+            // Increment followers for all sources in the group
+            await Source.updateMany({ groupName }, { $inc: { followers: 1 } });
+        }
+
+        await user.save();
+
+        res.json({
+            following_sources: user.following_sources,
+            action: isFollowing ? "unfollowed" : "followed",
+        });
+
+    } catch (err) {
+        console.error('Error following/unfollowing group:', err);
+        res.status(500).json({ message: 'Error updating follow status' });
+    }
+});
+
 
 module.exports = router;

@@ -9,7 +9,7 @@ const userSchema = new mongoose.Schema({
     disliked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     viewed_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     saved_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
-    following_sources: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Source' }],
+    following_sources: [{ type: String }],
     following_users: [{ type: String }], // supabase_id of followed users
     blocked_users: [{ type: String }], // supabase_id of blocked users
 }, { timestamps: true });
