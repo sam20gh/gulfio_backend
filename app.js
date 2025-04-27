@@ -9,6 +9,7 @@ const userActions = require('./routes/userActions');
 const recommendations = require('./routes/recommendations');
 const Article = require('./models/Article');
 const sourceGroupRoutes = require('./routes/sourceGroup');
+const redis = require('./utils/redis');
 require('dotenv').config();
 const app = express();
 
@@ -37,6 +38,12 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
+    try {
+        const pingResult = await redis.ping();
+        console.log('✅ Redis connection successful:', pingResult); // Should log "PONG"
+    } catch (error) {
+        console.error('❌ Redis connection failed:', error);
+    }
 });
 
 mongoose.connect(process.env.MONGO_URI)

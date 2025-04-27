@@ -8,6 +8,7 @@ const redis = new Redis({
         rejectUnauthorized: false, // make SSL handshake loose (recommended on Render internal)
     },
     connectTimeout: 10000, // optional but safe
+    keepAlive: 1000,
 });
 
 module.exports = redis;
