@@ -9,7 +9,6 @@ const userActions = require('./routes/userActions');
 const recommendations = require('./routes/recommendations');
 const Article = require('./models/Article');
 const sourceGroupRoutes = require('./routes/sourceGroup');
-const redis = require('./utils/redis');
 require('dotenv').config();
 const app = express();
 
@@ -36,26 +35,16 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-const startServer = async () => {
-    try {
-        await mongoose.connect(process.env.MONGO_URI);
+app.listen(PORT, () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+});
+
+mongoose.connect(process.env.MONGO_URI)
+    .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
-        await createIndexes();
-
-        const pingResult = await redis.ping();
-        console.log('✅ Redis connection successful:', pingResult);
-
-        app.listen(PORT, () => {
-            console.log(`🚀 Server is running on port ${PORT}`);
-        });
-
-    } catch (error) {
-        console.error('❌ Failed to start server:', error);
-        process.exit(1);
-    }
-};
-
-startServer();
+        await createIndexes(); // 👈 Run after DB connection
+    })
+    .catch(err => console.error('❌ Failed to connect to MongoDB Atlas:', err));
 
 app.use(express.json());
 app.use('/api/sources', sources);
