@@ -4,9 +4,11 @@ const redis = new Redis({
     host: process.env.REDIS_HOST,
     port: process.env.REDIS_PORT,
     tls: {
-        rejectUnauthorized: false, // make SSL handshake loose (recommended on Render internal)
+        rejectUnauthorized: false,
     },
-    connectTimeout: 10000,
+    connectTimeout: 10000, // optional
+    maxRetriesPerRequest: 1, // 👈 prevent endless retries
+    retryStrategy: () => null, // 👈 no auto-retry
 });
 
 module.exports = redis;
