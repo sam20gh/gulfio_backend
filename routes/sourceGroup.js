@@ -55,5 +55,37 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
         res.status(500).json({ message: 'Error fetching source group' });
     }
 });
+// Follow/Unfollow Source Group
+router.post('/follow-group', auth, ensureMongoUser, async (req, res) => {
+    const { groupName } = req.body;
+    const user = req.mongoUser;
+
+    try {
+        if (!groupName) return res.status(400).json({ message: 'groupName is required' });
+
+        const isFollowing = user.following_sources.includes(groupName);
+
+        if (isFollowing) {
+            // Unfollow
+            user.following_sources.pull(groupName);
+            await Source.updateMany({ groupName }, { $inc: { followers: -1 } });
+        } else {
+            // Follow
+            user.following_sources.push(groupName);
+            await Source.updateMany({ groupName }, { $inc: { followers: 1 } });
+        }
+
+        await user.save();
+
+        res.json({
+            following_sources: user.following_sources,
+            action: isFollowing ? 'unfollowed' : 'followed',
+        });
+    } catch (error) {
+        console.error('Error following/unfollowing group:', error);
+        res.status(500).json({ message: 'Error updating follow status' });
+    }
+});
+
 
 module.exports = router;
