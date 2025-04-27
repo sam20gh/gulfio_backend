@@ -5,6 +5,15 @@ const articleRouter = express.Router();
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const cache = require('../utils/cache')
 const mongoose = require('mongoose');
+const redis = require('../utils/redis');
+
+async function clearArticlesCache() {
+  const keys = await redis.keys('articles_*');
+  if (keys.length > 0) {
+    await redis.del(keys);
+    console.log('🧹 Cleared article caches:', keys);
+  }
+}
 
 articleRouter.get('/', auth, async (req, res) => {
   try {
@@ -12,10 +21,10 @@ articleRouter.get('/', auth, async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const cacheKey = `articles_page_${page}_limit_${limit}`;
 
-    const cached = cache.get(cacheKey);
+    const cached = await redis.get(cacheKey);
     if (cached) {
       console.log('🧠 Returning cached articles');
-      return res.json(cached);
+      return res.json(JSON.parse(cached));
     }
 
     const skip = (page - 1) * limit;
@@ -24,7 +33,7 @@ articleRouter.get('/', auth, async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    cache.set(cacheKey, articles);
+    await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
     res.json(articles);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching articles', error: error.message });
@@ -76,7 +85,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       userReact: action,
     });
 
-    cache.flushAll();
+    await clearArticlesCache();
   } catch (error) {
     console.error('Error in react route:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
@@ -131,10 +140,10 @@ articleRouter.get('/feature', auth, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const cacheKey = `articles_feature_page_${page}_limit_${limit}`;
-    const cached = cache.get(cacheKey);
+    const cached = await redis.get(cacheKey);
     if (cached) {
-      console.log('🧠 Returning cached feature articles');
-      return res.json(cached);
+      console.log('🧠 Returning cached articles');
+      return res.json(JSON.parse(cached));
     }
 
     const query = { category: 'feature' };
@@ -152,7 +161,7 @@ articleRouter.get('/feature', auth, async (req, res) => {
       currentPage: page,
     };
 
-    cache.set(cacheKey, response);
+    await redis.set(cacheKey, JSON.stringify(response), 'EX', 300);
     res.json(response);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
@@ -168,10 +177,10 @@ articleRouter.get('/headline', auth, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const cacheKey = `articles_headline_page_${page}_limit_${limit}`;
-    const cached = cache.get(cacheKey);
+    const cached = await redis.get(cacheKey);
     if (cached) {
-      console.log('🧠 Returning cached headline articles');
-      return res.json(cached);
+      console.log('🧠 Returning cached articles');
+      return res.json(JSON.parse(cached));
     }
 
     const query = { category: 'headline' };
@@ -189,7 +198,7 @@ articleRouter.get('/headline', auth, async (req, res) => {
       currentPage: page,
     };
 
-    cache.set(cacheKey, response);
+    await redis.set(cacheKey, JSON.stringify(response), 'EX', 300);
     res.json(response);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching headline articles', error: error.message });
@@ -263,7 +272,7 @@ articleRouter.delete('/:id', auth, async (req, res) => {
   } catch (error) {
     res.status(400).json({ message: 'Error deleting article', error: error.message });
   }
-  cache.flushAll();
+  await clearArticlesCache();
 });
 
 
