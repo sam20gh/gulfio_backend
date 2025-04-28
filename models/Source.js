@@ -4,6 +4,7 @@ const SourceSchema = new mongoose.Schema({
     name: String,
     groupName: String, // 🆕 Group sources under a common name
     url: String,
+    baseUrl: { type: String },
     category: String,
     frequency: String,
     listSelector: String,

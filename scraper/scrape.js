@@ -65,7 +65,9 @@ async function scrapeAllSources(frequency = null) {
                 const linkSelector = source.linkSelector || 'a';
                 $(listSelector).each((_, el) => {
                     const href = $(el).find(linkSelector).attr('href');
-                    const fullUrl = href?.startsWith('http') ? href : `${source.url.replace(/\/$/, '')}${href}`;
+                    const baseUrl = source.baseUrl || source.url; // fallback to source.url if baseUrl not provided
+                    const fullUrl = href?.startsWith('http') ? href : `${baseUrl.replace(/\/$/, '')}${href}`;
+
                     if (fullUrl) articleLinks.push(fullUrl);
                 });
             }
