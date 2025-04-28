@@ -21,13 +21,16 @@ articleRouter.get('/', auth, async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const cacheKey = `articles_page_${page}_limit_${limit}`;
 
-    // ✅ Check if Redis is ready
-    if (redis.status === 'ready') {
-      const cached = await redis.get(cacheKey);
-      if (cached) {
-        console.log('🧠 Returning cached articles');
-        return res.json(JSON.parse(cached));
-      }
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+
+    if (cached) {
+      console.log('🧠 Returning cached articles');
+      return res.json(JSON.parse(cached));
     }
 
     const skip = (page - 1) * limit;
@@ -36,12 +39,16 @@ articleRouter.get('/', auth, async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    // ✅ Only set cache if Redis is ready
-    if (redis.status === 'ready') {
+    try {
       await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
+
+    res.json(articles);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching articles', error: error.message });
+    console.error('❌ Error fetching articles:', error);
+    res.status(500).json({ error: 'Error fetching articles', message: error.message });
   }
 });
 
