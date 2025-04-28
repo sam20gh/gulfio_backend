@@ -149,39 +149,44 @@ articleRouter.get('/feature', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
-
     const cacheKey = `articles_feature_page_${page}_limit_${limit}`;
-    // ✅ Check if Redis is ready
-    if (redis.status === 'ready') {
-      const cached = await redis.get(cacheKey);
-      if (cached) {
-        console.log('🧠 Returning cached articles');
-        return res.json(JSON.parse(cached));
-      }
+
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+
+    if (cached) {
+      console.log('🧠 Returning cached feature articles');
+      return res.json(JSON.parse(cached));
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find()
+    const articles = await Article.find({ category: 'feature' })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // ✅ Only set cache if Redis is ready
-    if (redis.status === 'ready') {
-      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
-    }
-
-
-    const totalFeaturedArticles = await Article.countDocuments(query);
+    const totalFeatureArticles = await Article.countDocuments({ category: 'feature' });
 
     const response = {
       articles,
-      totalPages: Math.ceil(totalFeaturedArticles / limit),
+      totalPages: Math.ceil(totalFeatureArticles / limit),
       currentPage: page,
     };
 
+    try {
+      await redis.set(cacheKey, JSON.stringify(response), 'EX', 300);
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    res.json(response);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching featured articles', error: error.message });
+    console.error('❌ Error fetching feature articles:', error);
+    res.status(500).json({ error: 'Error fetching feature articles', message: error.message });
   }
 });
 
@@ -191,30 +196,27 @@ articleRouter.get('/headline', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
-
     const cacheKey = `articles_headline_page_${page}_limit_${limit}`;
-    // ✅ Check if Redis is ready
-    if (redis.status === 'ready') {
-      const cached = await redis.get(cacheKey);
-      if (cached) {
-        console.log('🧠 Returning cached articles');
-        return res.json(JSON.parse(cached));
-      }
+
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+
+    if (cached) {
+      console.log('🧠 Returning cached headline articles');
+      return res.json(JSON.parse(cached));
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find()
+    const articles = await Article.find({ category: 'headline' })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // ✅ Only set cache if Redis is ready
-    if (redis.status === 'ready') {
-      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
-    }
-
-
-    const totalHeadlineArticles = await Article.countDocuments(query);
+    const totalHeadlineArticles = await Article.countDocuments({ category: 'headline' });
 
     const response = {
       articles,
@@ -222,8 +224,16 @@ articleRouter.get('/headline', auth, async (req, res) => {
       currentPage: page,
     };
 
+    try {
+      await redis.set(cacheKey, JSON.stringify(response), 'EX', 300);
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    res.json(response);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching headline articles', error: error.message });
+    console.error('❌ Error fetching headline articles:', error);
+    res.status(500).json({ error: 'Error fetching headline articles', message: error.message });
   }
 });
 
