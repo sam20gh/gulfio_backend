@@ -24,17 +24,15 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
 
         const sourceIds = sources.map(source => source._id);
 
-        // Find Top Articles (by likeCount, limit 5)
         const topArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ likeCount: -1 })
             .limit(5)
-            .select('_id title publishedAt likeCount');
+            .select('_id title publishedAt likeCount url image'); // ✅ added url and image
 
-        // Find Recent Articles (by publish date, limit 10)
         const recentArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ publishedAt: -1 })
             .limit(10)
-            .select('_id title publishedAt');
+            .select('_id title publishedAt url image');
 
         // Check if user is following this group
         const userFollowing = user.following_sources.includes(groupName);
