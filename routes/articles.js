@@ -19,7 +19,6 @@ articleRouter.get('/', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
     const cacheKey = `articles_page_${page}_limit_${limit}`;
 
     let cached;
@@ -34,34 +33,24 @@ articleRouter.get('/', auth, async (req, res) => {
       return res.json(JSON.parse(cached));
     }
 
-    const [articles, totalArticles] = await Promise.all([
-      Article.find()
-        .sort({ publishedAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Article.countDocuments()
-    ]);
-
-    const response = {
-      articles,
-      totalArticles,
-      currentPage: page,
-      totalPages: Math.ceil(totalArticles / limit),
-    };
+    const skip = (page - 1) * limit;
+    const articles = await Article.find()
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     try {
-      await redis.set(cacheKey, JSON.stringify(response), 'EX', 300); // Cache the full response
+      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
 
-    res.json(response);
+    res.json(articles);
   } catch (error) {
     console.error('❌ Error fetching articles:', error);
     res.status(500).json({ error: 'Error fetching articles', message: error.message });
   }
 });
-
 
 
 // POST: Like or dislike an article
