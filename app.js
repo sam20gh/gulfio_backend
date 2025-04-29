@@ -9,6 +9,7 @@ const userActions = require('./routes/userActions');
 const recommendations = require('./routes/recommendations');
 const Article = require('./models/Article');
 const sourceGroupRoutes = require('./routes/sourceGroup');
+const engagementRouter = require('./routes/engagement');
 require('dotenv').config();
 const app = express();
 
@@ -54,5 +55,6 @@ app.use('/api/users', userRoutes);
 app.use('/api/user', userActions);
 app.use('/api/recommendations', recommendations);
 app.use('/api/source', sourceGroupRoutes);
+app.use('/api/engagement', engagementRouter);
 
 module.exports = app;
