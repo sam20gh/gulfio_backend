@@ -236,6 +236,22 @@ articleRouter.get('/headline', auth, async (req, res) => {
     res.status(500).json({ error: 'Error fetching headline articles', message: error.message });
   }
 });
+articleRouter.get('/search', auth, async (req, res) => {
+  try {
+    const query = req.query.query?.trim();
+    if (!query) return res.status(400).json({ message: 'Missing search query' });
+
+    const regex = new RegExp(query, 'i'); // case-insensitive
+    const results = await Article.find({ title: { $regex: regex } })
+      .sort({ publishedAt: -1 })
+      .limit(50); // limit to avoid overfetching
+
+    res.json(results);
+  } catch (error) {
+    console.error('Error in /search:', error);
+    res.status(500).json({ message: 'Error searching articles', error: error.message });
+  }
+});
 
 articleRouter.get('/:id', async (req, res) => {
   try {
@@ -307,22 +323,7 @@ articleRouter.delete('/:id', auth, async (req, res) => {
   await clearArticlesCache();
 });
 
-articleRouter.get('/search', auth, async (req, res) => {
-  try {
-    const query = req.query.query?.trim();
-    if (!query) return res.status(400).json({ message: 'Missing search query' });
 
-    const regex = new RegExp(query, 'i'); // case-insensitive
-    const results = await Article.find({ title: { $regex: regex } })
-      .sort({ publishedAt: -1 })
-      .limit(50); // limit to avoid overfetching
-
-    res.json(results);
-  } catch (error) {
-    console.error('Error in /search:', error);
-    res.status(500).json({ message: 'Error searching articles', error: error.message });
-  }
-});
 
 
 module.exports = articleRouter;
