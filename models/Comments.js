@@ -1,12 +1,26 @@
 const mongoose = require('mongoose');
 
 const commentSchema = new mongoose.Schema({
-    _id: ObjectId,
-    articleId: ObjectId,      // Reference to the article
-    userId: string,           // Supabase user ID
-    username: string,         // For display
-    comment: string,
-    createdAt: ISODate
+    articleId: {
+        type: String, // store as string since you're comparing string IDs in routes
+        required: true,
+    },
+    userId: {
+        type: String, // Supabase user ID
+        required: true,
+    },
+    username: {
+        type: String,
+        required: true,
+    },
+    comment: {
+        type: String,
+        required: true,
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now,
+    },
 });
 
-module.exports = mongoose.model('Comments', commentSchema);
+module.exports = mongoose.model('Comment', commentSchema);

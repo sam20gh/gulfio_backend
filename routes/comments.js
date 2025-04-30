@@ -1,40 +1,43 @@
 const express = require('express');
 const router = express.Router();
-const { ObjectId } = require('mongodb');
-const db = require('../utils/db'); // or wherever your Mongo client is
+const mongoose = require('mongoose');
+const Comment = require('../models/Comment'); // You'll need to create this model
+const auth = require('../middleware/auth');
 
-// GET all comments for an article
+// GET comments for an article
 router.get('/:articleId', async (req, res) => {
-    const { articleId } = req.params;
     try {
-        const comments = await db.collection('comments')
-            .find({ articleId: new ObjectId(articleId) })
-            .sort({ createdAt: -1 })
-            .toArray();
+        const { articleId } = req.params;
+        const comments = await Comment.find({ articleId: articleId })
+            .sort({ createdAt: -1 });
         res.json(comments);
-    } catch (e) {
-        console.error('GET /comments error:', e);
-        res.status(500).json({ error: 'Failed to get comments' });
+    } catch (error) {
+        console.error('GET /comments error:', error);
+        res.status(500).json({ message: 'Failed to get comments' });
     }
 });
 
-// POST a new comment
-router.post('/', async (req, res) => {
-    const { articleId, userId, username, comment } = req.body;
-    if (!articleId || !userId || !comment) return res.status(400).json({ error: 'Missing fields' });
-
+// POST new comment
+router.post('/', auth, async (req, res) => {
     try {
-        await db.collection('comments').insertOne({
-            articleId: new ObjectId(articleId),
+        const { articleId, userId, username, comment } = req.body;
+        if (!articleId || !userId || !comment) {
+            return res.status(400).json({ message: 'Missing fields' });
+        }
+
+        const newComment = new Comment({
+            articleId,
             userId,
             username,
             comment,
             createdAt: new Date(),
         });
+
+        await newComment.save();
         res.status(201).json({ message: 'Comment added' });
-    } catch (e) {
-        console.error('POST /comments error:', e);
-        res.status(500).json({ error: 'Failed to add comment' });
+    } catch (error) {
+        console.error('POST /comments error:', error);
+        res.status(500).json({ message: 'Failed to post comment' });
     }
 });
 
