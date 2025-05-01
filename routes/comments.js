@@ -40,5 +40,49 @@ router.post('/', auth, async (req, res) => {
         res.status(500).json({ message: 'Failed to post comment' });
     }
 });
+// PATCH /comments/:id — Edit a comment
+router.patch('/:id', auth, async (req, res) => {
+    const { comment } = req.body;
+    if (!comment) return res.status(400).json({ message: 'No comment provided' });
+
+    const updated = await Comment.findByIdAndUpdate(req.params.id, { comment }, { new: true });
+    if (!updated) return res.status(404).json({ message: 'Comment not found' });
+
+    res.json(updated);
+});
+
+// DELETE /comments/:id — Delete a comment
+router.delete('/:id', auth, async (req, res) => {
+    const deleted = await Comment.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ message: 'Comment not found' });
+
+    res.json({ message: 'Comment deleted' });
+});
+
+// POST /comments/:id/react
+router.post('/:id/react', auth, async (req, res) => {
+    const { action } = req.body; // 'like' or 'dislike'
+    const userId = req.mongoUser?.supabase_id;
+    if (!['like', 'dislike'].includes(action)) return res.status(400).json({ message: 'Invalid action' });
+
+    // Pull from both arrays first
+    await Comment.updateOne({ _id: req.params.id }, {
+        $pull: { likedBy: userId, dislikedBy: userId }
+    });
+
+    // Push to correct one
+    if (action === 'like') {
+        await Comment.updateOne({ _id: req.params.id }, { $push: { likedBy: userId } });
+    } else {
+        await Comment.updateOne({ _id: req.params.id }, { $push: { dislikedBy: userId } });
+    }
+
+    const updated = await Comment.findById(req.params.id);
+    res.json({
+        likes: updated.likedBy.length,
+        dislikes: updated.dislikedBy.length,
+        userReact: action,
+    });
+});
 
 module.exports = router;
