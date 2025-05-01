@@ -3,6 +3,9 @@ const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
+const Article = require('../models/Article');
+const User = require('../models/User');
+const sendExpoNotification = require('../utils/sendExpoNotification');
 
 async function fetchWithPuppeteer(url) {
     const browser = await puppeteer.launch({ headless: 'new' });
@@ -114,6 +117,17 @@ async function scrapeAllSources(frequency = null) {
 
                         await article.save();
                         console.log(`[${source.name}] ✅ Saved: ${title}`);
+                        try {
+                            const usersWithToken = await User.find({ pushToken: { $exists: true, $ne: null } });
+                            const tokens = usersWithToken.map(u => u.pushToken);
+                            await sendExpoNotification(
+                                title,
+                                'A new article was just published on Gulfio News!',
+                                tokens
+                            );
+                        } catch (notifErr) {
+                            console.error('Notification error:', notifErr);
+                        }
                     }
                 } catch (err) {
                     console.error(`[${source.name}] ❌ Error scraping article: ${link}`, err.message);
