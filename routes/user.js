@@ -121,32 +121,20 @@ router.post('/push-token', auth, async (req, res) => {
 });
 
 router.post('/test-notify', auth, async (req, res) => {
-    try {
-        const supabase_id = req.user.sub;
-        const user = await User.findOne({ supabase_id });
-
-        if (!user?.pushToken) {
-            return res.status(404).json({ message: 'No push token for this user' });
-        }
-
-        // Build the message
-        const message = {
-            notification: {
-                title: '🧪 Test Notification',
-                body: 'If you see this, the push setup is working!',
-            },
-            token: user.pushToken,
-        };
-
-        // Send it
-        const response = await admin.messaging().send(message);
-        console.log('✅ Test notification sent:', response);
-
-        res.json({ success: true, messageId: response });
-    } catch (err) {
-        console.error('❌ Test notification error:', err);
-        res.status(500).json({ success: false, error: err.message });
+    const supabase_id = req.user.sub;
+    const user = await User.findOne({ supabase_id });
+    if (!user?.pushToken) {
+        return res.status(404).json({ message: 'No push token for this user' });
     }
+
+    // send via Expo, not FCM
+    await sendExpoNotification(
+        '🧪 Test Notification',
+        'If you see this, Expo push is working!',
+        [user.pushToken]
+    );
+
+    res.json({ success: true });
 });
 
 
