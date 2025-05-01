@@ -88,20 +88,36 @@ router.get('/:id/saved-articles', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
+router.post('/push-token', auth, async (req, res) => {
+    const supabase_id = req.user.sub;
     const { token } = req.body;
 
     if (!token) return res.status(400).json({ message: 'Push token is required' });
 
     try {
-        user.pushToken = token;
-        await user.save();
+        let user = await User.findOne({ supabase_id });
+
+        if (!user) {
+            // Optional: auto-create user if not found
+            const { email, name, picture } = req.user;
+            user = await User.create({
+                supabase_id,
+                email: email || '',
+                name: name || '',
+                avatar_url: picture || '',
+                pushToken: token,
+            });
+        } else {
+            user.pushToken = token;
+            await user.save();
+        }
+
         res.json({ success: true, message: 'Push token saved' });
     } catch (err) {
         console.error('Error saving push token:', err);
         res.status(500).json({ message: 'Failed to save push token' });
     }
 });
+
 
 module.exports = router;
