@@ -3,6 +3,7 @@ const router = express.Router();
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const Article = require('../models/Article');
+const admin = require('../firebaseAdmin');
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
@@ -116,6 +117,35 @@ router.post('/push-token', auth, async (req, res) => {
     } catch (err) {
         console.error('Error saving push token:', err);
         res.status(500).json({ message: 'Failed to save push token' });
+    }
+});
+
+router.post('/test-notify', auth, async (req, res) => {
+    try {
+        const supabase_id = req.user.sub;
+        const user = await User.findOne({ supabase_id });
+
+        if (!user?.pushToken) {
+            return res.status(404).json({ message: 'No push token for this user' });
+        }
+
+        // Build the message
+        const message = {
+            notification: {
+                title: '🧪 Test Notification',
+                body: 'If you see this, the push setup is working!',
+            },
+            token: user.pushToken,
+        };
+
+        // Send it
+        const response = await admin.messaging().send(message);
+        console.log('✅ Test notification sent:', response);
+
+        res.json({ success: true, messageId: response });
+    } catch (err) {
+        console.error('❌ Test notification error:', err);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
