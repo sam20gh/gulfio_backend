@@ -3,7 +3,6 @@ const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
-const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 
