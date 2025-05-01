@@ -5,6 +5,7 @@ const userSchema = new mongoose.Schema({
     email: { type: String, required: true },
     name: { type: String },
     avatar_url: { type: String },
+    pushToken: { type: String },
     liked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     disliked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     viewed_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
