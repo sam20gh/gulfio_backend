@@ -4,6 +4,7 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const Article = require('../models/Article');
 const admin = require('../firebaseAdmin');
+const sendExpoNotification = require('../utils/sendExpoNotification');
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
@@ -120,22 +121,30 @@ router.post('/push-token', auth, async (req, res) => {
     }
 });
 
+// routes/user.js
+
 router.post('/test-notify', auth, async (req, res) => {
-    const supabase_id = req.user.sub;
-    const user = await User.findOne({ supabase_id });
-    if (!user?.pushToken) {
-        return res.status(404).json({ message: 'No push token for this user' });
+    try {
+        const supabase_id = req.user.sub;
+        const user = await User.findOne({ supabase_id });
+        if (!user?.pushToken) {
+            return res.status(404).json({ message: 'No push token for this user' });
+        }
+
+        // Send test via Expo
+        await sendExpoNotification(
+            '🧪 Test Notification',
+            'If you see this, Expo push is working!',
+            [user.pushToken]
+        );
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Test notify error:', err);
+        res.status(500).json({ success: false, error: err.message });
     }
-
-    // send via Expo, not FCM
-    await sendExpoNotification(
-        '🧪 Test Notification',
-        'If you see this, Expo push is working!',
-        [user.pushToken]
-    );
-
-    res.json({ success: true });
 });
+
 
 
 module.exports = router;
