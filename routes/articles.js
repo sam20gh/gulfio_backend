@@ -53,7 +53,7 @@ articleRouter.get('/', auth, async (req, res) => {
 });
 
 // routes/articles.js
-router.get('/articles/:id', async (req, res) => {
+articleRouter.get('/articles/:id', async (req, res) => {
   try {
     const article = await Article.findById(req.params.id);
     if (!article) return res.status(404).json({ message: 'Article not found' });
