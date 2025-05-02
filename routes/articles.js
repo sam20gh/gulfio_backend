@@ -52,6 +52,17 @@ articleRouter.get('/', auth, async (req, res) => {
   }
 });
 
+// routes/articles.js
+router.get('/articles/:id', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+    res.json(article);
+  } catch (err) {
+    console.error('GET /articles/:id error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // POST: Like or dislike an article
 
