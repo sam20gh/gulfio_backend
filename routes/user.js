@@ -50,7 +50,10 @@ router.get('/:id/liked-articles', async (req, res) => {
         if (likedIds.length === 0) return res.json([]);
 
         const articles = await Article.find({ _id: { $in: likedIds } }).sort({ publishedAt: -1 });
-        res.json(articles);
+        res.json({
+            count: likedIds.length,
+            articles
+        });
     } catch (err) {
         console.error('Error in /:id/liked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -67,7 +70,10 @@ router.get('/:id/disliked-articles', async (req, res) => {
         if (dislikedIds.length === 0) return res.json([]);
 
         const articles = await Article.find({ _id: { $in: dislikedIds } }).sort({ publishedAt: -1 });
-        res.json(articles);
+        res.json({
+            count: dislikedIds.length,
+            articles
+        });
     } catch (err) {
         console.error('Error in /:id/disliked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -84,7 +90,10 @@ router.get('/:id/saved-articles', async (req, res) => {
         if (savedIds.length === 0) return res.json([]);
 
         const articles = await Article.find({ _id: { $in: savedIds } }).sort({ publishedAt: -1 });
-        res.json(articles);
+        res.json({
+            count: savedIds.length,
+            articles
+        });
     } catch (err) {
         console.error('Error in /:id/saved-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
