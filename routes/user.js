@@ -5,6 +5,7 @@ const auth = require('../middleware/auth');
 const Article = require('../models/Article');
 const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
+const ensureMongoUser = require('../middleware/ensureMongoUser')
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
