@@ -1,5 +1,6 @@
 const express = require('express');
 const Article = require('../models/Article');
+const User = require('../models/User');
 const auth = require('../middleware/auth');
 const articleRouter = express.Router();
 const ensureMongoUser = require('../middleware/ensureMongoUser');
