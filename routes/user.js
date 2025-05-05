@@ -153,6 +153,25 @@ router.post('/test-notify', auth, async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+router.get('/me', auth, ensureMongoUser, (req, res) => {
+    const user = req.mongoUser
+    res.json({
+        email: user.email,
+        name: user.name,
+        avatar_url: user.avatar_url,
+    })
+})
+
+router.put('/update', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser
+    const { name, avatar_url } = req.body
+
+    if (name !== undefined) user.name = name
+    if (avatar_url !== undefined) user.avatar_url = avatar_url
+
+    await user.save()
+    res.json({ message: 'Updated' })
+})
 
 
 
