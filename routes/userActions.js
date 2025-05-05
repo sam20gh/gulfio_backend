@@ -15,9 +15,9 @@ function validateObjectId(id) {
 router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
     const articleId = req.params.id;
-    const { action } = req.body;
+    const { action } = req.body; // 'like' or 'dislike'
 
-    if (!mongoose.Types.ObjectId.isValid(articleId)) {
+    if (!validateObjectId(articleId)) {
         return res.status(400).json({ message: 'Invalid article ID' });
     }
 
@@ -34,10 +34,12 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
             user.disliked_articles.push(articleObjectId);
         }
         if (isLiked) user.liked_articles.pull(articleObjectId);
+    } else {
+        return res.status(400).json({ message: 'Invalid action type' });
     }
 
-
     await user.save();
+
     res.json({
         liked_articles: user.liked_articles,
         disliked_articles: user.disliked_articles || [],
@@ -76,28 +78,32 @@ router.post('/article/:articleId/view', async (req, res) => {
 
 // Save/Unsave Article (Requires auth and ensureMongoUser)
 router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser; // Use ensureMongoUser result
+    const user = req.mongoUser;
     const articleId = req.params.id;
 
-    if (!validateObjectId(articleId)) return res.status(400).json({ message: 'Invalid article ID' });
+    if (!validateObjectId(articleId))
+        return res.status(400).json({ message: 'Invalid article ID' });
+
+    const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
     try {
-        // No need to find user again if ensureMongoUser is used
-        // const user = await User.findOne({ supabase_id: userId });
+        const isSaved = user.saved_articles.some(id => id.equals(articleObjectId));
 
-        if (user.saved_articles.includes(articleId)) {
-            user.saved_articles.pull(articleId);
+        if (isSaved) {
+            user.saved_articles.pull(articleObjectId);
         } else {
-            user.saved_articles.push(articleId);
+            user.saved_articles.push(articleObjectId); // or use addToSet to prevent dupes
         }
 
         await user.save();
+
         res.json({ saved_articles: user.saved_articles });
     } catch (err) {
-        console.error('Error saving article:', err); // Log the error
+        console.error('Error saving article:', err);
         res.status(500).json({ message: 'Error saving article' });
     }
 });
+
 
 // Follow/Unfollow Source (Requires auth and ensureMongoUser)
 router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
