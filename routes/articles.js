@@ -66,29 +66,55 @@ articleRouter.get('/articles/:id', async (req, res) => {
 
 // POST: Like or dislike an article
 
-articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
+    const { action } = req.body; // expected: 'like' or 'dislike'
     const userId = req.mongoUser.supabase_id;
+    const articleId = req.params.id;
 
-    const article = await Article.findById(req.params.id, 'likedBy dislikedBy').lean();
+    if (!mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ message: 'Invalid article ID' });
+    }
 
-    if (!article) return res.status(404).json({ message: 'Article not found' });
+    if (!['like', 'dislike'].includes(action)) {
+      return res.status(400).json({ message: 'Invalid action' });
+    }
 
-    const likedBy = article.likedBy || [];
-    const dislikedBy = article.dislikedBy || [];
+    // Remove user from both arrays first
+    await Article.updateOne(
+      { _id: articleId },
+      { $pull: { likedBy: userId, dislikedBy: userId } }
+    );
 
-    const userReact = likedBy.includes(userId)
-      ? 'like'
-      : dislikedBy.includes(userId)
-        ? 'dislike'
-        : null;
+    // Add to the correct array
+    const pushOp = action === 'like'
+      ? { $push: { likedBy: userId } }
+      : { $push: { dislikedBy: userId } };
 
-    res.json({ userReact });
+    await Article.updateOne({ _id: articleId }, pushOp);
+
+    // Get updated counts
+    const updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy');
+    const likes = updatedArticle?.likedBy?.length || 0;
+    const dislikes = updatedArticle?.dislikedBy?.length || 0;
+
+    updatedArticle.likes = likes;
+    updatedArticle.dislikes = dislikes;
+    await updatedArticle.save();
+
+    res.json({
+      userReact: action,
+      likes,
+      dislikes
+    });
+
+    await clearArticlesCache?.(); // Optional if you cache
   } catch (error) {
-    console.error('Error checking user reaction:', error);
-    res.status(500).json({ message: 'Error checking user reaction' });
+    console.error('Error in POST /:id/react:', error);
+    res.status(500).json({ message: 'Error reacting to article', error: error.message });
   }
 });
+
 // GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
