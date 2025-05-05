@@ -81,8 +81,9 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
     const articleId = req.params.id;
 
-    if (!validateObjectId(articleId))
+    if (!mongoose.Types.ObjectId.isValid(articleId)) {
         return res.status(400).json({ message: 'Invalid article ID' });
+    }
 
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
@@ -92,15 +93,18 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
         if (isSaved) {
             user.saved_articles.pull(articleObjectId);
         } else {
-            user.saved_articles.push(articleObjectId); // or use addToSet to prevent dupes
+            user.saved_articles.addToSet(articleObjectId);
         }
 
         await user.save();
 
-        res.json({ saved_articles: user.saved_articles });
+        res.json({
+            isSaved: !isSaved,
+            saved_articles: user.saved_articles,
+        });
     } catch (err) {
-        console.error('Error saving article:', err);
-        res.status(500).json({ message: 'Error saving article' });
+        console.error('Error saving/unsaving article:', err);
+        res.status(500).json({ message: 'Error saving/unsaving article' });
     }
 });
 

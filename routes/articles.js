@@ -68,9 +68,10 @@ articleRouter.get('/articles/:id', async (req, res) => {
 
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
-    const { action } = req.body; // expected: 'like' or 'dislike'
+    const { action } = req.body;
     const userId = req.mongoUser.supabase_id;
     const articleId = req.params.id;
+    const mongoUser = req.mongoUser;
 
     if (!mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ message: 'Invalid article ID' });
@@ -80,20 +81,43 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
-    // Remove user from both arrays first
+    // 1. Update article record
     await Article.updateOne(
       { _id: articleId },
       { $pull: { likedBy: userId, dislikedBy: userId } }
     );
 
-    // Add to the correct array
     const pushOp = action === 'like'
       ? { $push: { likedBy: userId } }
       : { $push: { dislikedBy: userId } };
 
     await Article.updateOne({ _id: articleId }, pushOp);
 
-    // Get updated counts
+    // 2. Update user record
+    const articleObjectId = new mongoose.Types.ObjectId(articleId);
+    await User.updateOne(
+      { _id: mongoUser._id },
+      {
+        $pull: {
+          liked_articles: articleObjectId,
+          disliked_articles: articleObjectId
+        }
+      }
+    );
+
+    if (action === 'like') {
+      await User.updateOne(
+        { _id: mongoUser._id },
+        { $addToSet: { liked_articles: articleObjectId } }
+      );
+    } else if (action === 'dislike') {
+      await User.updateOne(
+        { _id: mongoUser._id },
+        { $addToSet: { disliked_articles: articleObjectId } }
+      );
+    }
+
+    // 3. Return updated counts
     const updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy');
     const likes = updatedArticle?.likedBy?.length || 0;
     const dislikes = updatedArticle?.dislikedBy?.length || 0;
@@ -108,7 +132,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       dislikes
     });
 
-    await clearArticlesCache?.(); // Optional if you cache
+    await clearArticlesCache?.();
   } catch (error) {
     console.error('Error in POST /:id/react:', error);
     res.status(500).json({ message: 'Error reacting to article', error: error.message });
