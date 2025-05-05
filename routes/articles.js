@@ -66,70 +66,20 @@ articleRouter.get('/articles/:id', async (req, res) => {
 
 // POST: Like or dislike an article
 
-articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
-  try {
-    const { action } = req.body; // 'like' or 'dislike'
-    const userId = req.mongoUser?.supabase_id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorised - user not found' });
-
-    // Step 1: Remove user from both arrays
-    await Article.updateOne({ _id: req.params.id }, {
-      $pull: {
-        likedBy: userId,
-        dislikedBy: userId,
-      }
-    });
-
-    // Step 2: Push user to the correct array
-    let pushOp = {};
-    if (action === 'like') {
-      pushOp = { $push: { likedBy: userId } };
-    } else if (action === 'dislike') {
-      pushOp = { $push: { dislikedBy: userId } };
-    } else {
-      return res.status(400).json({ message: 'Invalid action' });
-    }
-
-    await Article.updateOne({ _id: req.params.id }, pushOp);
-
-    // Step 3: Update the like/dislike counts in DB
-    const updatedArticle = await Article.findById(req.params.id, 'likedBy dislikedBy');
-    const likes = updatedArticle.likedBy.length;
-    const dislikes = updatedArticle.dislikedBy.length;
-
-    updatedArticle.likes = likes;
-    updatedArticle.dislikes = dislikes;
-    await updatedArticle.save();
-
-    // Step 4: Respond
-    res.json({
-      likes,
-      dislikes,
-      userReact: action,
-    });
-
-    await clearArticlesCache();
-  } catch (error) {
-    console.error('Error in react route:', error);
-    res.status(500).json({ message: 'Error reacting to article', error: error.message });
-  }
-});
-
-// GET: Check if user has liked/disliked this article
 articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
     const userId = req.mongoUser.supabase_id;
 
-    const article = await Article.findById(
-      req.params.id,
-      'likedBy dislikedBy'
-    ).lean(); // Use lean for performance if no virtuals/hooks needed
+    const article = await Article.findById(req.params.id, 'likedBy dislikedBy').lean();
 
     if (!article) return res.status(404).json({ message: 'Article not found' });
 
-    const userReact = article.likedBy?.includes(userId)
+    const likedBy = article.likedBy || [];
+    const dislikedBy = article.dislikedBy || [];
+
+    const userReact = likedBy.includes(userId)
       ? 'like'
-      : article.dislikedBy?.includes(userId)
+      : dislikedBy.includes(userId)
         ? 'dislike'
         : null;
 
@@ -139,7 +89,47 @@ articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
     res.status(500).json({ message: 'Error checking user reaction' });
   }
 });
+// GET: Check if user has liked/disliked this article
+articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
+  try {
+    const userId = req.mongoUser.supabase_id;
+    const mongoUser = req.mongoUser;
+    const articleId = req.params.id;
 
+    // Validate article ID
+    if (!mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    const article = await Article.findById(articleId, 'likedBy dislikedBy').lean();
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    const likedBy = article.likedBy || [];
+    const dislikedBy = article.dislikedBy || [];
+
+    // Determine user's reaction
+    const userReact = likedBy.includes(userId)
+      ? 'like'
+      : dislikedBy.includes(userId)
+        ? 'dislike'
+        : null;
+
+    // Determine if the article is saved
+    const isSaved = mongoUser.saved_articles?.some(id =>
+      id.equals(new mongoose.Types.ObjectId(articleId))
+    );
+
+    res.json({
+      userReact,
+      likes: likedBy.length,
+      dislikes: dislikedBy.length,
+      isSaved,
+    });
+  } catch (error) {
+    console.error('Error in GET /articles/:id/react:', error);
+    res.status(500).json({ message: 'Error checking user reaction' });
+  }
+});
 
 // POST: Increment article view count
 articleRouter.post('/:id/view', async (req, res) => {
@@ -156,6 +146,9 @@ articleRouter.post('/:id/view', async (req, res) => {
     res.status(500).json({ message: 'Error updating view count', error: error.message });
   }
 });
+
+
+
 articleRouter.get('/feature', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
