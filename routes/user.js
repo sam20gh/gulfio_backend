@@ -185,7 +185,6 @@ router.put('/update', auth, ensureMongoUser, async (req, res) => {
 
 
 
-const FormData = require('form-data');
 
 router.post('/get-upload-url', auth, async (req, res) => {
     try {
