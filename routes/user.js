@@ -198,7 +198,7 @@ router.post('/get-upload-url', auth, async (req, res) => {
         res.json(response.data);
     } catch (err) {
         console.error('Cloudflare upload error:', err.response?.data || err.message);
-        res.status(500).json({ message: 'Failed to get upload URL' });
+        res.status(500).json({ message: 'Failed to get upload URL', cloudflareError: err.response?.data || err.message });
     }
 });
 
