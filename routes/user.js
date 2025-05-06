@@ -185,9 +185,12 @@ router.put('/update', auth, ensureMongoUser, async (req, res) => {
 
 
 
+const FormData = require('form-data');
+
 router.post('/get-upload-url', auth, async (req, res) => {
     try {
         const form = new FormData();
+        form.append('metadata', JSON.stringify({})); // 👈 fixes multipart stream
 
         const response = await axios.post(
             `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/images/v2/direct_upload`,
@@ -195,7 +198,7 @@ router.post('/get-upload-url', auth, async (req, res) => {
             {
                 headers: {
                     Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
-                    ...form.getHeaders(), // ✅ REQUIRED to avoid incomplete stream
+                    ...form.getHeaders(),
                 },
             }
         );
@@ -209,6 +212,7 @@ router.post('/get-upload-url', auth, async (req, res) => {
         });
     }
 });
+
 
 
 
