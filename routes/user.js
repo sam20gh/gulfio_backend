@@ -6,6 +6,10 @@ const Article = require('../models/Article');
 const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
+const axios = require('axios');
+const FormData = require('form-data')
+const form = new FormData()
+
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
@@ -179,28 +183,30 @@ router.put('/update', auth, ensureMongoUser, async (req, res) => {
     res.json({ message: 'Profile updated' });
 });
 
-const axios = require('axios');
-const FormData = require('form-data')
-const form = new FormData()
+
 
 router.post('/get-upload-url', auth, async (req, res) => {
-    console.log('CF_ACCOUNT_ID:', process.env.CF_ACCOUNT_ID);
-    console.log('CF_API_TOKEN exists:', !!process.env.CF_API_TOKEN);
     try {
+        const form = new FormData();
+
         const response = await axios.post(
             `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/images/v2/direct_upload`,
             form,
             {
                 headers: {
                     Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
-                    ...form.getHeaders(),
+                    ...form.getHeaders(), // ✅ REQUIRED to avoid incomplete stream
                 },
             }
-        )
+        );
+
         res.json(response.data);
     } catch (err) {
         console.error('Cloudflare upload error:', err.response?.data || err.message);
-        res.status(500).json({ message: 'Failed to get upload URL', cloudflareError: err.response?.data || err.message });
+        res.status(500).json({
+            message: 'Failed to get upload URL',
+            cloudflareError: err.response?.data || err.message,
+        });
     }
 });
 
