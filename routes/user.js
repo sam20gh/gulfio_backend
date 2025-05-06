@@ -182,6 +182,8 @@ router.put('/update', auth, ensureMongoUser, async (req, res) => {
 const axios = require('axios');
 
 router.post('/get-upload-url', auth, async (req, res) => {
+    console.log('CF_ACCOUNT_ID:', process.env.CF_ACCOUNT_ID);
+    console.log('CF_API_TOKEN exists:', !!process.env.CF_API_TOKEN);
     try {
         const response = await axios.post(
             `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/images/v2/direct_upload`,
@@ -191,10 +193,11 @@ router.post('/get-upload-url', auth, async (req, res) => {
                     Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
                 },
             }
+
         );
         res.json(response.data);
     } catch (err) {
-        console.error('Cloudflare upload error:', err.message);
+        console.error('Cloudflare upload error:', err.response?.data || err.message);
         res.status(500).json({ message: 'Failed to get upload URL' });
     }
 });
