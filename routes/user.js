@@ -164,15 +164,38 @@ router.get('/me', auth, ensureMongoUser, (req, res) => {
 })
 
 router.put('/update', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser
-    const { name, avatar_url } = req.body
+    const user = req.mongoUser;
+    const { name, gender, dob, avatar_url } = req.body;
 
-    if (name !== undefined) user.name = name
-    if (avatar_url !== undefined) user.avatar_url = avatar_url
+    if (name !== undefined) user.name = name;
+    if (gender !== undefined) user.gender = gender;
+    if (dob !== undefined) user.dob = new Date(dob);
+    if (avatar_url !== undefined) user.profile_image = avatar_url;
 
-    await user.save()
-    res.json({ message: 'Updated' })
-})
+    await user.save();
+    res.json({ message: 'Profile updated' });
+});
+
+const axios = require('axios');
+
+router.post('/get-upload-url', auth, async (req, res) => {
+    try {
+        const response = await axios.post(
+            `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/images/v2/direct_upload`,
+            {},
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
+                },
+            }
+        );
+        res.json(response.data);
+    } catch (err) {
+        console.error('Cloudflare upload error:', err.message);
+        res.status(500).json({ message: 'Failed to get upload URL' });
+    }
+});
+
 
 
 
