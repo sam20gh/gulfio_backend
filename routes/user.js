@@ -160,6 +160,9 @@ router.get('/me', auth, ensureMongoUser, (req, res) => {
         email: user.email,
         name: user.name,
         avatar_url: user.avatar_url,
+        profile_image: user.profile_image,
+        gender: user.gender,
+        dob: user.dob,
     })
 })
 
