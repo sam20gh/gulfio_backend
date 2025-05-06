@@ -172,12 +172,14 @@ router.get('/me', auth, ensureMongoUser, (req, res) => {
 
 router.put('/update', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
-    const { name, gender, dob, avatar_url } = req.body;
+    const { name, gender, dob, avatar_url, profile_image } = req.body;
+
+    if (profile_image !== undefined) user.profile_image = profile_image;
+    else if (avatar_url !== undefined) user.profile_image = avatar_url;
 
     if (name !== undefined) user.name = name;
     if (gender !== undefined) user.gender = gender;
     if (dob !== undefined) user.dob = new Date(dob);
-    if (avatar_url !== undefined) user.profile_image = avatar_url;
 
     await user.save();
     res.json({ message: 'Profile updated' });
