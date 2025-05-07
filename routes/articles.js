@@ -379,7 +379,7 @@ articleRouter.delete('/:id', auth, async (req, res) => {
 });
 
 // 🔍 GET /articles/related/:id
-router.get('/related/:id', async (req, res) => {
+articleRouter.get('/related/:id', async (req, res) => {
   try {
     const originalArticle = await Article.findById(req.params.id);
 
