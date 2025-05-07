@@ -387,20 +387,32 @@ articleRouter.get('/related/:id', async (req, res) => {
       return res.status(404).json({ message: 'Article not found' });
     }
 
-    // Fetch related articles by category, excluding the original one
-    let relatedArticles = await Article.find({
-      _id: { $ne: originalArticle._id },
-      category: originalArticle.category,
-    })
-      .sort({ publishedAt: -1 })
-      .limit(20); // Limit to 20 articles for more options
+    // ✅ Use MongoDB Aggregation to ensure uniqueness
+    const relatedArticles = await Article.aggregate([
+      {
+        $match: {
+          _id: { $ne: originalArticle._id },
+          category: originalArticle.category,
+        },
+      },
+      {
+        $group: {
+          _id: "$_id",
+          doc: { $first: "$$ROOT" }
+        }
+      },
+      {
+        $replaceRoot: { newRoot: "$doc" }
+      },
+      {
+        $sort: { publishedAt: -1 }
+      },
+      {
+        $limit: 20
+      }
+    ]);
 
-    // ✅ Deduplicate by `_id`
-    relatedArticles = Array.from(
-      new Map(relatedArticles.map((item) => [item._id.toString(), item])).values()
-    );
-
-    console.log('✅ Related Articles after deduplication:', relatedArticles.length);
+    console.log('✅ Related Articles after backend deduplication:', relatedArticles.length);
     res.json(relatedArticles);
 
   } catch (error) {
@@ -408,9 +420,5 @@ articleRouter.get('/related/:id', async (req, res) => {
     res.status(500).json({ message: 'Server Error' });
   }
 });
-
-
-
-
 
 module.exports = articleRouter;
