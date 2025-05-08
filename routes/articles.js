@@ -40,18 +40,25 @@ articleRouter.get('/', auth, async (req, res) => {
       .skip(skip)
       .limit(limit);
 
+    // Inject a unique fetchId to each article
+    const enhancedArticles = articles.map(article => ({
+      ...article.toObject(),
+      fetchId: new mongoose.Types.ObjectId().toString()
+    }));
+
     try {
-      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 300);
+      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300);
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
 
-    res.json(articles);
+    res.json(enhancedArticles);
   } catch (error) {
     console.error('❌ Error fetching articles:', error);
     res.status(500).json({ error: 'Error fetching articles', message: error.message });
   }
 });
+
 
 // routes/articles.js
 articleRouter.get('/articles/:id', async (req, res) => {
@@ -412,8 +419,14 @@ articleRouter.get('/related/:id', async (req, res) => {
       }
     ]);
 
-    console.log('✅ Related Articles after full deduplication:', relatedArticles.map(a => a._id));
-    res.json(relatedArticles);
+    // Inject a unique fetchId to each article
+    const enhancedRelatedArticles = relatedArticles.map(article => ({
+      ...article,
+      fetchId: new mongoose.Types.ObjectId().toString()
+    }));
+
+    console.log('✅ Related Articles after full deduplication:', enhancedRelatedArticles.map(a => a.fetchId));
+    res.json(enhancedRelatedArticles);
 
   } catch (error) {
     console.error('Error fetching related articles:', error.message);
