@@ -387,7 +387,7 @@ articleRouter.get('/related/:id', async (req, res) => {
       return res.status(404).json({ message: 'Article not found' });
     }
 
-    // ✅ Use MongoDB Aggregation to ensure uniqueness
+    // ✅ Use MongoDB Aggregation to remove duplicates
     const relatedArticles = await Article.aggregate([
       {
         $match: {
@@ -412,7 +412,7 @@ articleRouter.get('/related/:id', async (req, res) => {
       }
     ]);
 
-    console.log('✅ Related Articles after backend deduplication:', relatedArticles.length);
+    console.log('✅ Related Articles after full deduplication:', relatedArticles.map(a => a._id));
     res.json(relatedArticles);
 
   } catch (error) {
@@ -420,5 +420,6 @@ articleRouter.get('/related/:id', async (req, res) => {
     res.status(500).json({ message: 'Server Error' });
   }
 });
+
 
 module.exports = articleRouter;
