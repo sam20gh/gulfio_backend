@@ -61,26 +61,41 @@ router.delete('/:id', auth, async (req, res) => {
 
 // POST /comments/:id/react
 router.post('/:id/react', auth, async (req, res) => {
-    const { action, userId } = req.body;
-    if (!['like', 'dislike'].includes(action)) return res.status(400).json({ message: 'Invalid action' });
 
-    await Comment.updateOne({ _id: req.params.id }, {
-        $pull: { likedBy: userId, dislikedBy: userId }
-    });
+    const { action } = req.body;
+    const userId = req.user.id;    // ← pull the userId from auth middleware
+    const commentId = req.params.id; // ← make sure we actually use the URL param
 
-    if (action === 'like') {
-        await Comment.updateOne({ _id: req.params.id }, { $push: { likedBy: userId } });
-    } else {
-        await Comment.updateOne({ _id: req.params.id }, { $push: { dislikedBy: userId } });
+    try {
+
+        // 1) remove any existing reaction
+        await Comment.updateOne(
+            { _id: commentId },
+            { $pull: { likedBy: userId, dislikedBy: userId } }
+        );
+
+
+        if (action === 'like') {
+            await Comment.updateOne({ _id: commentId }, { $addToSet: { likedBy: userId } });
+        } else if (action === 'dislike') {
+            await Comment.updateOne({ _id: commentId }, { $addToSet: { dislikedBy: userId } });
+        }
+        +
+        // 3) re-fetch the document so we have authoritative counts & true userReact
+        const updated = await Comment.findById(commentId);
+        const likes = updated.likedBy.length;
+        const dislikes = updated.dislikedBy.length;
+        let userReact = null;
+        if (updated.likedBy.includes(userId)) userReact = 'like';
+        else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
+
+        res.json({ likes, dislikes, userReact });
+    } catch (err) {
+        console.error('POST /comments/:id/react error:', err);
+        res.status(500).json({ message: 'Failed to react to comment' });
     }
-
-    const updated = await Comment.findById(req.params.id);
-    res.json({
-        likes: updated.likedBy.length,
-        dislikes: updated.dislikedBy.length,
-        userReact: action,
-    });
 });
+
 // GET /comments/:id/react
 router.get('/:id/react', auth, async (req, res) => {
     try {
