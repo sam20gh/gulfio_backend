@@ -81,16 +81,17 @@ router.post('/:id/react', auth, async (req, res) => {
         userReact: action,
     });
 });
-// POST /comments/:id/reply — Add a reply to a comment
 router.post('/:id/reply', auth, async (req, res) => {
     try {
-        const { reply } = req.body;
-        const userId = req.mongoUser.supabase_id; // Get the userId
-        const username = req.mongoUser.email;
+        console.log("Incoming reply data:", req.body);
 
-        if (!reply) return res.status(400).json({ message: 'Reply text is required' });
+        const { reply, userId, username } = req.body;
 
-        // Update the comment with the reply
+        if (!reply || !userId || !username) {
+            console.error("Missing fields");
+            return res.status(400).json({ message: 'Reply, userId, and username are required' });
+        }
+
         const updatedComment = await Comment.findByIdAndUpdate(
             req.params.id,
             {
@@ -106,13 +107,17 @@ router.post('/:id/reply', auth, async (req, res) => {
             { new: true }
         );
 
+        if (!updatedComment) {
+            console.error("Comment not found");
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+
         res.json(updatedComment);
     } catch (error) {
         console.error('POST /comments/:id/reply error:', error.message);
         res.status(500).json({ message: 'Failed to add reply' });
     }
 });
-
 
 
 module.exports = router;
