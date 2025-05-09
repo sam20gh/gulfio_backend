@@ -61,11 +61,16 @@ router.delete('/:id', auth, async (req, res) => {
 
 
 // POST /comments/:id/react
-// in comments.js
+// This endpoint allows users to react to a comment (like/dislike)
+// It expects a JSON body with the action (like/dislike)
+// and the userId (extracted from the JWT token)
+// The userId is used to identify the user who is reacting
+// The commentId is extracted from the URL parameter
+// The reaction is stored in the comment document
 
 router.post('/:id/react', auth, async (req, res) => {
     const { action } = req.body;
-    const userId = req.user.id;
+    const userId = req.user.sub;        // ← derive from auth middleware (JWT “sub”)
     const commentId = req.params.id;
 
     try {
@@ -88,7 +93,7 @@ router.post('/:id/react', auth, async (req, res) => {
             );
         }
 
-        // 3) re-fetch updated document
+        // 3) re-fetch authoritative counts & userReact
         const updated = await Comment.findById(commentId);
         const likes = updated.likedBy.length;
         const dislikes = updated.dislikedBy.length;
@@ -96,15 +101,15 @@ router.post('/:id/react', auth, async (req, res) => {
         if (updated.likedBy.includes(userId)) userReact = 'like';
         else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
 
-        // send authoritative counts + userReact
+
         return res.json({ likes, dislikes, userReact });
 
     } catch (err) {
         console.error('POST /comments/:id/react error:', err);
+
         return res.status(500).json({ message: 'Failed to react to comment' });
     }
 });
-
 
 // GET /comments/:id/react
 router.get('/:id/react', auth, async (req, res) => {
