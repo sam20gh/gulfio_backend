@@ -59,29 +59,36 @@ router.delete('/:id', auth, async (req, res) => {
     res.json({ message: 'Comment deleted' });
 });
 
-// POST /comments/:id/react
-router.post('/:id/react', auth, async (req, res) => {
 
+// POST /comments/:id/react
+// in comments.js
+
+router.post('/:id/react', auth, async (req, res) => {
     const { action } = req.body;
-    const userId = req.user.id;    // ← pull the userId from auth middleware
-    const commentId = req.params.id; // ← make sure we actually use the URL param
+    const userId = req.user.id;          // from your auth middleware
+    const commentId = req.params.id;        // the URL param
 
     try {
-
         // 1) remove any existing reaction
         await Comment.updateOne(
             { _id: commentId },
             { $pull: { likedBy: userId, dislikedBy: userId } }
         );
 
-
+        // 2) add the new reaction if any
         if (action === 'like') {
-            await Comment.updateOne({ _id: commentId }, { $addToSet: { likedBy: userId } });
+            await Comment.updateOne(
+                { _id: commentId },
+                { $addToSet: { likedBy: userId } }
+            );
         } else if (action === 'dislike') {
-            await Comment.updateOne({ _id: commentId }, { $addToSet: { dislikedBy: userId } });
+            await Comment.updateOne(
+                { _id: commentId },
+                { $addToSet: { dislikedBy: userId } }
+            );
         }
 
-
+        // 3) re-fetch updated document
         const updated = await Comment.findById(commentId);
         const likes = updated.likedBy.length;
         const dislikes = updated.dislikedBy.length;
@@ -89,12 +96,15 @@ router.post('/:id/react', auth, async (req, res) => {
         if (updated.likedBy.includes(userId)) userReact = 'like';
         else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
 
-        res.json({ likes, dislikes, userReact });
+        // send authoritative counts + userReact
+        return res.json({ likes, dislikes, userReact });
+
     } catch (err) {
         console.error('POST /comments/:id/react error:', err);
-        res.status(500).json({ message: 'Failed to react to comment' });
+        return res.status(500).json({ message: 'Failed to react to comment' });
     }
 });
+
 
 // GET /comments/:id/react
 router.get('/:id/react', auth, async (req, res) => {
