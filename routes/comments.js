@@ -111,43 +111,40 @@ router.get('/:id/react', auth, async (req, res) => {
     }
 });
 
-router.post('/:id/reply', auth, async (req, res) => {
+
+
+
+router.post('/:id/react', auth, async (req, res) => {
+    const { action } = req.body;
+    const userId = req.user.id;    // ← pull the userId from auth middleware
+
     try {
-        console.log("Incoming reply data:", req.body);
 
-        const { reply, userId, username } = req.body;
+        await Comment.updateOne(
+            { _id: commentId },
+            { $pull: { likedBy: userId, dislikedBy: userId } }
 
-        if (!reply || !userId || !username) {
-            console.error("Missing fields");
-            return res.status(400).json({ message: 'Reply, userId, and username are required' });
-        }
-
-        const updatedComment = await Comment.findByIdAndUpdate(
-            req.params.id,
-            {
-                $push: {
-                    replies: {
-                        userId,
-                        username,
-                        reply,
-                        createdAt: new Date(),
-                    },
-                },
-            },
-            { new: true }
         );
 
-        if (!updatedComment) {
-            console.error("Comment not found");
-            return res.status(404).json({ message: 'Comment not found' });
+
+        if (action === 'like') {
+            await Comment.updateOne({ _id: commentId }, { $addToSet: { likedBy: userId } });
+        } else {
+            await Comment.updateOne({ _id: commentId }, { $addToSet: { dislikedBy: userId } });
         }
 
-        res.json(updatedComment);
-    } catch (error) {
-        console.error('POST /comments/:id/reply error:', error.message);
-        res.status(500).json({ message: 'Failed to add reply' });
+
+        const updated = await Comment.findById(commentId);
+        const likes = updated.likedBy.length;
+        const dislikes = updated.dislikedBy.length;
+
+
+
+        res.json({ likes, dislikes, userReact });
+    } catch (err) {
+        console.error('POST /comments/:id/react error:', err);
+        res.status(500).json({ message: 'Failed to react to comment' });
     }
-});
 
 
-module.exports = router;
+    module.exports = router;
