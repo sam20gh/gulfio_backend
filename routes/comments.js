@@ -80,8 +80,8 @@ router.post('/:id/react', auth, async (req, res) => {
         } else if (action === 'dislike') {
             await Comment.updateOne({ _id: commentId }, { $addToSet: { dislikedBy: userId } });
         }
-        +
-        // 3) re-fetch the document so we have authoritative counts & true userReact
+
+
         const updated = await Comment.findById(commentId);
         const likes = updated.likedBy.length;
         const dislikes = updated.dislikedBy.length;
