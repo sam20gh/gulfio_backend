@@ -81,15 +81,16 @@ router.post('/:id/react', auth, async (req, res) => {
         userReact: action,
     });
 });
-// PATCH /comments/:id/reply — Add a reply to a comment
-router.patch('/:id/reply', auth, async (req, res) => {
+// POST /comments/:id/reply — Add a reply to a comment
+router.post('/:id/reply', auth, async (req, res) => {
     try {
         const { reply } = req.body;
-        const userId = req.mongoUser.supabase_id;  // Or pass it from the front end
-        const username = req.mongoUser.email;  // Assuming email is the username
+        const userId = req.mongoUser.supabase_id; // Get the userId
+        const username = req.mongoUser.email;
 
         if (!reply) return res.status(400).json({ message: 'Reply text is required' });
 
+        // Update the comment with the reply
         const updatedComment = await Comment.findByIdAndUpdate(
             req.params.id,
             {
@@ -107,10 +108,11 @@ router.patch('/:id/reply', auth, async (req, res) => {
 
         res.json(updatedComment);
     } catch (error) {
-        console.error('PATCH /comments/:id/reply error:', error);
+        console.error('POST /comments/:id/reply error:', error.message);
         res.status(500).json({ message: 'Failed to add reply' });
     }
 });
+
 
 
 module.exports = router;
