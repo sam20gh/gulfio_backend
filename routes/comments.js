@@ -85,7 +85,7 @@ router.post('/:id/react', auth, async (req, res) => {
 router.get('/:id/react', auth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { userId } = req.user;  // Assuming you have the user in req.user from the auth middleware
+        const userId = req.user.id;
 
         const comment = await Comment.findById(id);
         if (!comment) {
