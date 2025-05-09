@@ -65,8 +65,8 @@ router.delete('/:id', auth, async (req, res) => {
 
 router.post('/:id/react', auth, async (req, res) => {
     const { action } = req.body;
-    const userId = req.user.id;          // from your auth middleware
-    const commentId = req.params.id;        // the URL param
+    const userId = req.user.id;
+    const commentId = req.params.id;
 
     try {
         // 1) remove any existing reaction
@@ -133,42 +133,6 @@ router.get('/:id/react', auth, async (req, res) => {
     } catch (error) {
         console.error('GET /comments/:id/react error:', error.message);
         res.status(500).json({ message: 'Failed to fetch reactions' });
-    }
-});
-
-
-
-
-router.post('/:id/react', auth, async (req, res) => {
-    const { action } = req.body;
-    const userId = req.user.id;    // ← pull the userId from auth middleware
-
-    try {
-
-        await Comment.updateOne(
-            { _id: commentId },
-            { $pull: { likedBy: userId, dislikedBy: userId } }
-
-        );
-
-
-        if (action === 'like') {
-            await Comment.updateOne({ _id: commentId }, { $addToSet: { likedBy: userId } });
-        } else {
-            await Comment.updateOne({ _id: commentId }, { $addToSet: { dislikedBy: userId } });
-        }
-
-
-        const updated = await Comment.findById(commentId);
-        const likes = updated.likedBy.length;
-        const dislikes = updated.dislikedBy.length;
-
-
-
-        res.json({ likes, dislikes, userReact });
-    } catch (err) {
-        console.error('POST /comments/:id/react error:', err);
-        res.status(500).json({ message: 'Failed to react to comment' });
     }
 });
 
