@@ -81,6 +81,36 @@ router.post('/:id/react', auth, async (req, res) => {
         userReact: action,
     });
 });
+// GET /comments/:id/react
+router.get('/:id/react', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { userId } = req.user;  // Assuming you have the user in req.user from the auth middleware
+
+        const comment = await Comment.findById(id);
+        if (!comment) {
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+
+        // Determine user reaction
+        let userReact = null;
+        if (comment.likedBy.includes(userId)) {
+            userReact = 'like';
+        } else if (comment.dislikedBy.includes(userId)) {
+            userReact = 'dislike';
+        }
+
+        res.json({
+            likes: comment.likedBy.length,
+            dislikes: comment.dislikedBy.length,
+            userReact,
+        });
+    } catch (error) {
+        console.error('GET /comments/:id/react error:', error.message);
+        res.status(500).json({ message: 'Failed to fetch reactions' });
+    }
+});
+
 router.post('/:id/reply', auth, async (req, res) => {
     try {
         console.log("Incoming reply data:", req.body);
