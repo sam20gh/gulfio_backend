@@ -1,28 +1,22 @@
 const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
 
-const commentSchema = new mongoose.Schema({
-    articleId: {
-        type: String, // store as string since you're comparing string IDs in routes
-        required: true,
-    },
-    userId: {
-        type: String, // Supabase user ID
-        required: true,
-    },
-    username: {
-        type: String,
-        required: true,
-    },
-    comment: {
-        type: String,
-        required: true,
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now,
-    },
-    likedBy: [String],
-    dislikedBy: [String],
+const ReplySchema = new Schema({
+    userId: String,
+    username: String,
+    reply: String,
+    createdAt: { type: Date, default: Date.now },
 });
 
-module.exports = mongoose.model('Comment', commentSchema);
+const CommentSchema = new Schema({
+    articleId: String,
+    userId: String,
+    username: String,
+    comment: String,
+    likedBy: [String],
+    dislikedBy: [String],
+    replies: [ReplySchema],  // <-- Added this
+    createdAt: { type: Date, default: Date.now },
+});
+
+module.exports = mongoose.model('Comment', CommentSchema);
