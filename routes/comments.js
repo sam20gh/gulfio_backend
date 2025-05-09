@@ -61,16 +61,13 @@ router.delete('/:id', auth, async (req, res) => {
 
 // POST /comments/:id/react
 router.post('/:id/react', auth, async (req, res) => {
-    const { action } = req.body; // 'like' or 'dislike'
-    const userId = req.mongoUser?.supabase_id;
+    const { action, userId } = req.body;
     if (!['like', 'dislike'].includes(action)) return res.status(400).json({ message: 'Invalid action' });
 
-    // Pull from both arrays first
     await Comment.updateOne({ _id: req.params.id }, {
         $pull: { likedBy: userId, dislikedBy: userId }
     });
 
-    // Push to correct one
     if (action === 'like') {
         await Comment.updateOne({ _id: req.params.id }, { $push: { likedBy: userId } });
     } else {
@@ -84,5 +81,6 @@ router.post('/:id/react', auth, async (req, res) => {
         userReact: action,
     });
 });
+
 
 module.exports = router;
