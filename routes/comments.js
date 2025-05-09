@@ -140,5 +140,69 @@ router.get('/:id/react', auth, async (req, res) => {
         res.status(500).json({ message: 'Failed to fetch reactions' });
     }
 });
+// in comments.js, just after your react routes
+
+// 1) Add a reply
+// POST /comments/:id/reply
+router.post('/:id/reply', auth, async (req, res) => {
+    const commentId = req.params.id;
+    const { reply } = req.body;
+    if (!reply || !reply.trim()) {
+        return res.status(400).json({ message: 'Reply text is required' });
+    }
+
+    // Pull reactor’s ID & name from the JWT
+    const userId = req.user.sub;
+    const username = req.user.email;    // or pull from your User collection as you did for comments
+
+    try {
+        const updated = await Comment.findByIdAndUpdate(
+            commentId,
+            {
+                $push: {
+                    replies: { userId, username, reply, createdAt: new Date() }
+                }
+            },
+            { new: true }
+        );
+
+        if (!updated) return res.status(404).json({ message: 'Comment not found' });
+        return res.json(updated);
+    } catch (err) {
+        console.error('POST /comments/:id/reply error:', err);
+        return res.status(500).json({ message: 'Failed to add reply' });
+    }
+});
+
+// 2) Delete your own reply
+// DELETE /comments/:commentId/reply/:replyId
+router.delete('/:commentId/reply/:replyId', auth, async (req, res) => {
+    const { commentId, replyId } = req.params;
+    const userId = req.user.sub;
+
+    try {
+        // only pull out the reply subdoc if it belongs to you
+        const updated = await Comment.findOneAndUpdate(
+            {
+                _id: commentId,
+                'replies._id': replyId,
+                'replies.userId': userId
+            },
+            {
+                $pull: { replies: { _id: replyId } }
+            },
+            { new: true }
+        );
+
+        if (!updated) {
+            return res.status(404).json({ message: 'Reply not found or not yours' });
+        }
+        return res.json(updated);
+    } catch (err) {
+        console.error('DELETE /comments/:commentId/reply/:replyId error:', err);
+        return res.status(500).json({ message: 'Failed to delete reply' });
+    }
+});
+
 
 module.exports = router;
