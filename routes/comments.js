@@ -145,6 +145,6 @@ router.post('/:id/react', auth, async (req, res) => {
         console.error('POST /comments/:id/react error:', err);
         res.status(500).json({ message: 'Failed to react to comment' });
     }
+});
 
-
-    module.exports = router;
+module.exports = router;
