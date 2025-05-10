@@ -203,6 +203,33 @@ router.delete('/:commentId/reply/:replyId', auth, async (req, res) => {
         return res.status(500).json({ message: 'Failed to delete reply' });
     }
 });
+router.get('/:id/comments', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).send({ message: 'User not found' });
+
+        // fetch last 20 comments, populate article title
+        const comments = await Comment
+            .find({ author: user._id })
+            .sort({ createdAt: -1 })
+            .limit(20)
+            .populate('article', 'title');
+
+        // map into a lightweight shape
+        const out = comments.map(c => ({
+            _id: c._id,
+            text: c.text,
+            articleId: c.article._id,
+            articleTitle: c.article.title,
+            createdAt: c.createdAt
+        }));
+
+        res.json(out);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: 'Server error' });
+    }
+});
 
 
 module.exports = router;
