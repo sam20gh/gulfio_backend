@@ -135,7 +135,7 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 });
 
 // Follow/Block Another User (Requires auth and ensureMongoUser)
-router.post('/user/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
+router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser; // Use ensureMongoUser result
     const { targetSupabaseId } = req.params; // Assuming targetId is supabase_id
     const { action } = req.body; // 'follow' or 'block'
