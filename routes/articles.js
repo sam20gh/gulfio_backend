@@ -7,6 +7,7 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 const redis = require('../utils/redis');
+const { clearArticlesCache } = require('../utils/cache');
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -350,6 +351,7 @@ articleRouter.post('/', auth, async (req, res) => {
       image,
     });
     const savedArticle = await newArticle.save();
+    await clearArticlesCache();
     res.status(201).json(savedArticle);
   } catch (error) {
     res.status(400).json({ message: 'Error creating article', error: error.message });
@@ -367,6 +369,7 @@ articleRouter.put('/:id', auth, async (req, res) => {
     if (!updatedArticle) {
       return res.status(404).json({ message: 'Article not found' });
     }
+    await clearArticlesCache();
     res.json(updatedArticle);
   } catch (error) {
     res.status(400).json({ message: 'Error updating article', error: error.message });
