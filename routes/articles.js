@@ -335,7 +335,9 @@ articleRouter.get('/:id', async (req, res) => {
 articleRouter.post('/', auth, async (req, res) => {
   try {
     const { title, content, url, sourceId, category, publishedAt, image } = req.body;
-    if (!title || !content || !url || !sourceId || !category || !image) {
+    let imgs = req.body.image || [];
+    +   if (typeof imgs === 'string') imgs = [imgs];
+    if (!title || !content || !url || !sourceId || !category) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
     const newArticle = new Article({

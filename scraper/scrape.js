@@ -1,4 +1,3 @@
-// scrape.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
@@ -8,7 +7,7 @@ const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 
 async function fetchWithPuppeteer(url) {
-    const browser = await puppeteer.launch({ headless: 'new' });
+    const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
@@ -69,25 +68,50 @@ async function scrapeAllSources(frequency = null) {
                     const exists = await Article.findOne({ url: link });
                     if (exists) continue;
 
-                    const scrapedHtml = source.name.toLowerCase().includes('gulfi news')
+                    const pageHtml = source.name.toLowerCase().includes('gulfi news')
                         ? (await fetchWithPuppeteer(link)).html
                         : (await axios.get(link)).data;
-                    const $$ = cheerio.load(scrapedHtml);
+                    const $$ = cheerio.load(pageHtml);
+
+                    // Extract title and content
                     const title = $$(source.titleSelector || '.ORiM7').first().text().trim();
                     const content = $$(source.contentSelector || '.story-element.story-element-text p')
                         .map((_, p) => $$(p).text().trim())
                         .get()
                         .join('\n\n');
 
+                    // Extract images
+                    let images = $$(source.imageSelector || 'img')
+                        .map((_, img) => $$(img).attr('src'))
+                        .get()
+                        .filter(Boolean)
+                        .map(src => {
+                            if (src.startsWith('//')) return 'https:' + src;
+                            if (src.startsWith('/')) return `${source.baseUrl.replace(/\/$/, '')}${src}`;
+                            return src;
+                        });
+
+                    // Fallback to Open Graph / Twitter meta
+                    if (images.length === 0) {
+                        const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
+                        if (og) {
+                            images.push(og.startsWith('//') ? 'https:' + og : og);
+                        }
+                    }
+
+                    // Save article if valid
                     if (title && content) {
-                        await new Article({
+                        const newArticle = new Article({
                             title,
                             content,
                             url: link,
                             sourceId: source._id,
                             category: source.category,
                             publishedAt: new Date(),
-                        }).save();
+                        });
+
+                        if (images.length > 0) newArticle.image = images;
+                        await newArticle.save();
 
                         totalNew++;
                         if (!sampleLink) sampleLink = link;
@@ -113,7 +137,7 @@ async function scrapeAllSources(frequency = null) {
                 `📰 ${totalNew} New Articles`,
                 `Tap to view the latest article`,
                 tokens,
-                { link: `gulfio://article/${articleId}` },
+                { link: `gulfio://article/${sampleLink}` },
                 [
                     { actionId: 'view', buttonTitle: 'View Latest' },
                     { actionId: 'dismiss', buttonTitle: 'Dismiss' }

@@ -7,7 +7,10 @@ const ArticleSchema = new mongoose.Schema({
     sourceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Source' },
     category: String,
     publishedAt: Date,
-    image: [String],
+    image: {
+        type: [String],
+        default: []
+    },
     viewCount: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
     dislikes: { type: Number, default: 0 },
