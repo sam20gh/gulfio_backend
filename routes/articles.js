@@ -7,7 +7,6 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 const redis = require('../utils/redis');
-const { clearArticlesCache } = require('../utils/cache');
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
