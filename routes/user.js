@@ -14,13 +14,14 @@ const form = new FormData()
 router.post('/check-or-create', auth, async (req, res) => {
     try {
         const supabase_id = req.user.sub;
-        const { email, name, picture } = req.user;
+        const { name, picture } = req.user;
+        const rawEmail = req.user.email || `${req.user.sub}@phone.user`;
 
         let user = await User.findOne({ supabase_id });
         if (!user) {
             user = await User.create({
                 supabase_id,
-                email,
+                email: rawEmail,
                 name,
                 avatar_url: picture
             });
