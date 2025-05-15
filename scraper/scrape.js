@@ -36,7 +36,7 @@ async function scrapeAllSources(frequency = null) {
     if (frequency) sources = sources.filter(s => s.frequency === frequency);
 
     let totalNew = 0;
-    let sampleLink = '';
+    let sampleArticle = null;
 
     for (const source of sources) {
         try {
@@ -114,7 +114,9 @@ async function scrapeAllSources(frequency = null) {
                         await newArticle.save();
 
                         totalNew++;
-                        if (!sampleLink) sampleLink = link;
+                        if (!sampleArticle) {
+                            sampleArticle = newArticle;
+                        }
                     }
                 } catch (err) {
                     console.error(`Error on article ${link}:`, err.message);
@@ -128,25 +130,34 @@ async function scrapeAllSources(frequency = null) {
         }
     }
 
-    if (totalNew > 0) {
-        try {
-            const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-            const tokens = users.map(u => u.pushToken);
+    if (totalNew > 0 && sampleArticle) {
+        const users = await User.find({ pushToken: { $exists: true, $ne: null } });
+        const tokens = users.map(u => u.pushToken);
 
-            await sendExpoNotification(
-                `📰 ${totalNew} New Articles`,
-                `Tap to view the latest article`,
-                tokens,
-                { link: `gulfio://article/${sampleLink}` },
-                [
-                    { actionId: 'view', buttonTitle: 'View Latest' },
-                    { actionId: 'dismiss', buttonTitle: 'Dismiss' }
-                ]
-            );
-            console.log(`Summary notification sent for ${totalNew} new articles.`);
-        } catch (err) {
-            console.error('Summary notification error:', err);
-        }
+        // Truncate to, say, 140 chars so your notification body isn’t gigantic
+        const snippet = sampleArticle.content.length > 140
+            ? sampleArticle.content.slice(0, 140).trim() + '…'
+            : sampleArticle.content;
+
+        await sendExpoNotification(
+            // Use the article’s title as the push title
+            sampleArticle.title,
+            // Use your snippet as the push body
+            snippet,
+            tokens,
+            {
+                // Deep-link into your app
+                link: `gulfio://article/${sampleArticle._id}`,
+                // Pass the image URL so Expo can render it
+                imageUrl: sampleArticle.image && sampleArticle.image[0]
+            },
+            [
+                { actionId: 'view', buttonTitle: 'Read Article' },
+                { actionId: 'dismiss', buttonTitle: 'Dismiss' }
+            ]
+        );
+
+        console.log(`Summary notification sent for ${totalNew} new articles.`);
     }
 }
 
