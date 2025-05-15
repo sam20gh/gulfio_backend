@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const sendExpoNotification = require('../utils/sendExpoNotification');
 const auth = require('../middleware/auth'); // Keep auth for other routes
 const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
 const mongoose = require('mongoose');
-const ensureMongoUser = require('../middleware/ensureMongoUser'); // Keep ensureMongoUser for other routes
+const ensureMongoUser = require('../middleware/ensureMongoUser');
+// Keep ensureMongoUser for other routes
 
 function validateObjectId(id) {
     return mongoose.Types.ObjectId.isValid(id);
@@ -179,6 +181,18 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
     } catch (err) {
         console.error('Error updating relationship:', err); // Log the error
         res.status(500).json({ message: 'Error updating relationship' });
+    }
+    if (action === 'follow' && !wasFollowing && targetUser.pushToken) {
+        await sendExpoNotification(
+            // Push title
+            `${user.name} started following you!`,
+            // Push body
+            `Tap to view their profile.`,
+            // Recipients
+            [targetUser.pushToken],
+            // Deep-link into your app
+            { link: `gulfio://user/${user.supabase_id}` }
+        );
     }
 });
 // Follow/Unfollow Source Group

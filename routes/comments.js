@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+import sendExpoNotification from '../utils/sendExpoNotification';
 const mongoose = require('mongoose');
 const Comment = require('../models/Comment'); // You'll need to create this model
 const auth = require('../middleware/auth');
@@ -151,27 +152,57 @@ router.post('/:id/reply', auth, async (req, res) => {
         return res.status(400).json({ message: 'Reply text is required' });
     }
 
-    // Pull reactor’s ID & name from the JWT
-    const userId = req.user.sub;
-    const username = req.user.email;    // or pull from your User collection as you did for comments
-
+    // Fetch the parent comment to get the original author
+    let parentComment;
     try {
-        const updated = await Comment.findByIdAndUpdate(
+        parentComment = await Comment.findById(commentId);
+        if (!parentComment) {
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+    } catch (err) {
+        console.error('Error fetching parent comment:', err);
+        return res.status(500).json({ message: 'Failed to fetch comment' });
+    }
+
+    // Build reply entry
+    const userId = req.user.sub;
+    const username = req.user.email;
+    const newReply = { userId, username, reply, createdAt: new Date() };
+
+    // Save the reply
+    let updatedComment;
+    try {
+        updatedComment = await Comment.findByIdAndUpdate(
             commentId,
-            {
-                $push: {
-                    replies: { userId, username, reply, createdAt: new Date() }
-                }
-            },
+            { $push: { replies: newReply } },
             { new: true }
         );
-
-        if (!updated) return res.status(404).json({ message: 'Comment not found' });
-        return res.json(updated);
     } catch (err) {
-        console.error('POST /comments/:id/reply error:', err);
+        console.error('Error saving reply:', err);
         return res.status(500).json({ message: 'Failed to add reply' });
     }
+
+    // Send notification to the original commenter
+    try {
+        const originalAuthor = await User.findById(parentComment.author);
+        if (originalAuthor && originalAuthor.pushToken) {
+            // Truncate reply for notification
+            const snippet = newReply.reply.length > 100
+                ? `${newReply.reply.slice(0, 100).trim()}…`
+                : newReply.reply;
+            await sendExpoNotification(
+                `${username} replied to your comment`,
+                snippet,
+                [originalAuthor.pushToken],
+                { link: `gulfio://article/${parentComment.article}?comment=${commentId}` }
+            );
+        }
+    } catch (err) {
+        console.error('Error sending notification:', err);
+        // Don't block response on notification failure
+    }
+
+    return res.status(201).json(updatedComment);
 });
 
 // 2) Delete your own reply
