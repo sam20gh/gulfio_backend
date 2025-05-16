@@ -438,5 +438,51 @@ articleRouter.get('/related/:id', async (req, res) => {
   }
 });
 
+articleRouter.delete('/cleanup', auth, async (req, res) => {
+  try {
+    // 1. DELETE articles with no images or empty image array
+    const emptyImageFilter = {
+      $or: [
+        { image: { $exists: false } },
+        { image: { $size: 0 } }
+      ]
+    };
+    const { deletedCount: deletedEmpty } = await Article.deleteMany(emptyImageFilter);
+    console.log(`🗑️  Deleted ${deletedEmpty} articles with empty/missing images`);
+
+    // 2. FIND duplicate titles
+    const dupes = await Article.aggregate([
+      {
+        $group: {
+          _id: '$title',
+          count: { $sum: 1 },
+          ids: { $push: '$_id' }
+        }
+      },
+      { $match: { count: { $gt: 1 } } }
+    ]);
+
+    let totalDupeDeleted = 0;
+    for (const { _id: title, ids } of dupes) {
+      // keep the first one, delete the rest
+      const [keepId, ...toDelete] = ids;
+      const { deletedCount } = await Article.deleteMany({ _id: { $in: toDelete } });
+      totalDupeDeleted += deletedCount;
+      console.log(`🗑️  "${title}" — kept ${keepId.toString()}, deleted ${deletedCount} duplicates`);
+    }
+    console.log(`🗑️  Total duplicate-article deletions: ${totalDupeDeleted}`);
+
+    // 3. CLEAR CACHE (if you need)
+    if (typeof clearArticlesCache === 'function') {
+      await clearArticlesCache();
+      console.log('♻️  Articles cache cleared');
+    }
+
+    res.json({ message: 'Cleanup complete', deletedEmpty, deletedDuplicates: totalDupeDeleted });
+  } catch (err) {
+    res.status(500).json({ message: 'Cleanup failed', error: err.message });
+  }
+});
+
 
 module.exports = articleRouter;
