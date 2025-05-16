@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-import sendExpoNotification from '../utils/sendExpoNotification';
 const mongoose = require('mongoose');
 const Comment = require('../models/Comment'); // You'll need to create this model
 const auth = require('../middleware/auth');
