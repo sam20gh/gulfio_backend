@@ -15,5 +15,8 @@
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3",
     "puppeteer": "^24.6.0"
+  },
+  "scripts": {
+    "cleanup-articles": "node scripts/cleanupArticles.js"
   }
 }
