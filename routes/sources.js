@@ -3,6 +3,7 @@ const router = express.Router();
 const Source = require('../models/Source');
 const Reel = require('../models/Reel');
 
+const { scrapeReelsForSource } = require('../scrape/instagramReels');
 // Avoid redeclaring 'auth' if already declared elsewhere
 let auth;
 try {
