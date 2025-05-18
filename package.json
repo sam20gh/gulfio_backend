@@ -14,7 +14,8 @@
     "mongoose": "^8.13.1",
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3",
-    "puppeteer": "^24.6.0"
+    "puppeteer": "^24.6.0",
+    "ytdl-core": "^4.11.5"
   },
   "scripts": {
     "cleanup-articles": "node scripts/cleanupArticles.js"
