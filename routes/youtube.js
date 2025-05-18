@@ -5,10 +5,12 @@ const router = express.Router();
 
 router.get('/stream/:videoId', async (req, res) => {
     const { videoId } = req.params;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     try {
-        if (!ytdl.validateID(videoId)) {
-            return res.status(400).json({ error: 'Invalid Video ID' });
+        if (!ytdl.validateURL(videoUrl)) {
+            console.error(`❌ Invalid Video URL: ${videoUrl}`);
+            return res.status(400).json({ error: 'Invalid Video ID or URL' });
         }
 
         console.log(`🎥 Streaming YouTube video for ${videoId}`);
@@ -17,9 +19,9 @@ router.get('/stream/:videoId', async (req, res) => {
         res.setHeader('Content-Disposition', `inline; filename="${videoId}.mp4"`);
         res.setHeader('Content-Type', 'video/mp4');
 
-        // Stream the video
-        const stream = ytdl(videoId, {
-            quality: 'highest',
+        // Stream the video - try lower quality for compatibility
+        const stream = ytdl(videoUrl, {
+            quality: 'lowest',
             filter: (format) => format.container === 'mp4',
         });
 
