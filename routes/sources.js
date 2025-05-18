@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Source = require('../models/Source');
+const Reel = require('../models/Reel');
 
 // Avoid redeclaring 'auth' if already declared elsewhere
 let auth;
@@ -44,5 +45,21 @@ router.delete('/:id', auth, async (req, res) => {
     }
 });
 
+router.get('/:id/instagram/reels', async (req, res) => {
+    try {
+        const source = await Source.findById(req.params.id);
+        if (!source || !source.instagramUsername) {
+            return res.status(404).json({ error: 'No Instagram account configured' });
+        }
+        const reels = await scrapeReelsForSource(
+            source._id,
+            source.instagramUsername
+        );
+        res.json(reels);
+    } catch (err) {
+        console.error(err);
+        res.status(502).json({ error: err.message });
+    }
+});
 
 module.exports = router;

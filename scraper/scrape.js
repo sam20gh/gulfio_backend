@@ -5,6 +5,7 @@ const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
+const { scrapeReelsForSource } = require('./instagramReels');
 
 async function fetchWithPuppeteer(url) {
     const browser = await puppeteer.launch({ headless: true });
@@ -128,6 +129,14 @@ async function scrapeAllSources(frequency = null) {
         } catch (err) {
             console.error(`Failed to scrape ${source.url}:`, err.message);
         }
+    }
+    if (source.instagramUsername) {
+        console.log(`Scraping Reels for ${source.instagramUsername}`);
+        const reels = await scrapeReelsForSource(
+            source._id,
+            source.instagramUsername
+        );
+        console.log(`  • ${reels.length} reels upserted`);
     }
 
     if (totalNew > 0 && sampleArticle) {
