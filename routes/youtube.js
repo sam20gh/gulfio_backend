@@ -31,7 +31,7 @@ router.get('/stream/:videoId', async (req, res) => {
         await browser.close();
 
         if (!videoSrc) {
-            console.error('❌ Could not extract video source');
+            console.error('❌ Could not extract video sources');
             return res.status(404).json({ error: 'Video stream not available' });
         }
 
