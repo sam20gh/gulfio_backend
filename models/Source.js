@@ -15,7 +15,8 @@ const SourceSchema = new mongoose.Schema({
     icon: String,
     lastScraped: Date,
     followers: { type: Number, default: 0 },
-    instagramUsername: { type: String, default: null },// e.g., .story-element.story-element-text p
+    instagramUsername: { type: String, default: null },
+    youtubeChannelId: { type: String, default: null },// e.g., .story-element.story-element-text p
 });
 
 module.exports = mongoose.model('Source', SourceSchema);
