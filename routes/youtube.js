@@ -1,44 +1,45 @@
 // routes/youtube.js
 const express = require('express');
-const ytdl = require('ytdl-core');
+const puppeteer = require('puppeteer');
 const router = express.Router();
 
 router.get('/stream/:videoId', async (req, res) => {
     const { videoId } = req.params;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    console.log(`🎥 Attempting to stream video: ${videoUrl}`);
+    console.log(`🎥 Attempting to stream video via Puppeteer Proxy: ${videoUrl}`);
 
     try {
-        // Check if the video URL is valid
-        if (!ytdl.validateURL(videoUrl)) {
-            console.error(`❌ Invalid Video URL: ${videoUrl}`);
-            return res.status(400).json({ error: 'Invalid Video URL' });
-        }
-
-        // Fetch information to get the direct stream URL
-        console.log(`🌐 Fetching video info for ${videoId}`);
-        const info = await ytdl.getInfo(videoUrl);
-
-        console.log(`✅ Video Info Fetched for ${videoId}`);
-
-        // Choose the best format available
-        const format = ytdl.chooseFormat(info.formats, {
-            quality: 'highest',
-            filter: (format) => format.container === 'mp4',
+        // Launch Puppeteer
+        const browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+            ],
         });
 
-        if (!format || !format.url) {
-            console.error(`❌ No playable video found for ${videoId}`);
-            console.log(`⚠️ Available Formats:`, info.formats.map(f => f.container));
-            return res.status(404).json({ error: 'No playable video found' });
+        const page = await browser.newPage();
+        await page.goto(videoUrl, { waitUntil: 'networkidle2' });
+
+        // Extract the video stream URL
+        const videoSrc = await page.evaluate(() => {
+            const video = document.querySelector('video');
+            return video ? video.src : null;
+        });
+
+        await browser.close();
+
+        if (!videoSrc) {
+            console.error('❌ Could not extract video source');
+            return res.status(404).json({ error: 'Video stream not available' });
         }
 
-        console.log(`✅ Found stream URL: ${format.url}`);
-        res.json({ url: format.url });
+        console.log(`✅ Video stream found: ${videoSrc}`);
+        res.json({ url: videoSrc });
 
     } catch (err) {
-        console.error('❌ Error fetching video stream:', err.message);
+        console.error('❌ Error fetching video stream via Puppeteer:', err.message);
         res.status(500).json({ error: 'Failed to fetch video stream' });
     }
 });
