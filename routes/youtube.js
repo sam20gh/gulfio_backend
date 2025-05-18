@@ -11,16 +11,26 @@ router.get('/stream/:videoId', async (req, res) => {
             return res.status(400).json({ error: 'Invalid Video ID' });
         }
 
-        const info = await ytdl.getInfo(videoId);
-        const format = ytdl.chooseFormat(info.formats, { quality: 'highestvideo' });
+        console.log(`🎥 Streaming YouTube video for ${videoId}`);
 
-        if (!format.url) {
-            return res.status(404).json({ error: 'No playable video found' });
-        }
+        // Set headers for streaming
+        res.setHeader('Content-Disposition', `inline; filename="${videoId}.mp4"`);
+        res.setHeader('Content-Type', 'video/mp4');
 
-        res.json({ url: format.url });
+        // Stream the video
+        const stream = ytdl(videoId, {
+            quality: 'highest',
+            filter: (format) => format.container === 'mp4',
+        });
+
+        stream.on('error', (err) => {
+            console.error('❌ Stream Error:', err.message);
+            res.status(500).json({ error: 'Failed to stream video' });
+        });
+
+        stream.pipe(res);
     } catch (err) {
-        console.error('Error fetching video stream:', err.message);
+        console.error('❌ Error fetching video stream:', err.message);
         res.status(500).json({ error: 'Failed to fetch video stream' });
     }
 });
