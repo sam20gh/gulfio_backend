@@ -18,6 +18,8 @@
     "ytdl-core": "^4.11.5"
   },
   "scripts": {
-    "cleanup-articles": "node scripts/cleanupArticles.js"
+    "cleanup-articles": "node scripts/cleanupArticles.js",
+    "start": "node app.js",
+    "postinstall": "npx puppeteer install chrome"
   }
 }

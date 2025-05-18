@@ -10,12 +10,19 @@ router.get('/stream/:videoId', async (req, res) => {
     console.log(`🎥 Attempting to stream video via Puppeteer Proxy: ${videoUrl}`);
 
     try {
-        // Launch Puppeteer
+        // Launch Puppeteer with the Chrome path
         const browser = await puppeteer.launch({
             headless: true,
+            executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.92/chrome-linux/chrome',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-dev-tools',
+                '--single-process',
             ],
         });
 
@@ -31,7 +38,7 @@ router.get('/stream/:videoId', async (req, res) => {
         await browser.close();
 
         if (!videoSrc) {
-            console.error('❌ Could not extract video sources');
+            console.error('❌ Could not extract video source');
             return res.status(404).json({ error: 'Video stream not available' });
         }
 
