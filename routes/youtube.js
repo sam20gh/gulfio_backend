@@ -2,6 +2,7 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const router = express.Router();
+const path = require('path');
 
 router.get('/stream/:videoId', async (req, res) => {
     const { videoId } = req.params;
@@ -11,14 +12,17 @@ router.get('/stream/:videoId', async (req, res) => {
 
     try {
         // Find the actual path of Chromium
-        const browserFetcher = puppeteer.createBrowserFetcher();
-        const revisionInfo = await browserFetcher.download('136.0.7103.92');
-        console.log('🚀 Chromium path:', revisionInfo.executablePath);
+        const executablePath = path.resolve(
+            process.cwd(),
+            'node_modules/puppeteer/.local-chromium/linux-136.0.7103.92/chrome-linux/chrome'
+        );
+
+        console.log('🚀 Chromium path:', executablePath);
 
         // Launch Puppeteer with the correct path
         const browser = await puppeteer.launch({
             headless: true,
-            executablePath: revisionInfo.executablePath,
+            executablePath: executablePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
