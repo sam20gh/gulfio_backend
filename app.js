@@ -12,6 +12,7 @@ const sourceGroupRoutes = require('./routes/sourceGroup');
 const engagementRouter = require('./routes/engagement');
 const adminRoutes = require('./routes/admin');
 const commentsRouter = require('./routes/comments');
+const videoRoutes = require('./routes/videos');
 require('dotenv').config();
 const app = express();
 
@@ -60,4 +61,5 @@ app.use('/api/source', sourceGroupRoutes);
 app.use('/api/engagement', engagementRouter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/comments', commentsRouter);
+app.use('/api/videos', videoRoutes);
 module.exports = app;
