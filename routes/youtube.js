@@ -7,30 +7,31 @@ router.get('/stream/:videoId', async (req, res) => {
     const { videoId } = req.params;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
+    console.log(`🎥 Attempting to stream video: ${videoUrl}`);
+
     try {
         if (!ytdl.validateURL(videoUrl)) {
             console.error(`❌ Invalid Video URL: ${videoUrl}`);
-            return res.status(400).json({ error: 'Invalid Video ID or URL' });
+            return res.status(400).json({ error: 'Invalid Video URL' });
         }
 
-        console.log(`🎥 Streaming YouTube video for ${videoId}`);
+        // Fetch information to get the direct stream URL
+        const info = await ytdl.getInfo(videoUrl);
+        console.log(`✅ Video Info Fetched for ${videoId}`);
 
-        // Set headers for streaming
-        res.setHeader('Content-Disposition', `inline; filename="${videoId}.mp4"`);
-        res.setHeader('Content-Type', 'video/mp4');
-
-        // Stream the video - try lower quality for compatibility
-        const stream = ytdl(videoUrl, {
-            quality: 'lowest',
-            filter: (format) => format.container === 'mp4',
+        const format = ytdl.chooseFormat(info.formats, {
+            quality: 'highest',
+            filter: (format) => format.container === 'mp4'
         });
 
-        stream.on('error', (err) => {
-            console.error('❌ Stream Error:', err.message);
-            res.status(500).json({ error: 'Failed to stream video' });
-        });
+        if (!format || !format.url) {
+            console.error('❌ No playable video found');
+            return res.status(404).json({ error: 'No playable video found' });
+        }
 
-        stream.pipe(res);
+        console.log(`✅ Found stream URL: ${format.url}`);
+        res.json({ url: format.url });
+
     } catch (err) {
         console.error('❌ Error fetching video stream:', err.message);
         res.status(500).json({ error: 'Failed to fetch video stream' });
