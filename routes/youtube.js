@@ -10,10 +10,15 @@ router.get('/stream/:videoId', async (req, res) => {
     console.log(`🎥 Attempting to stream video via Puppeteer Proxy: ${videoUrl}`);
 
     try {
-        // Launch Puppeteer with the Chrome path
+        // Find the actual path of Chromium
+        const browserFetcher = puppeteer.createBrowserFetcher();
+        const revisionInfo = await browserFetcher.download('136.0.7103.92');
+        console.log('🚀 Chromium path:', revisionInfo.executablePath);
+
+        // Launch Puppeteer with the correct path
         const browser = await puppeteer.launch({
             headless: true,
-            executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.92/chrome-linux/chrome',
+            executablePath: revisionInfo.executablePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
