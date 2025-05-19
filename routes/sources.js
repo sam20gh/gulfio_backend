@@ -83,16 +83,24 @@ router.post('/:id/youtube', async (req, res) => {
 
 // GET /api/sources/:id/youtube/videos
 router.get('/:id/youtube/videos', async (req, res) => {
+    const { id } = req.params;
+
     try {
-        const source = await Source.findById(req.params.id);
-        if (!source || !source.youtubeChannelId) {
-            return res.status(404).json({ error: 'YouTube Channel not configured' });
+        console.log(`🔍 Searching for Source ID: ${id}`);
+        const source = await Source.findById(mongoose.Types.ObjectId(id));
+
+        if (!source) {
+            console.error(`❌ Source not found for ID: ${id}`);
+            return res.status(404).json({ error: 'Source not found' });
         }
-        const videos = await scrapeYouTubeForSource(source._id, source.youtubeChannelId);
+
+        console.log(`✅ Source found: ${source.name}`);
+        const videos = await Video.find({ source: mongoose.Types.ObjectId(id) });
         res.json(videos);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+
+    } catch (error) {
+        console.error('❌ Error fetching videos:', error.message);
+        res.status(500).json({ error: 'Failed to fetch videos' });
     }
 });
-
 module.exports = router;
