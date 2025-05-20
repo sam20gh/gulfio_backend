@@ -164,6 +164,12 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
         const isBlocked = user.blocked_users
             .some(id => id.toString() === targetIdStr);
 
+        if (action === 'check-follow') {
+            return res.status(200).json({
+                isFollowing,
+                isBlocked
+            });
+        }
         // 4) Capture prior follow state for notifications
         const wasFollowing = isFollowing;
 
