@@ -141,6 +141,11 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
 
     const user = req.mongoUser; // Use ensureMongoUser result
     const { targetSupabaseId } = req.params; // Assuming targetId is supabase_id
+    const targetMongoId = targetUser._id; // Use the MongoDB _id for relationships
+
+    if (!targetMongoId || targetMongoId.equals(user._id)) {
+        return res.status(400).json({ message: 'Invalid user target or cannot target self' });
+    }
     const { action } = req.body; // 'follow' or 'block'
     const targetIdStr = targetMongoId.toString();
     const isFollowing = user.following_users.some(id => id.toString() === targetIdStr);
@@ -151,11 +156,7 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
     if (!targetUser) {
         return res.status(404).json({ message: 'Target user not found' });
     }
-    const targetMongoId = targetUser._id; // Use the MongoDB _id for relationships
 
-    if (!targetMongoId || targetMongoId.equals(user._id)) {
-        return res.status(400).json({ message: 'Invalid user target or cannot target self' });
-    }
 
     try {
         // Convert targetMongoId to string if storing supabase_id, or keep as ObjectId if storing _id
