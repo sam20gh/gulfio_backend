@@ -138,10 +138,14 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 
 // Follow/Block Another User (Requires auth and ensureMongoUser)
 router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
+
     const user = req.mongoUser; // Use ensureMongoUser result
     const { targetSupabaseId } = req.params; // Assuming targetId is supabase_id
     const { action } = req.body; // 'follow' or 'block'
-
+    const targetIdStr = targetMongoId.toString();
+    const isFollowing = user.following_users.some(id => id.toString() === targetIdStr);
+    // Remember the old state for notifications
+    const wasFollowing = isFollowing;
     // Find the target user by supabase_id to ensure they exist
     const targetUser = await User.findOne({ supabase_id: targetSupabaseId });
     if (!targetUser) {
