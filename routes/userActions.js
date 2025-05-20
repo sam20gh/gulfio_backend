@@ -156,8 +156,11 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
     try {
         // Convert targetMongoId to string if storing supabase_id, or keep as ObjectId if storing _id
         // Assuming following_users and blocked_users store MongoDB _ids
-        const isFollowing = user.following_users.some(id => id.equals(targetMongoId));
-        const isBlocked = user.blocked_users.some(id => id.equals(targetMongoId));
+        const targetIdStr = targetMongoId.toString();
+        const isFollowing = user.following_users
+            .some(id => id.toString() === targetIdStr);
+        const isBlocked = user.blocked_users
+            .some(id => id.toString() === targetIdStr);
 
         if (action === 'follow') {
             if (!isFollowing) user.following_users.push(targetMongoId);
