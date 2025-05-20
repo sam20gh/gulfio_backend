@@ -138,71 +138,77 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 
 // Follow/Block Another User (Requires auth and ensureMongoUser)
 router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
-
-    const user = req.mongoUser; // Use ensureMongoUser result
-    const { targetSupabaseId } = req.params; // Assuming targetId is supabase_id
-    const targetMongoId = targetUser._id; // Use the MongoDB _id for relationships
-
-    if (!targetMongoId || targetMongoId.equals(user._id)) {
-        return res.status(400).json({ message: 'Invalid user target or cannot target self' });
-    }
-    const { action } = req.body; // 'follow' or 'block'
-    const targetIdStr = targetMongoId.toString();
-    const isFollowing = user.following_users.some(id => id.toString() === targetIdStr);
-    // Remember the old state for notifications
-    const wasFollowing = isFollowing;
-    // Find the target user by supabase_id to ensure they exist
-    const targetUser = await User.findOne({ supabase_id: targetSupabaseId });
-    if (!targetUser) {
-        return res.status(404).json({ message: 'Target user not found' });
-    }
-
-
     try {
-        // Convert targetMongoId to string if storing supabase_id, or keep as ObjectId if storing _id
-        // Assuming following_users and blocked_users store MongoDB _ids
+        const user = req.mongoUser;
+        const { targetSupabaseId } = req.params;
+
+        // 1) Look up the target user first
+        const targetUser = await User.findOne({ supabase_id: targetSupabaseId });
+        if (!targetUser) {
+            return res.status(404).json({ message: 'Target user not found' });
+        }
+
+        // 2) Now it’s safe to grab their Mongo _id
+        const targetMongoId = targetUser._id;
+        if (!targetMongoId || targetMongoId.equals(user._id)) {
+            return res
+                .status(400)
+                .json({ message: 'Invalid target or cannot target yourself' });
+        }
+
+        // 3) Read the action and compute follow/block flags
+        const { action } = req.body; // 'follow', 'unfollow', 'block', 'unblock'
         const targetIdStr = targetMongoId.toString();
         const isFollowing = user.following_users
             .some(id => id.toString() === targetIdStr);
         const isBlocked = user.blocked_users
             .some(id => id.toString() === targetIdStr);
 
+        // 4) Capture prior follow state for notifications
+        const wasFollowing = isFollowing;
+
+        // 5) Apply follow/unfollow/block logic
         if (action === 'follow') {
             if (!isFollowing) user.following_users.push(targetMongoId);
-            if (isBlocked) user.blocked_users.pull(targetMongoId); // unblocks if followed
+            if (isBlocked) user.blocked_users.pull(targetMongoId);
         } else if (action === 'unfollow') {
             if (isFollowing) user.following_users.pull(targetMongoId);
         } else if (action === 'block') {
             if (!isBlocked) user.blocked_users.push(targetMongoId);
-            if (isFollowing) user.following_users.pull(targetMongoId); // unfollows if blocked
+            if (isFollowing) user.following_users.pull(targetMongoId);
         } else if (action === 'unblock') {
             if (isBlocked) user.blocked_users.pull(targetMongoId);
         } else {
             return res.status(400).json({ message: 'Invalid action' });
         }
 
+        // 6) Persist and respond
         await user.save();
         res.json({
-            following_users: user.following_users,
-            blocked_users: user.blocked_users
+            isFollowing: action === 'follow' ? true
+                : action === 'unfollow' ? false
+                    : isFollowing,
+            isBlocked: action === 'block' ? true
+                : action === 'unblock' ? false
+                    : isBlocked,
         });
+
+        // 7) Send notification if needed
+        if (action === 'follow' && !wasFollowing && targetUser.pushToken) {
+            await sendExpoNotification(
+                `${user.name} started following you!`,
+                `Tap to view their profile.`,
+                [targetUser.pushToken],
+                { link: `gulfio://user/${user.supabase_id}` }
+            );
+        }
+
     } catch (err) {
-        console.error('Error updating relationship:', err); // Log the error
-        res.status(500).json({ message: 'Error updating relationship' });
-    }
-    if (action === 'follow' && !wasFollowing && targetUser.pushToken) {
-        await sendExpoNotification(
-            // Push title
-            `${user.name} started following you!`,
-            // Push body
-            `Tap to view their profile.`,
-            // Recipients
-            [targetUser.pushToken],
-            // Deep-link into your app
-            { link: `gulfio://user/${user.supabase_id}` }
-        );
+        console.error('Error in follow/block route:', err);
+        res.status(500).json({ message: 'Server error' });
     }
 });
+
 // Follow/Unfollow Source Group
 router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
