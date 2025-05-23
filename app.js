@@ -14,6 +14,7 @@ const adminRoutes = require('./routes/admin');
 const commentsRouter = require('./routes/comments');
 const videoRoutes = require('./routes/videos');
 const youtubeRoutes = require('./routes/youtube');
+const lottoRoutes = require('./routes/lotto');
 require('dotenv').config();
 const app = express();
 
@@ -64,4 +65,5 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/comments', commentsRouter);
 app.use('/api/videos', videoRoutes);
 app.use('/api/youtube', youtubeRoutes);
+app.use('/api/lotto', lottoRoutes);
 module.exports = app;
