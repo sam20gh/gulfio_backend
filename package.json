@@ -20,6 +20,6 @@
   "scripts": {
     "cleanup-articles": "node scripts/cleanupArticles.js",
     "start": "node app.js",
-    "postinstall": "PUPPETEER_SKIP_DOWNLOAD=false npm install puppeteer && npx puppeteer install chrome"
+    "postinstall": "npx puppeteer browsers install chrome"
   }
 }
