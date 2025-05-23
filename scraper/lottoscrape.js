@@ -8,7 +8,7 @@ const LOTTO_URL = process.env.LOTTO_URL;
 async function scrapeUaeLottoResults(url = LOTTO_URL) {
     let browser;
     try {
-        browser = await puppeteer.launch({ headless: 'new' });
+        browser = await puppeteer.launch({ headless: true });
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
