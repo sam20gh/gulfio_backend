@@ -1,6 +1,6 @@
 // routes/lotto.js
 const express = require('express');
-const scrapeUaeLottoResults = require('../scraper/lottoscrae');
+const scrapeUaeLottoResults = require('../scraper/lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
