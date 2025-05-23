@@ -1,7 +1,7 @@
 // lotto-cron.js
 require('dotenv').config();
 const mongoose = require('mongoose');
-const scrapeUaeLottoResults = require('./lottoscrape');
+const scrapeUaeLottoResults = require('./scraper/lottoscrape');
 const LottoResult = require('./models/LottoResult');
 const User = require('./models/User');
 const sendExpoNotification = require('./utils/sendExpoNotification');
