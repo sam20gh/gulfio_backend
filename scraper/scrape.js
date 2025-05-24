@@ -6,6 +6,8 @@ const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const { scrapeReelsForSource } = require('./instagramReels');
+const scrapeUaeLottoResults = require('./lottoscrape'); // Adjust path as needed
+const LottoResult = require('../models/LottoResult');
 
 async function fetchWithPuppeteer(url) {
     const browser = await puppeteer.launch({ headless: true });
@@ -168,6 +170,45 @@ async function scrapeAllSources(frequency = null) {
 
         console.log(`Summary notification sent for ${totalNew} new articles.`);
     }
+    // ...after article scraping and notifications...
+
+    // Lotto scraping integration
+    try {
+        const result = await scrapeUaeLottoResults();
+        if (result) {
+            const existing = await LottoResult.findOne({ drawNumber: result.drawNumber });
+            if (existing) {
+                await LottoResult.updateOne({ drawNumber: result.drawNumber }, result);
+                console.log('✅ Updated Lotto draw:', result.drawNumber);
+            } else {
+                await LottoResult.create(result);
+                console.log('✅ Saved new Lotto draw:', result.drawNumber);
+            }
+
+            // Expo push (optional, only for new draw)
+            const users = await User.find({ pushToken: { $exists: true, $ne: null } });
+            const tokens = users.map(u => u.pushToken);
+            if (tokens.length) {
+                const title = `UAE Lotto Draw #${result.drawNumber} Results`;
+                const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers[0]?.prize || ''}`;
+                const data = {
+                    drawNumber: result.drawNumber,
+                    link: `gulfio://lotto/${result.drawNumber}`,
+                    numbers: result.numbers,
+                    specialNumber: result.specialNumber,
+                    prizeTiers: result.prizeTiers,
+                    raffles: result.raffles,
+                    totalWinners: result.totalWinners
+                };
+                await sendExpoNotification(title, body, tokens, data);
+            }
+        } else {
+            console.warn('❌ Lotto result could not be scraped.');
+        }
+    } catch (e) {
+        console.error('❌ Lotto scraping error:', e.message);
+    }
+
 }
 
 module.exports = scrapeAllSources;
