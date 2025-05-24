@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { scrapeAllSources } = require('../scraper/scrape');
+const scrapeAllSources = require('../scraper/scrape');
 const auth = require('../middleware/auth');
 
 router.post('/', auth, async (req, res) => {
