@@ -1,7 +1,7 @@
 // scraper/lottoscrape.js
 require('dotenv').config();
 const cheerio = require('cheerio');
-const { fetchWithPuppeteer } = require('./scrape');
+const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
 const LOTTO_URL = process.env.LOTTO_URL;
 

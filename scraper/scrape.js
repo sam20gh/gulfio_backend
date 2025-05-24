@@ -1,29 +1,15 @@
 // scraper/scrape.js
 const axios = require('axios');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
+const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const { scrapeReelsForSource } = require('./instagramReels');
-const scrapeUaeLottoResults = require('./lottoscrape'); // <-- this will call back to fetchWithPuppeteer
+const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 
-async function fetchWithPuppeteer(url) {
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-
-    // Age gate handling and scroll is not needed for most news, only for lotto
-    const html = await page.content();
-    await browser.close();
-    return { html };
-}
-
-/**
- * Scrapes all sources and sends a summary push notification with deep-link and action buttons
- */
 async function scrapeAllSources(frequency = null) {
     let sources = await Source.find();
     if (frequency) sources = sources.filter(s => s.frequency === frequency);
@@ -208,7 +194,4 @@ async function scrapeAllSources(frequency = null) {
     }
 }
 
-module.exports = {
-    scrapeAllSources,
-    fetchWithPuppeteer
-};
+module.exports = scrapeAllSources;
