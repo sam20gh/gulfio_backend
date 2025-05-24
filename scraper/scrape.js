@@ -5,7 +5,7 @@ const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
-const { scrapeReelsForSource } = require('./instagramReels');
+// const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape'); // Adjust path as needed
 const LottoResult = require('../models/LottoResult');
 
@@ -132,14 +132,14 @@ async function scrapeAllSources(frequency = null) {
             console.error(`Failed to scrape ${source.url}:`, err.message);
         }
     }
-    if (source.instagramUsername) {
-        console.log(`Scraping Reels for ${source.instagramUsername}`);
-        const reels = await scrapeReelsForSource(
-            source._id,
-            source.instagramUsername
-        );
-        console.log(`  • ${reels.length} reels upserted`);
-    }
+    // if (source.instagramUsername) {
+    //     console.log(`Scraping Reels for ${source.instagramUsername}`);
+    //     const reels = await scrapeReelsForSource(
+    //         source._id,
+    //         source.instagramUsername
+    //     );
+    //     console.log(`  • ${reels.length} reels upserted`);
+    // }
 
     if (totalNew > 0 && sampleArticle) {
         const users = await User.find({ pushToken: { $exists: true, $ne: null } });
