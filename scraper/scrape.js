@@ -1,3 +1,4 @@
+// scraper/scrape.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
@@ -5,8 +6,8 @@ const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
-// const { scrapeReelsForSource } = require('./instagramReels');
-const scrapeUaeLottoResults = require('./lottoscrape'); // Adjust path as needed
+const { scrapeReelsForSource } = require('./instagramReels');
+const scrapeUaeLottoResults = require('./lottoscrape'); // <-- this will call back to fetchWithPuppeteer
 const LottoResult = require('../models/LottoResult');
 
 async function fetchWithPuppeteer(url) {
@@ -14,21 +15,10 @@ async function fetchWithPuppeteer(url) {
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    try {
-        let lastCount = 0;
-        for (let i = 0; i < 6; i++) {
-            const currentCount = await page.$$eval('div[class*="m04n-"]', els => els.length);
-            if (currentCount === lastCount) break;
-            lastCount = currentCount;
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
-            await new Promise(resolve => setTimeout(resolve, 3000));
-        }
-    } catch (err) {
-        console.warn('Scroll error:', err.message);
-    }
-
+    // Age gate handling and scroll is not needed for most news, only for lotto
     const html = await page.content();
-    return { html, page, browser };
+    await browser.close();
+    return { html };
 }
 
 /**
@@ -44,9 +34,9 @@ async function scrapeAllSources(frequency = null) {
     for (const source of sources) {
         try {
             console.log(`Scraping ${source.name}`);
-            let html, page, browser;
+            let html;
             if (source.name.toLowerCase().includes('gulfi news')) {
-                ({ html, page, browser } = await fetchWithPuppeteer(source.url));
+                ({ html } = await fetchWithPuppeteer(source.url));
             } else {
                 html = (await axios.get(source.url)).data;
             }
@@ -64,16 +54,18 @@ async function scrapeAllSources(frequency = null) {
                     links.push(url);
                 }
             });
-            if (browser) await browser.close();
 
             for (const link of links) {
                 try {
                     const exists = await Article.findOne({ url: link });
                     if (exists) continue;
 
-                    const pageHtml = source.name.toLowerCase().includes('gulfi news')
-                        ? (await fetchWithPuppeteer(link)).html
-                        : (await axios.get(link)).data;
+                    let pageHtml;
+                    if (source.name.toLowerCase().includes('gulfi news')) {
+                        ({ html: pageHtml } = await fetchWithPuppeteer(link));
+                    } else {
+                        pageHtml = (await axios.get(link)).data;
+                    }
                     const $$ = cheerio.load(pageHtml);
 
                     // Extract title and content
@@ -126,20 +118,21 @@ async function scrapeAllSources(frequency = null) {
                 }
             }
 
+            if (source.instagramUsername) {
+                console.log(`Scraping Reels for ${source.instagramUsername}`);
+                const reels = await scrapeReelsForSource(
+                    source._id,
+                    source.instagramUsername
+                );
+                console.log(`  • ${reels.length} reels upserted`);
+            }
+
             source.lastScraped = new Date();
             await source.save();
         } catch (err) {
             console.error(`Failed to scrape ${source.url}:`, err.message);
         }
     }
-    // if (source.instagramUsername) {
-    //     console.log(`Scraping Reels for ${source.instagramUsername}`);
-    //     const reels = await scrapeReelsForSource(
-    //         source._id,
-    //         source.instagramUsername
-    //     );
-    //     console.log(`  • ${reels.length} reels upserted`);
-    // }
 
     if (totalNew > 0 && sampleArticle) {
         const users = await User.find({ pushToken: { $exists: true, $ne: null } });
@@ -170,12 +163,14 @@ async function scrapeAllSources(frequency = null) {
 
         console.log(`Summary notification sent for ${totalNew} new articles.`);
     }
-    // ...after article scraping and notifications...
-    console.log('>>> About to scrape Lotto results, frequency:', frequency);
-    // Lotto scraping integration
+
+    // --- Lotto scraping integration ---
     if (!frequency || frequency === 'daily') {
         try {
+            console.log('>>> About to scrape Lotto results, frequency:', frequency);
             const result = await scrapeUaeLottoResults();
+            console.log('>>> Lotto scrape result:', result);
+
             if (result) {
                 const existing = await LottoResult.findOne({ drawNumber: result.drawNumber });
                 if (existing) {
@@ -206,14 +201,14 @@ async function scrapeAllSources(frequency = null) {
             } else {
                 console.warn('❌ Lotto result could not be scraped.');
             }
+            console.log('>>> Lotto block finished');
         } catch (e) {
-            console.error('❌ Lotto scraping error:', e.message);
+            console.error('❌ Lotto scraping error:', e);
         }
-        console.log('>>> Lotto block finished');
     }
-    const result = await scrapeUaeLottoResults();
-    console.log('>>> Lotto scrape result:', result);
-
 }
 
-module.exports = scrapeAllSources;
+module.exports = {
+    scrapeAllSources,
+    fetchWithPuppeteer
+};

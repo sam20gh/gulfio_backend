@@ -1,31 +1,14 @@
-// lottoscrape.js
+// scraper/lottoscrape.js
 require('dotenv').config();
-const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
+const { fetchWithPuppeteer } = require('./scrape');
 
 const LOTTO_URL = process.env.LOTTO_URL;
 
 async function scrapeUaeLottoResults(url = LOTTO_URL) {
-    let browser;
     try {
-        browser = await puppeteer.launch({ headless: true });
-        const page = await browser.newPage();
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const { html } = await fetchWithPuppeteer(url);
 
-        // Handle age verification if present
-        try {
-            await page.waitForSelector('.age-content__primary-button.sensors-homepage-18over', { timeout: 4000 });
-            await page.click('.age-content__primary-button.sensors-homepage-18over');
-            // Give some time for the overlay to disappear
-            await page.waitForTimeout(1200);
-        } catch (e) {
-            // Age popup not found, continue
-        }
-
-        // Wait for main draw results to load
-        await page.waitForSelector('.draw-result_con', { timeout: 10000 });
-
-        const html = await page.content();
         const $ = cheerio.load(html);
 
         // Extract draw number and date/time
@@ -87,14 +70,11 @@ async function scrapeUaeLottoResults(url = LOTTO_URL) {
     } catch (err) {
         console.error('[UAE Lotto Scrape] ❌ Error:', err.message);
         return null;
-    } finally {
-        if (browser) await browser.close();
     }
 }
 
 module.exports = scrapeUaeLottoResults;
 
-// For CLI testing (optional)
 if (require.main === module) {
     scrapeUaeLottoResults();
 }
