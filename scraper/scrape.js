@@ -171,7 +171,7 @@ async function scrapeAllSources(frequency = null) {
         console.log(`Summary notification sent for ${totalNew} new articles.`);
     }
     // ...after article scraping and notifications...
-
+    console.log('>>> About to scrape Lotto results, frequency:', frequency);
     // Lotto scraping integration
     if (!frequency || frequency === 'daily') {
         try {
@@ -209,7 +209,10 @@ async function scrapeAllSources(frequency = null) {
         } catch (e) {
             console.error('❌ Lotto scraping error:', e.message);
         }
+        console.log('>>> Lotto block finished');
     }
+    const result = await scrapeUaeLottoResults();
+    console.log('>>> Lotto scrape result:', result);
 
 }
 
