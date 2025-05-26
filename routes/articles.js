@@ -29,7 +29,7 @@ articleRouter.get('/', auth, async (req, res) => {
       console.error('⚠️ Redis get error (safe to ignore):', err.message);
     }
 
-    if (cached) {
+    if (!req.query.noCache && cached) {
       console.log('🧠 Returning cached articles');
       return res.json(JSON.parse(cached));
     }
@@ -220,8 +220,8 @@ articleRouter.get('/feature', auth, async (req, res) => {
       console.error('⚠️ Redis get error (safe to ignore):', err.message);
     }
 
-    if (cached) {
-      console.log('🧠 Returning cached feature articles');
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached articles');
       return res.json(JSON.parse(cached));
     }
 
@@ -267,8 +267,8 @@ articleRouter.get('/headline', auth, async (req, res) => {
       console.error('⚠️ Redis get error (safe to ignore):', err.message);
     }
 
-    if (cached) {
-      console.log('🧠 Returning cached headline articles');
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached articles');
       return res.json(JSON.parse(cached));
     }
 
