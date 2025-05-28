@@ -89,6 +89,7 @@ async function scrapeAllSources(frequency = null) {
                             sourceId: source._id,
                             category: source.category,
                             publishedAt: new Date(),
+                            language: source.language || "english", // Add language from source
                         });
 
                         if (images.length > 0) newArticle.image = images;
