@@ -2,6 +2,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Article = require('../models/Article');
+const Source = require('../models/Source');
 const { clearArticlesCache } = require('../utils/cache');
 
 async function runCleanup() {
@@ -44,7 +45,32 @@ async function runCleanup() {
         }
         console.log(`🗑️  Total duplicate-article deletions: ${totalDupeDeleted}`);
 
-        // 3. CLEAR CACHE (if you need)
+        // 3. DELETE articles with invalid sourceIds
+        console.log('🔍 Finding articles with invalid sourceIds...');
+
+        // Get all valid source IDs
+        const sources = await Source.find({}, '_id');
+        const validSourceIds = sources.map(source => source._id.toString());
+
+        // Find articles with sourceIds not in the valid list
+        const orphanedArticles = await Article.find({
+            sourceId: { $nin: validSourceIds }
+        });
+
+        if (orphanedArticles.length > 0) {
+            console.log(`🗑️ Found ${orphanedArticles.length} articles with invalid sourceIds`);
+
+            // Delete orphaned articles
+            const { deletedCount } = await Article.deleteMany({
+                sourceId: { $nin: validSourceIds }
+            });
+
+            console.log(`🗑️ Deleted ${deletedCount} orphaned articles with invalid sourceIds`);
+        } else {
+            console.log('✅ No articles with invalid sourceIds found');
+        }
+
+        // 4. CLEAR CACHE (if you need)
         if (typeof clearArticlesCache === 'function') {
             await clearArticlesCache();
             console.log('♻️  Articles cache cleared');
