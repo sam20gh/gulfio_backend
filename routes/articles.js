@@ -20,7 +20,9 @@ articleRouter.get('/', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const cacheKey = `articles_page_${page}_limit_${limit}`;
+    const language = req.query.language || 'english'; // Get language from query param or default to English
+
+    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}`;
 
     let cached;
     try {
@@ -35,7 +37,7 @@ articleRouter.get('/', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find()
+    const articles = await Article.find({ language }) // Filter by language
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -211,7 +213,9 @@ articleRouter.get('/feature', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
-    const cacheKey = `articles_feature_page_${page}_limit_${limit}`;
+    const language = req.query.language || 'english'; // Get language from query or default
+
+    const cacheKey = `articles_feature_page_${page}_limit_${limit}_lang_${language}`;
 
     let cached;
     try {
@@ -226,12 +230,18 @@ articleRouter.get('/feature', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find({ category: 'feature' })
+    const articles = await Article.find({
+      category: 'feature',
+      language // Add language filter
+    })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const totalFeatureArticles = await Article.countDocuments({ category: 'feature' });
+    const totalFeatureArticles = await Article.countDocuments({
+      category: 'feature',
+      language // Also count by language
+    });
 
     const response = {
       articles,
@@ -258,7 +268,9 @@ articleRouter.get('/headline', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
-    const cacheKey = `articles_headline_page_${page}_limit_${limit}`;
+    const language = req.query.language || 'english'; // Get language from query
+
+    const cacheKey = `articles_headline_page_${page}_limit_${limit}_lang_${language}`;
 
     let cached;
     try {
@@ -273,12 +285,18 @@ articleRouter.get('/headline', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find({ category: 'headline' })
+    const articles = await Article.find({
+      category: 'headline',
+      language // Add language filter
+    })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const totalHeadlineArticles = await Article.countDocuments({ category: 'headline' });
+    const totalHeadlineArticles = await Article.countDocuments({
+      category: 'headline',
+      language // Count by language too
+    });
 
     const response = {
       articles,
@@ -301,12 +319,17 @@ articleRouter.get('/headline', auth, async (req, res) => {
 articleRouter.get('/search', auth, async (req, res) => {
   try {
     const query = req.query.query?.trim();
+    const language = req.query.language || 'english'; // Add language filtering to search
+
     if (!query) return res.status(400).json({ message: 'Missing search query' });
 
     const regex = new RegExp(query, 'i'); // case-insensitive
-    const results = await Article.find({ title: { $regex: regex } })
+    const results = await Article.find({
+      title: { $regex: regex },
+      language // Add language filter 
+    })
       .sort({ publishedAt: -1 })
-      .limit(50); // limit to avoid overfetching
+      .limit(50);
 
     res.json(results);
   } catch (error) {
@@ -389,6 +412,7 @@ articleRouter.delete('/:id', auth, async (req, res) => {
 articleRouter.get('/related/:id', async (req, res) => {
   try {
     const originalArticle = await Article.findById(req.params.id);
+    const language = req.query.language || originalArticle?.language || 'english';
 
     if (!originalArticle) {
       return res.status(404).json({ message: 'Article not found' });
@@ -400,6 +424,7 @@ articleRouter.get('/related/:id', async (req, res) => {
         $match: {
           _id: { $ne: originalArticle._id },
           category: originalArticle.category,
+          language: language // Add language filter
         },
       },
       {
