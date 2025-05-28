@@ -16,6 +16,7 @@ const ArticleSchema = new mongoose.Schema({
     dislikes: { type: Number, default: 0 },
     likedBy: [{ type: String }],      // Supabase user ID or email
     dislikedBy: [{ type: String }],
+    language: { type: String, default: 'english' },
 });
 
 
