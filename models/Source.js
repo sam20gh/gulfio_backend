@@ -17,6 +17,7 @@ const SourceSchema = new mongoose.Schema({
     followers: { type: Number, default: 0 },
     instagramUsername: { type: String, default: null },
     youtubeChannelId: { type: String, default: null },// e.g., .story-element.story-element-text p
+    language: { type: String, default: "english" },
 });
 
 module.exports = mongoose.model('Source', SourceSchema);

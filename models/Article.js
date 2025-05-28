@@ -6,7 +6,6 @@ const ArticleSchema = new mongoose.Schema({
     url: String,
     sourceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Source' },
     category: String,
-    language: { type: String, default: 'english' },  // Added language field with default
     publishedAt: Date,
     image: {
         type: [String],
