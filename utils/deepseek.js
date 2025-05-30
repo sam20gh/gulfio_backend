@@ -20,7 +20,7 @@ async function getDeepSeekEmbedding(text) {
         const response = await axios.post(
             DEEPSEEK_API_URL,
             {
-                model: "deepseek-embedding-001", // REQUIRED!
+                model: "deepseek-embed", // REQUIRED!
                 input: text
             },
             {
