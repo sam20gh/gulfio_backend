@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/openai/v1/embeddings'; // Correct endpoint
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/embeddings'; // Correct endpoint
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 /**
