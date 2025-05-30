@@ -7,6 +7,7 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 const redis = require('../utils/redis');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -361,17 +362,36 @@ articleRouter.post('/', auth, async (req, res) => {
     if (!title || !content || !url || !sourceId || !category || !image) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
-    const newArticle = new Article({
-      title,
-      content,
-      url,
-      sourceId,
-      category,
-      publishedAt,
-      image,
-    });
-    const savedArticle = await newArticle.save();
-    res.status(201).json(savedArticle);
+    try {
+      // 1. Generate embedding text
+      const embeddingInput = `${title}\n\n${content?.slice(0, 512) || ''}`; // Limit content length if needed
+
+      // 2. Get embedding from DeepSeek
+      let embedding = [];
+      try {
+        embedding = await getDeepSeekEmbedding(embeddingInput);
+      } catch (embeddingError) {
+        console.warn('DeepSeek embedding error (article will save without embedding):', embeddingError.message);
+        // Optionally: return error, or allow saving without embedding
+      }
+
+      // 3. Save article with embedding
+      const newArticle = new Article({
+        title,
+        content,
+        url,
+        sourceId,
+        category,
+        publishedAt,
+        image,
+        embedding, // <-- NEW FIELD
+      });
+      const savedArticle = await newArticle.save();
+      res.status(201).json(savedArticle);
+
+    } catch (error) {
+      res.status(400).json({ message: 'Error creating article', error: error.message });
+    }
   } catch (error) {
     res.status(400).json({ message: 'Error creating article', error: error.message });
   }
@@ -456,6 +476,21 @@ articleRouter.get('/related/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching related articles:', error.message);
     res.status(500).json({ message: 'Server Error' });
+  }
+});
+articleRouter.post('/:id/update-embedding', auth, async (req, res) => {
+  const { embedding } = req.body;
+  if (!embedding || !Array.isArray(embedding)) {
+    return res.status(400).json({ message: 'embedding (array) required' });
+  }
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+    article.embedding = embedding;
+    await article.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update embedding' });
   }
 });
 

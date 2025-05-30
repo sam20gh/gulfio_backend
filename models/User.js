@@ -16,6 +16,10 @@ const userSchema = new mongoose.Schema({
     following_sources: [{ type: String }],
     following_users: [{ type: String }],
     blocked_users: [{ type: String }],
+    embedding: {
+        type: [Number],
+        default: [],
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

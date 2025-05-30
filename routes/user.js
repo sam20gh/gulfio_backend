@@ -7,6 +7,7 @@ const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
 const axios = require('axios');
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const FormData = require('form-data')
 const form = new FormData()
 
@@ -60,6 +61,7 @@ router.get('/:id/liked-articles', async (req, res) => {
             count: likedIds.length,
             articles
         });
+        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/liked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -80,6 +82,7 @@ router.get('/:id/disliked-articles', async (req, res) => {
             count: dislikedIds.length,
             articles
         });
+        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/disliked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -100,6 +103,7 @@ router.get('/:id/saved-articles', async (req, res) => {
             count: savedIds.length,
             articles
         });
+        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/saved-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -216,7 +220,22 @@ router.post('/get-upload-url', auth, async (req, res) => {
 });
 
 
-
+router.post('/update-embedding', auth, async (req, res) => {
+    const { embedding } = req.body;
+    if (!embedding || !Array.isArray(embedding)) {
+        return res.status(400).json({ message: 'embedding (array) required' });
+    }
+    const supabase_id = req.user.sub;
+    try {
+        const user = await User.findOne({ supabase_id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        user.embedding = embedding;
+        await user.save();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: 'Failed to update embedding' });
+    }
+});
 
 
 module.exports = router;
