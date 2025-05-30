@@ -1,4 +1,4 @@
-const { getDeepSeekEmbedding } = require('./utils/deepseek');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 
 (async () => {
     try {
