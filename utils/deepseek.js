@@ -1,7 +1,7 @@
 const axios = require('axios');
 
-const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/embeddings'; // Replace if different!
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; // Set in your .env file
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/openai/v1/embeddings'; // Correct endpoint
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 /**
  * Get embedding vector for the provided text from DeepSeek API
@@ -19,7 +19,10 @@ async function getDeepSeekEmbedding(text) {
     try {
         const response = await axios.post(
             DEEPSEEK_API_URL,
-            { input: text },
+            {
+                model: "deepseek-embedding-001", // REQUIRED!
+                input: text
+            },
             {
                 headers: {
                     'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
@@ -28,8 +31,12 @@ async function getDeepSeekEmbedding(text) {
             }
         );
         // Adjust according to DeepSeek's response structure
-        if (response.data && response.data.embedding) {
-            return response.data.embedding;
+        if (
+            response.data &&
+            Array.isArray(response.data.data) &&
+            response.data.data[0]?.embedding
+        ) {
+            return response.data.data[0].embedding;
         } else {
             throw new Error('Invalid response from DeepSeek API');
         }
