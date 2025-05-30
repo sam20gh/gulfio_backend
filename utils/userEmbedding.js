@@ -1,4 +1,4 @@
-const { getDeepSeekEmbedding } = require('./deepseek');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const User = require('../models/User');
 const Article = require('../models/Article');
 
