@@ -3,7 +3,7 @@ const Article = require('../models/Article');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 
 async function embedAllArticles() {
-    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connect(process.env.MONGO_URI);
     const articles = await Article.find({ $or: [{ embedding: { $exists: false } }, { embedding: { $size: 0 } }] });
 
     for (let article of articles) {
