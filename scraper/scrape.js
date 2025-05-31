@@ -9,6 +9,7 @@ const sendExpoNotification = require('../utils/sendExpoNotification');
 const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 
 async function scrapeAllSources(frequency = null) {
     let sources = await Source.find();
@@ -79,6 +80,14 @@ async function scrapeAllSources(frequency = null) {
                             images.push(og.startsWith('//') ? 'https:' + og : og);
                         }
                     }
+                    let embedding = [];
+                    try {
+                        const embedInput = `${title}\n\n${content?.slice(0, 512) || ''}`;
+                        embedding = await getDeepSeekEmbedding(embedInput);
+                        console.log('✅ Got embedding for:', title);
+                    } catch (err) {
+                        console.warn('❌ Embedding error for article:', title, err.message);
+                    }
 
                     // Save article if valid
                     if (title && content) {
@@ -89,7 +98,8 @@ async function scrapeAllSources(frequency = null) {
                             sourceId: source._id,
                             category: source.category,
                             publishedAt: new Date(),
-                            language: source.language || "english", // Add language from source
+                            language: source.language || "english",
+                            embedding
                         });
 
                         if (images.length > 0) newArticle.image = images;
