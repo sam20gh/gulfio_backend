@@ -4,7 +4,7 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/embeddings';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_MODEL = "text-embedding-3-small"; // Or use "text-embedding-ada-002"
 
-async function getOpenAIEmbedding(texts) {
+async function getDeepSeekEmbedding(texts) {
     if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not set');
     // Always send as array
     const input = Array.isArray(texts) ? texts : [texts];
@@ -40,4 +40,4 @@ async function getOpenAIEmbedding(texts) {
     }
 }
 
-module.exports = { getOpenAIEmbedding };
+module.exports = { getDeepSeekEmbedding };
