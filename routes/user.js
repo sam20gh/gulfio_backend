@@ -49,6 +49,7 @@ router.get('/by-supabase/:id', async (req, res) => {
 });
 
 // ✅ Get liked articles
+// ✅ Get liked articles
 router.get('/:id/liked-articles', async (req, res) => {
     try {
         const user = await User.findOne({ supabase_id: req.params.id });
@@ -62,7 +63,6 @@ router.get('/:id/liked-articles', async (req, res) => {
             count: likedIds.length,
             articles
         });
-        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/liked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -83,7 +83,6 @@ router.get('/:id/disliked-articles', async (req, res) => {
             count: dislikedIds.length,
             articles
         });
-        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/disliked-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
@@ -104,7 +103,6 @@ router.get('/:id/saved-articles', async (req, res) => {
             count: savedIds.length,
             articles
         });
-        await updateUserProfileEmbedding(req.mongoUser._id);
     } catch (err) {
         console.error('Error in /:id/saved-articles:', err);
         res.status(500).json({ message: 'Internal server error' });
