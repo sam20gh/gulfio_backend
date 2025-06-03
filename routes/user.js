@@ -58,7 +58,7 @@ router.get('/:id/liked-articles', async (req, res) => {
         const likedIds = user.liked_articles || [];
         if (likedIds.length === 0) return res.json([]);
 
-        const articles = await Article.find({ _id: { $in: likedIds } }).sort({ publishedAt: -1 });
+        const articles = await Article.find({ _id: { $in: likedIds } }).sort({ publishedAt: -1 }).select('-embedding');;
         res.json({
             count: likedIds.length,
             articles
@@ -78,7 +78,7 @@ router.get('/:id/disliked-articles', async (req, res) => {
         const dislikedIds = user.disliked_articles || [];
         if (dislikedIds.length === 0) return res.json([]);
 
-        const articles = await Article.find({ _id: { $in: dislikedIds } }).sort({ publishedAt: -1 });
+        const articles = await Article.find({ _id: { $in: dislikedIds } }).sort({ publishedAt: -1 }).select('-embedding');;
         res.json({
             count: dislikedIds.length,
             articles
@@ -98,7 +98,7 @@ router.get('/:id/saved-articles', async (req, res) => {
         const savedIds = user.saved_articles || [];
         if (savedIds.length === 0) return res.json([]);
 
-        const articles = await Article.find({ _id: { $in: savedIds } }).sort({ publishedAt: -1 });
+        const articles = await Article.find({ _id: { $in: savedIds } }).sort({ publishedAt: -1 }).select('-embedding');;
         res.json({
             count: savedIds.length,
             articles
