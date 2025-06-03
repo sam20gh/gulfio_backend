@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const sendExpoNotification = require('../utils/sendExpoNotification');
-const auth = require('../middleware/auth'); // Keep auth for other routes
+const auth = require('../middleware/auth');
 const User = require('../models/User');
-const Article = require('../models/Article'); // Import Article model
+const Article = require('../models/Article');
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
-// Keep ensureMongoUser for other routes
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
+const UserActivity = require('../models/UserActivity');
 
 function validateObjectId(id) {
     return mongoose.Types.ObjectId.isValid(id);
@@ -41,6 +42,12 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     }
 
     await user.save();
+
+    // Update user embedding after like/dislike
+    if (req.headers['x-update-embedding'] === 'true') {
+        await updateUserProfileEmbedding(user._id);
+        console.log('Updated user embedding after like/dislike:', user._id);
+    }
 
     res.json({
         liked_articles: user.liked_articles,
@@ -100,6 +107,12 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
 
         await user.save();
 
+        // Update user embedding after save/unsave
+        if (req.headers['x-update-embedding'] === 'true') {
+            await updateUserProfileEmbedding(user._id);
+            console.log('Updated user embedding after save/unsave:', user._id);
+        }
+
         res.json({
             isSaved: !isSaved,
             saved_articles: user.saved_articles,
@@ -109,7 +122,6 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
         res.status(500).json({ message: 'Error saving/unsaving article' });
     }
 });
-
 
 // Follow/Unfollow Source (Requires auth and ensureMongoUser)
 router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
@@ -251,6 +263,47 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
     } catch (err) {
         console.error('Error following/unfollowing group:', err);
         res.status(500).json({ message: 'Error updating follow status' });
+    }
+});
+
+// Add this event logging endpoint
+router.post('/events', auth, ensureMongoUser, async (req, res) => {
+    try {
+        const { eventType, articleId, duration } = req.body;
+        const user = req.mongoUser;
+
+        if (!eventType || !articleId) {
+            return res.status(400).json({ message: 'eventType and articleId are required' });
+        }
+
+        // Create activity record
+        await UserActivity.create({
+            userId: user._id,
+            eventType,
+            articleId,
+            duration: duration || null,
+            timestamp: new Date()
+        });
+
+        // Handle view events - update user's viewed_articles
+        if (eventType === 'view') {
+            const viewed = user.viewed_articles || [];
+            if (!viewed.includes(articleId)) {
+                user.viewed_articles = [articleId, ...viewed].slice(0, 100); // Keep last 100
+                await user.save();
+            }
+        }
+
+        // Update embedding for significant events
+        if (['view', 'like', 'dislike', 'save', 'unsave', 'read_time'].includes(eventType)) {
+            await updateUserProfileEmbedding(user._id);
+            console.log(`Updated user embedding after ${eventType} event for user ${user._id}`);
+        }
+
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Error processing event:', error);
+        res.status(500).json({ message: 'Failed to process event' });
     }
 });
 

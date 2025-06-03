@@ -8,22 +8,30 @@ const Article = require('../models/Article');
  * @returns {Promise<void>}
  */
 async function updateUserProfileEmbedding(userId) {
+    console.log(`Starting embedding update for user: ${userId}`);
     // Fetch the user
     const user = await User.findById(userId) || await User.findOne({ supabase_id: userId });
-    if (!user) throw new Error('User not found');
+    if (!user) {
+        console.log(`No user found for ID: ${userId}`);
+        throw new Error('User not found');
+    }
 
     // Get recent "liked" and "read" articles (expand logic as you like)
     const likedIds = user.liked_articles || [];
     const readIds = user.viewed_articles || [];
     const allIds = [...new Set([...likedIds, ...readIds])].slice(0, 20); // most recent 20
 
+    console.log(`User ${userId} has ${likedIds.length} liked articles and ${readIds.length} read articles`);
+
     if (!allIds.length) {
+        console.log(`No articles found for user ${userId}, resetting embedding`);
         user.embedding = []; // No activity? Reset embedding.
         await user.save();
         return;
     }
 
     const articles = await Article.find({ _id: { $in: allIds } }).sort({ publishedAt: -1 }).limit(20);
+    console.log(`Found ${articles.length} articles for embedding generation`);
 
     // Combine titles & (optional) first 100 chars of content
     const profileText = articles
@@ -40,6 +48,7 @@ async function updateUserProfileEmbedding(userId) {
 
     user.embedding = embedding;
     await user.save();
+    console.log(`Successfully updated embedding for user ${userId}`);
 }
 
 module.exports = { updateUserProfileEmbedding };
