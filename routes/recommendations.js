@@ -17,7 +17,7 @@ router.get('/:supabaseId', async (req, res) => {
     const savedIds = user.saved_articles.map(id => new mongoose.Types.ObjectId(id));
     const allEngagedIds = [...new Set([...likedIds, ...savedIds])];
 
-    const engagedArticles = await Article.find({ _id: { $in: allEngagedIds } }).lean();
+    const engagedArticles = await Article.find({ _id: { $in: allEngagedIds } }).select('-embedding').lean();
     const engagedCategories = [...new Set(engagedArticles.map(a => a.category).filter(Boolean))];
     const engagedSources = [...new Set(engagedArticles.map(a => a.sourceId).filter(Boolean))];
 
