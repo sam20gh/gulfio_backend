@@ -6,6 +6,8 @@ const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
+
 // Keep ensureMongoUser for other routes
 
 function validateObjectId(id) {
