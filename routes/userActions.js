@@ -41,7 +41,7 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     }
 
     await user.save();
-
+    await updateUserProfileEmbedding(user._id);
     res.json({
         liked_articles: user.liked_articles,
         disliked_articles: user.disliked_articles || [],
@@ -68,7 +68,7 @@ router.post('/article/:articleId/view', async (req, res) => {
         if (!updatedArticle) {
             return res.status(404).json({ message: 'Article not found' });
         }
-
+        await updateUserProfileEmbedding(user._id);
         // Return success message and potentially the new view count
         res.json({ message: 'Article view count incremented', viewCount: updatedArticle.viewCount });
 
@@ -99,7 +99,7 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
-
+        await updateUserProfileEmbedding(user._id);
         res.json({
             isSaved: !isSaved,
             saved_articles: user.saved_articles,
@@ -129,6 +129,7 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
+        await updateUserProfileEmbedding(user._id);
         res.json({ following_sources: user.following_sources });
     } catch (err) {
         console.error('Error following source:', err); // Log the error
@@ -190,6 +191,7 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
 
         // 6) Persist and respond
         await user.save();
+        await updateUserProfileEmbedding(user._id);
         res.json({
             isFollowing: action === 'follow' ? true
                 : action === 'unfollow' ? false
@@ -242,6 +244,7 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
+        await updateUserProfileEmbedding(user._id);
 
         res.json({
             following_sources: user.following_sources,
