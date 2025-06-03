@@ -11,49 +11,6 @@ const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const FormData = require('form-data')
 const form = new FormData()
 
-// Add this middleware for checking if embedding update is requested
-const checkEmbeddingUpdate = async (req, res, next) => {
-    if (req.headers['x-update-embedding'] === 'true' && req.mongoUser) {
-        try {
-            await updateUserProfileEmbedding(req.mongoUser._id);
-            console.log('User embedding updated for:', req.mongoUser._id);
-        } catch (error) {
-            console.error('Failed to update user embedding:', error);
-        }
-    }
-    next();
-};
-
-// Apply the middleware after ensureMongoUser where needed
-router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const user = req.mongoUser;
-
-        // Toggle saved status
-        const savedArticles = user.saved_articles || [];
-        const idx = savedArticles.indexOf(id);
-
-        if (idx === -1) {
-            savedArticles.push(id);
-        } else {
-            savedArticles.splice(idx, 1);
-        }
-
-        user.saved_articles = savedArticles;
-        await user.save();
-
-        // Update embedding if requested
-        if (req.headers['x-update-embedding'] === 'true') {
-            await updateUserProfileEmbedding(user._id);
-        }
-
-        res.json({ saved_articles: user.saved_articles });
-    } catch (err) {
-        console.error('Error saving article:', err);
-        res.status(500).json({ message: 'Failed to save article' });
-    }
-});
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {

@@ -8,7 +8,6 @@ const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
-const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -143,16 +142,6 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       likes,
       dislikes
     });
-
-    // Update user embedding if requested
-    if (req.headers['x-update-embedding'] === 'true') {
-      try {
-        await updateUserProfileEmbedding(user._id);
-        console.log('Updated user embedding after reaction:', user._id);
-      } catch (embError) {
-        console.error('Error updating embedding:', embError);
-      }
-    }
 
     await clearArticlesCache?.();
   } catch (error) {
