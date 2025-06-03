@@ -8,6 +8,7 @@ const cache = require('../utils/cache')
 const mongoose = require('mongoose');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding'); // Add this import
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -128,7 +129,10 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       );
     }
 
-    // 3. Return updated counts
+    // 3. Update user profile embedding after interaction
+    await updateUserProfileEmbedding(mongoUser._id);
+
+    // 4. Return updated counts
     const updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy');
     const likes = updatedArticle?.likedBy?.length || 0;
     const dislikes = updatedArticle?.dislikedBy?.length || 0;
@@ -193,14 +197,20 @@ articleRouter.get('/:id/react', auth, ensureMongoUser, async (req, res) => {
 });
 
 // POST: Increment article view count
-articleRouter.post('/:id/view', async (req, res) => {
+articleRouter.post('/:id/view', auth, ensureMongoUser, async (req, res) => {
   try {
     const article = await Article.findByIdAndUpdate(
       req.params.id,
       { $inc: { viewCount: 1 } },
       { new: true }
     );
+
     if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    // If user is authenticated, update their profile embedding
+    if (req.mongoUser) {
+      await updateUserProfileEmbedding(req.mongoUser._id);
+    }
 
     res.json({ viewCount: article.viewCount });
   } catch (error) {

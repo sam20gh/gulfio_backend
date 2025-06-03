@@ -70,7 +70,10 @@ router.post('/article/:articleId/view', async (req, res) => {
         if (!updatedArticle) {
             return res.status(404).json({ message: 'Article not found' });
         }
-        await updateUserProfileEmbedding(user._id);
+
+        // FIXED: Remove invalid reference to user
+        // await updateUserProfileEmbedding(user._id);
+
         // Return success message and potentially the new view count
         res.json({ message: 'Article view count incremented', viewCount: updatedArticle.viewCount });
 
