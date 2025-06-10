@@ -17,7 +17,12 @@ router.get('/', async (req, res) => {
 // ✅ NEW: GET /api/videos/reels
 router.get('/reels', async (req, res) => {
     try {
+        const source = await Source.findOne({ instagramUsername: { $exists: true } });
+        if (source) {
+            await scrapeReelsForSource(source._id, source.instagramUsername); // re-scrape live
+        }
         const reels = await Reel.find().sort({ scrapedAt: -1 }).limit(20);
+
         res.json(reels);
     } catch (err) {
         console.error(err.message);
