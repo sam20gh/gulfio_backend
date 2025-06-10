@@ -63,59 +63,53 @@ async function fetchReelsViaPuppeteer(username) {
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 1200, height: 800 });
-
-        console.log(`🌐 Visiting https://www.instagram.com/${username}/reels/`);
+        await page.setViewport({ width: 1280, height: 900 });
         await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'networkidle2' });
 
-        // Scroll to load
-        await page.evaluate(async () => {
-            await new Promise(resolve => {
-                let totalHeight = 0;
-                const distance = 500;
-                const timer = setInterval(() => {
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= 3000) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 300);
-            });
-        });
+        // Wait for reel tiles
+        await page.waitForSelector('._aajy', { timeout: 10000 });
 
-        await page.waitForTimeout(3000);
+        const reelSelectors = await page.$$eval('._aajy', nodes =>
+            nodes.map((_, i) => `._aajy:nth-of-type(${i + 1})`)
+        );
 
-        // DEBUG: Screenshot
-        const screenshotPath = path.join(__dirname, '../debug/instagram_reels.png');
-        await page.screenshot({ path: screenshotPath });
-        console.log(`📸 Screenshot saved to ${screenshotPath}`);
+        const results = [];
 
-        // DEBUG: Count video tags
-        const debug = await page.evaluate(() => {
-            const allVideos = Array.from(document.querySelectorAll('video'));
-            const htmlSamples = allVideos.map(v => v.outerHTML);
-            return {
-                count: allVideos.length,
-                samples: htmlSamples.slice(0, 2),
-                reels: allVideos.map(v => ({
-                    reelId: Math.random().toString(36).substring(2, 12),
-                    videoUrl: v.src,
-                })).filter(r => r.videoUrl),
-            };
-        });
+        for (let i = 0; i < Math.min(5, reelSelectors.length); i++) {
+            const selector = reelSelectors[i];
 
-        console.log(`🎞 Found ${debug.count} <video> elements`);
-        console.log(`🔍 Sample HTML:\n`, debug.samples.join('\n\n'));
+            // Click reel item
+            await page.click(selector);
+            await page.waitForTimeout(2000); // let modal load
+
+            // Wait for <video> tag in modal
+            try {
+                await page.waitForSelector('video[src]', { timeout: 7000 });
+
+                const videoUrl = await page.$eval('video[src]', vid => vid.src);
+
+                if (videoUrl) {
+                    results.push({
+                        reelId: `modal_${Date.now()}_${i}`,
+                        videoUrl,
+                    });
+                }
+            } catch (e) {
+                console.warn(`❌ Could not find video for ${selector}`);
+            }
+
+            // Press ESC to close modal
+            await page.keyboard.press('Escape');
+            await page.waitForTimeout(1500);
+        }
 
         await browser.close();
-        return debug.reels;
+        return results;
     } catch (err) {
-        console.warn('⚠️ Puppeteer fallback failed:', err.message);
+        console.error('❌ Puppeteer scraping failed:', err.message);
         return [];
     }
 }
-
 
 async function scrapeReelsForSource(sourceId, username) {
     const sources = [
