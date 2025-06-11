@@ -1,79 +1,76 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
-const Reel = require('../models/Reel'); // Adjust path as needed
+const Reel = require('../models/Reel');
 
-async function fetchReelsViaPuppeteer(username) {
+async function scrapeReelsForSource(sourceId, username) {
+    const browser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    const page = await browser.newPage();
     try {
-        const browser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        await page.goto(`https://www.instagram.com/${username}/reels`, {
+            waitUntil: 'networkidle2',
+            timeout: 60000,
         });
 
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 900 });
-        await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'networkidle2' });
+        // Wait for the container to load
+        await page.waitForSelector('main', { timeout: 10000 });
 
-        await page.waitForSelector('._aajy', { timeout: 10000 });
-
-        const reelSelectors = await page.$$eval('._aajy', nodes =>
-            nodes.map((_, i) => `._aajy:nth-of-type(${i + 1})`)
-        );
-
-        const results = [];
-
-        for (let i = 0; i < Math.min(20, reelSelectors.length); i++) {
-            const selector = reelSelectors[i];
-
-            try {
-                await page.click(selector);
-                await page.waitForTimeout(2000);
-
-                await page.waitForSelector('video[src]', { timeout: 7000 });
-
-                const videoUrl = await page.$eval('video[src]', vid => vid.src);
-
-                if (videoUrl && !results.find(r => r.videoUrl === videoUrl)) {
-                    results.push({
-                        reelId: `modal_${Date.now()}_${i}`,
-                        videoUrl,
-                    });
-                }
-            } catch (e) {
-                console.warn(`⚠️ Failed to process ${selector}: ${e.message}`);
-            }
-
-            await page.keyboard.press('Escape');
-            await page.waitForTimeout(1500);
+        // Scroll a few times to trigger lazy loading
+        for (let i = 0; i < 3; i++) {
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+            await page.waitForTimeout(2000);
         }
 
-        await browser.close();
-        return results;
+        // Now try to find all ._aajy elements with parent anchor tags
+        const reelLinks = await page.$$eval('._aajy', nodes =>
+            nodes
+                .map(node => {
+                    const anchor = node.closest('a');
+                    return anchor ? anchor.href : null;
+                })
+                .filter(Boolean)
+        );
+
+        console.log(`🎯 Found ${reelLinks.length} reel links`);
+
+        const inserted = [];
+
+        for (const link of reelLinks) {
+            await page.goto(link, { waitUntil: 'networkidle2', timeout: 30000 });
+
+            await page.waitForTimeout(1000);
+
+            const videoUrl = await page.evaluate(() => {
+                const video = document.querySelector('video');
+                return video ? video.src : null;
+            });
+
+            if (!videoUrl) continue;
+
+            const reelId = link.split('/').filter(Boolean).pop();
+            const existing = await Reel.findOne({ reelId });
+
+            if (!existing) {
+                const reel = await Reel.create({
+                    source: sourceId,
+                    reelId,
+                    videoUrl,
+                    scrapedAt: new Date(),
+                });
+                inserted.push(reel);
+            }
+        }
+
+        console.log(`✅ Upserted ${inserted.length} reels`);
+        return inserted;
     } catch (err) {
         console.error('❌ Puppeteer scraping failed:', err.message);
         return [];
+    } finally {
+        await browser.close();
     }
-}
-
-async function scrapeReelsForSource(sourceId, username) {
-    const allReels = await fetchReelsViaPuppeteer(username);
-
-    for (const reel of allReels) {
-        const existing = await Reel.findOne({
-            $or: [{ reelId: reel.reelId }, { videoUrl: reel.videoUrl }],
-        });
-
-        if (!existing) {
-            await Reel.create({
-                source: sourceId,
-                reelId: reel.reelId,
-                videoUrl: reel.videoUrl,
-                scrapedAt: new Date(),
-            });
-        }
-    }
-
-    return allReels;
 }
 
 module.exports = { scrapeReelsForSource };
