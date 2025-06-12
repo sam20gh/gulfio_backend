@@ -16,6 +16,12 @@ const userSchema = new mongoose.Schema({
     following_sources: [{ type: String }],
     following_users: [{ type: String }],
     blocked_users: [{ type: String }],
+    // User.js (update schema)
+    liked_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
+    disliked_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
+    saved_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
+    viewed_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
+
     embedding: {
         type: [Number],
         default: [],

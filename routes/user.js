@@ -8,6 +8,7 @@ const sendExpoNotification = require('../utils/sendExpoNotification');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
 const axios = require('axios');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
+const Reel = require('../models/Reel');
 const FormData = require('form-data')
 const form = new FormData()
 
@@ -217,6 +218,160 @@ router.post('/get-upload-url', auth, async (req, res) => {
         });
     }
 });
+
+
+// LIKE or DISLIKE a Reel
+router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const reelId = req.params.id;
+    const { action } = req.body; // 'like' or 'dislike'
+
+    if (!mongoose.Types.ObjectId.isValid(reelId)) {
+        return res.status(400).json({ message: 'Invalid reel ID' });
+    }
+
+    const reelObjectId = new mongoose.Types.ObjectId(reelId);
+    const isLiked = user.liked_reels?.some(id => id.equals(reelObjectId));
+    const isDisliked = user.disliked_reels?.some(id => id.equals(reelObjectId));
+
+    if (action === 'like') {
+        if (!isLiked) user.liked_reels.push(reelObjectId);
+        if (isDisliked) user.disliked_reels.pull(reelObjectId);
+    } else if (action === 'dislike') {
+        if (!isDisliked) {
+            user.disliked_reels = user.disliked_reels || [];
+            user.disliked_reels.push(reelObjectId);
+        }
+        if (isLiked) user.liked_reels.pull(reelObjectId);
+    } else {
+        return res.status(400).json({ message: 'Invalid action type' });
+    }
+
+    await user.save();
+
+    res.json({
+        liked_reels: user.liked_reels,
+        disliked_reels: user.disliked_reels || [],
+    });
+});
+
+// SAVE or UNSAVE a Reel
+router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const reelId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(reelId)) {
+        return res.status(400).json({ message: 'Invalid reel ID' });
+    }
+
+    const reelObjectId = new mongoose.Types.ObjectId(reelId);
+
+    try {
+        const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
+
+        if (isSaved) {
+            user.saved_reels.pull(reelObjectId);
+        } else {
+            user.saved_reels.addToSet(reelObjectId);
+        }
+
+        await user.save();
+        res.json({
+            isSaved: !isSaved,
+            saved_reels: user.saved_reels,
+        });
+    } catch (err) {
+        console.error('Error saving/unsaving reel:', err);
+        res.status(500).json({ message: 'Error saving/unsaving reel' });
+    }
+});
+
+// VIEW a Reel (mark as viewed)
+router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const reelId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(reelId)) {
+        return res.status(400).json({ message: 'Invalid reel ID' });
+    }
+
+    const reelObjectId = new mongoose.Types.ObjectId(reelId);
+
+    if (!user.viewed_reels?.some(id => id.equals(reelObjectId))) {
+        user.viewed_reels.addToSet(reelObjectId);
+        await user.save();
+    }
+
+    res.json({ viewed_reels: user.viewed_reels });
+});
+// GET liked reels
+router.get('/:id/liked-reels', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const likedIds = user.liked_reels || [];
+        if (likedIds.length === 0) return res.json([]);
+
+        const reels = await Reel.find({ _id: { $in: likedIds } }).sort({ createdAt: -1 });
+        res.json({ count: likedIds.length, reels });
+    } catch (err) {
+        console.error('Error in /:id/liked-reels:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET disliked reels
+router.get('/:id/disliked-reels', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const dislikedIds = user.disliked_reels || [];
+        if (dislikedIds.length === 0) return res.json([]);
+
+        const reels = await Reel.find({ _id: { $in: dislikedIds } }).sort({ createdAt: -1 });
+        res.json({ count: dislikedIds.length, reels });
+    } catch (err) {
+        console.error('Error in /:id/disliked-reels:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET saved reels
+router.get('/:id/saved-reels', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const savedIds = user.saved_reels || [];
+        if (savedIds.length === 0) return res.json([]);
+
+        const reels = await Reel.find({ _id: { $in: savedIds } }).sort({ createdAt: -1 });
+        res.json({ count: savedIds.length, reels });
+    } catch (err) {
+        console.error('Error in /:id/saved-reels:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET viewed reels
+router.get('/:id/viewed-reels', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const viewedIds = user.viewed_reels || [];
+        if (viewedIds.length === 0) return res.json([]);
+
+        const reels = await Reel.find({ _id: { $in: viewedIds } }).sort({ createdAt: -1 });
+        res.json({ count: viewedIds.length, reels });
+    } catch (err) {
+        console.error('Error in /:id/viewed-reels:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 
 
 router.post('/update-embedding', auth, async (req, res) => {
