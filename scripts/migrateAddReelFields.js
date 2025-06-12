@@ -3,44 +3,27 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/YOUR_DB_NAME'; // update if needed
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/YOUR_DB_NAME';
 
-async function migrate() {
+async function run() {
     await mongoose.connect(MONGO_URI);
-    const users = await User.find();
 
-    let updated = 0;
+    const updates = [
+        User.updateMany({ liked_reels: { $exists: false } }, { $set: { liked_reels: [] } }),
+        User.updateMany({ disliked_reels: { $exists: false } }, { $set: { disliked_reels: [] } }),
+        User.updateMany({ saved_reels: { $exists: false } }, { $set: { saved_reels: [] } }),
+        User.updateMany({ viewed_reels: { $exists: false } }, { $set: { viewed_reels: [] } }),
+    ];
 
-    for (const user of users) {
-        let changed = false;
-        if (!Array.isArray(user.liked_reels)) {
-            user.liked_reels = [];
-            changed = true;
-        }
-        if (!Array.isArray(user.disliked_reels)) {
-            user.disliked_reels = [];
-            changed = true;
-        }
-        if (!Array.isArray(user.saved_reels)) {
-            user.saved_reels = [];
-            changed = true;
-        }
-        if (!Array.isArray(user.viewed_reels)) {
-            user.viewed_reels = [];
-            changed = true;
-        }
-        if (changed) {
-            await user.save();
-            updated++;
-            console.log(`Updated user: ${user._id}`);
-        }
-    }
+    const results = await Promise.all(updates);
+    results.forEach((result, idx) => {
+        console.log(`Updated ${result.modifiedCount || result.nModified} users for update #${idx + 1}`);
+    });
 
-    console.log(`Migration complete. Updated ${updated} user(s).`);
     mongoose.disconnect();
 }
 
-migrate().catch(err => {
+run().catch(err => {
     console.error('Migration error:', err);
     mongoose.disconnect();
 });
