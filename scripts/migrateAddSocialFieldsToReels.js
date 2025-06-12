@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Reel = require('../models/Reel');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/YOUR_DB_NAME'; // edit as needed
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/YOUR_DB_NAME';
 
 async function migrate() {
     await mongoose.connect(MONGO_URI);
@@ -12,12 +12,25 @@ async function migrate() {
     for (const reel of reels) {
         let changed = false;
 
-        if (typeof reel.likes !== 'number') { reel.likes = 0; changed = true; }
-        if (!Array.isArray(reel.likedBy)) { reel.likedBy = []; changed = true; }
-        if (typeof reel.dislikes !== 'number') { reel.dislikes = 0; changed = true; }
-        if (!Array.isArray(reel.dislikedBy)) { reel.dislikedBy = []; changed = true; }
-        if (typeof reel.viewCount !== 'number') { reel.viewCount = 0; changed = true; }
-        if (!Array.isArray(reel.viewedBy)) { reel.viewedBy = []; changed = true; }
+        // Use "in" to check for presence in raw doc, NOT Mongoose virtuals/defaults
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'likes')) {
+            reel.likes = 0; changed = true;
+        }
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'likedBy')) {
+            reel.likedBy = []; changed = true;
+        }
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'dislikes')) {
+            reel.dislikes = 0; changed = true;
+        }
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'dislikedBy')) {
+            reel.dislikedBy = []; changed = true;
+        }
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'viewCount')) {
+            reel.viewCount = 0; changed = true;
+        }
+        if (!Object.prototype.hasOwnProperty.call(reel.toObject(), 'viewedBy')) {
+            reel.viewedBy = []; changed = true;
+        }
 
         if (changed) {
             await reel.save();
