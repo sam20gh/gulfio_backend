@@ -49,8 +49,8 @@ async function getInstagramVideoUrl(reelUrl) {
             window.scrollBy(0, 300);
         });
 
-        // Wait a moment after scrolling
-        await page.waitForTimeout(2000);
+        // Wait a moment after scrolling (using standard setTimeout instead of page.waitForTimeout)
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Try multiple extraction methods
         console.log('Attempting extraction method 1: JSON-LD data');
