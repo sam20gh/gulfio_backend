@@ -143,7 +143,6 @@ const s3 = new S3Client({
 
 async function uploadToR2(videoUrl, filename) {
     try {
-        // Use axios instead of fetch
         const response = await axios({
             method: 'get',
             url: videoUrl,
@@ -159,7 +158,16 @@ async function uploadToR2(videoUrl, filename) {
         });
 
         await s3.send(command);
-        return `https://${R2_BUCKET}.${R2_ENDPOINT.replace('https://', '')}/${filename}`;
+
+        // The public URL should use the r2.dev address, not the S3 API URL
+        const r2Url = `${process.env.R2_PUBLIC_URL}/${filename}`;
+        // If R2_PUBLIC_URL is 'https://pub-055f53ce13db4571bdeacb9e6ea6ba9a.r2.dev'
+        // then the file will be accessible at:
+        // https://pub-055f53ce13db4571bdeacb9e6ea6ba9a.r2.dev/filename
+
+        console.log('Generated R2 Public URL:', r2Url);
+
+        return r2Url;
     } catch (error) {
         console.error('Error in uploadToR2:', error);
         throw new Error(`Failed to upload to R2: ${error.message}`);
