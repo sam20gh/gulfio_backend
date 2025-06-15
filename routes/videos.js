@@ -1,9 +1,55 @@
 const express = require('express');
 const Video = require('../models/Video');
-const Reel = require('../models/Reel'); // 👈 Make sure this model exists
+const Reel = require('../models/Reel');
+const Source = require('../models/Source');
+const puppeteer = require('puppeteer');
+const fetch = require('node-fetch');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const getDeepSeekEmbedding = require('../utils/deepseek'); // Adjust the path as needed
 const router = express.Router();
 
-// GET /api/videos
+// You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
+const {
+    R2_ENDPOINT,
+    R2_ACCESS_KEY,
+    R2_SECRET_KEY,
+    R2_BUCKET
+} = process.env;
+
+// Helper: Get the real Instagram video URL
+async function getInstagramVideoUrl(reelUrl) {
+    const browser = await puppeteer.launch({ headless: 'new' });
+    const page = await browser.newPage();
+    await page.goto(reelUrl, { waitUntil: 'networkidle2', timeout: 25000 });
+    await page.waitForSelector('video');
+    const videoUrl = await page.$eval('video', el => el.src);
+    await browser.close();
+    return videoUrl;
+}
+
+// Helper: Upload to R2
+const s3 = new S3Client({
+    region: 'auto',
+    endpoint: R2_ENDPOINT,
+    credentials: {
+        accessKeyId: R2_ACCESS_KEY,
+        secretAccessKey: R2_SECRET_KEY,
+    }
+});
+async function uploadToR2(videoUrl, filename) {
+    const response = await fetch(videoUrl);
+    const buffer = await response.buffer();
+    const command = new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: filename,
+        Body: buffer,
+        ContentType: 'video/mp4'
+    });
+    await s3.send(command);
+    return `https://${R2_BUCKET}.${R2_ENDPOINT.replace('https://', '')}/${filename}`;
+}
+
+// ===================== EXISTING ROUTES =====================
 router.get('/', async (req, res) => {
     try {
         const videos = await Video.find().sort({ publishedAt: -1 }).limit(20);
@@ -14,7 +60,6 @@ router.get('/', async (req, res) => {
     }
 });
 
-// ✅ NEW: GET /api/videos/reels
 router.get('/reels', async (req, res) => {
     try {
         const reels = await Reel.find().sort({ scrapedAt: -1 }).limit(20);
@@ -24,15 +69,53 @@ router.get('/reels', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch reels' });
     }
 });
+
+// ===================== NEW: UPLOAD REEL ROUTE =====================
+router.post('/reels/upload', async (req, res) => {
+    try {
+        const { reelUrl, caption, sourceId } = req.body;
+        if (!reelUrl || !caption || !sourceId) {
+            return res.status(400).json({ message: 'Missing required fields.' });
+        }
+
+        // 1. Get direct video URL from Instagram
+        const videoUrl = await getInstagramVideoUrl(reelUrl);
+
+        // 2. Upload to R2
+        const filename = `reel-${Date.now()}.mp4`;
+        const r2Url = await uploadToR2(videoUrl, filename);
+
+        // 3. Get embedding
+        const embedInput = `${caption}\n\n${reelUrl}`;
+        const embedding = await getDeepSeekEmbedding(embedInput);
+
+        // 4. Save in MongoDB
+        const newReel = new Reel({
+            videoUrl: r2Url,
+            caption,
+            source: sourceId,
+            reelId: filename,
+            scrapedAt: new Date(),
+            updatedAt: new Date(),
+            embedding
+        });
+        await newReel.save();
+
+        res.json({ message: 'Reel uploaded and saved!', reel: newReel });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Upload failed', error: err.message });
+    }
+});
+
+// ============= Instagram refresh route remains unchanged =============
 router.post('/:id/instagram/refresh', async (req, res) => {
     try {
         const source = await Source.findById(req.params.id);
         if (!source || !source.instagramUsername) {
             return res.status(404).json({ error: 'No Instagram username configured for this source' });
         }
-
         const reels = await scrapeReelsForSource(source._id, source.instagramUsername);
-
         res.json({
             message: `✅ Scraped ${reels.length} reels for @${source.instagramUsername}`,
             count: reels.length,
