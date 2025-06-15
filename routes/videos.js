@@ -20,12 +20,20 @@ const {
 async function getInstagramVideoUrl(reelUrl) {
     const browser = await puppeteer.launch({ headless: 'new' });
     const page = await browser.newPage();
-    await page.goto(reelUrl, { waitUntil: 'networkidle2', timeout: 25000 });
-    await page.waitForSelector('video');
-    const videoUrl = await page.$eval('video', el => el.src);
+    await page.goto(reelUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    const html = await page.content();
+    const matches = html.match(/"video_url":"([^"]+)"/);
+    let videoUrl = null;
+    if (matches && matches[1]) {
+        videoUrl = matches[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+    }
     await browser.close();
+    if (!videoUrl || !videoUrl.startsWith('http')) {
+        throw new Error('Unable to extract Instagram mp4 video URL. Maybe the reel is private or Instagram changed its markup.');
+    }
     return videoUrl;
 }
+
 
 // Helper: Upload to R2
 const s3 = new S3Client({
