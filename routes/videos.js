@@ -38,7 +38,8 @@ const s3 = new S3Client({
 });
 async function uploadToR2(videoUrl, filename) {
     const response = await fetch(videoUrl);
-    const buffer = await response.buffer();
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
     const command = new PutObjectCommand({
         Bucket: R2_BUCKET,
         Key: filename,
@@ -48,6 +49,7 @@ async function uploadToR2(videoUrl, filename) {
     await s3.send(command);
     return `https://${R2_BUCKET}.${R2_ENDPOINT.replace('https://', '')}/${filename}`;
 }
+
 
 // ===================== EXISTING ROUTES =====================
 router.get('/', async (req, res) => {
