@@ -3,7 +3,7 @@ const Video = require('../models/Video');
 const Reel = require('../models/Reel');
 const Source = require('../models/Source');
 const puppeteer = require('puppeteer');
-const fetch = require('node-fetch');
+const axios = require('axios'); // Replace fetch with axios
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const getDeepSeekEmbedding = require('../utils/deepseek'); // Adjust the path as needed
 const router = express.Router();
@@ -36,18 +36,30 @@ const s3 = new S3Client({
         secretAccessKey: R2_SECRET_KEY,
     }
 });
+
 async function uploadToR2(videoUrl, filename) {
-    const response = await fetch(videoUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const command = new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: filename,
-        Body: buffer,
-        ContentType: 'video/mp4'
-    });
-    await s3.send(command);
-    return `https://${R2_BUCKET}.${R2_ENDPOINT.replace('https://', '')}/${filename}`;
+    try {
+        // Use axios instead of fetch
+        const response = await axios({
+            method: 'get',
+            url: videoUrl,
+            responseType: 'arraybuffer'
+        });
+
+        const buffer = Buffer.from(response.data);
+        const command = new PutObjectCommand({
+            Bucket: R2_BUCKET,
+            Key: filename,
+            Body: buffer,
+            ContentType: 'video/mp4'
+        });
+
+        await s3.send(command);
+        return `https://${R2_BUCKET}.${R2_ENDPOINT.replace('https://', '')}/${filename}`;
+    } catch (error) {
+        console.error('Error in uploadToR2:', error);
+        throw new Error(`Failed to upload to R2: ${error.message}`);
+    }
 }
 
 
