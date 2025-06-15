@@ -12,6 +12,8 @@ async function run() {
         Reel.updateMany({ dislikedBy: { $exists: false } }, { $set: { dislikedBy: [] } }),
         Reel.updateMany({ viewCount: { $exists: false } }, { $set: { viewCount: 0 } }),
         Reel.updateMany({ viewedBy: { $exists: false } }, { $set: { viewedBy: [] } }),
+        Reel.updateMany({ caption: { $exists: false } }, { $set: { caption: [] } }),
+        Reel.updateMany({ embedding: { $exists: false } }, { $set: { embedding: [] } }),
     ];
 
     const results = await Promise.all(updates);
