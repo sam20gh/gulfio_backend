@@ -18,7 +18,6 @@ const {
 
 // Helper: Get the real Instagram video URL with multiple extraction strategies
 
-const puppeteer = require('puppeteer');
 
 async function getInstagramVideoUrl(reelUrl) {
     let browser;
