@@ -17,29 +17,76 @@ const {
 } = process.env;
 
 // Helper: Get the real Instagram video URL with multiple extraction strategies
+
 async function getInstagramVideoUrl(reelUrl) {
-    const browser = await puppeteer.launch({ headless: 'new' });
-    const page = await browser.newPage();
-    await page.goto(reelUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    let browser;
+    try {
+        browser = await puppeteer.launch({ headless: 'new' });
+        const page = await browser.newPage();
 
-    // Get all <script> tag contents as one string
-    const html = await page.content();
+        // Set user agent to mimic a real browser
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
-    // Try to extract video_url from embedded JSON
-    const matches = html.match(/"video_url":"([^"]+)"/);
-    let videoUrl = null;
-    if (matches && matches[1]) {
-        videoUrl = matches[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+        await page.goto(reelUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        let videoUrl = null;
+
+        // Method 1: Try extracting from og:video meta tag
+        try {
+            await page.waitForSelector('meta[property="og:video"]', { timeout: 5000 });
+            videoUrl = await page.$eval('meta[property="og:video"]', el => el.content);
+        } catch (e) {
+            console.log('Method 1 failed: og:video not found');
+        }
+
+        // Method 2: Try getting video element source
+        if (!videoUrl) {
+            try {
+                await page.waitForSelector('video', { timeout: 5000 });
+                videoUrl = await page.$eval('video', video => video.src);
+            } catch (e) {
+                console.log('Method 2 failed: video element not found');
+            }
+        }
+
+        // Method 3: Search for JSON data in script tags
+        if (!videoUrl) {
+            try {
+                const scriptContent = await page.$$eval('script', scripts =>
+                    scripts.map(script => script.innerHTML).join('\n')
+                );
+
+                // First pattern: Look for video_url in standard JSON structure
+                const jsonMatch = scriptContent.match(/"video_url":"(https:[^"]+\.mp4[^"]*)"/);
+                if (jsonMatch && jsonMatch[1]) {
+                    videoUrl = jsonMatch[1].replace(/\\u0026/g, '&');
+                }
+
+                // Second pattern: Look for video resources in GraphQL data
+                if (!videoUrl) {
+                    const graphqlMatch = scriptContent.match(/"video_versions":\[{"type":\d+,"url":"(https:[^"]+\.mp4[^"]*)"/);
+                    if (graphqlMatch && graphqlMatch[1]) {
+                        videoUrl = graphqlMatch[1].replace(/\\u0026/g, '&');
+                    }
+                }
+            } catch (e) {
+                console.log('Method 3 failed: JSON extraction error');
+            }
+        }
+
+        // Final validation
+        if (!videoUrl || !videoUrl.startsWith('https://')) {
+            throw new Error('Unable to extract video URL. Possible reasons:\n' +
+                '- Reel is private or removed\n' +
+                '- Instagram changed their page structure\n' +
+                '- Slow network connection (try increasing timeout)');
+        }
+
+        return videoUrl;
+    } finally {
+        if (browser) await browser.close();
     }
-
-    await browser.close();
-
-    if (!videoUrl || !videoUrl.startsWith('http')) {
-        throw new Error('Unable to extract Instagram mp4 video URL. Maybe the reel is private or Instagram changed its markup.');
-    }
-    return videoUrl;
 }
-
 // Helper: Upload to R2
 const s3 = new S3Client({
     region: 'auto',
