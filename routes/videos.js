@@ -5,7 +5,8 @@ const Source = require('../models/Source');
 const puppeteer = require('puppeteer');
 const axios = require('axios'); // Replace fetch with axios
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const getDeepSeekEmbedding = require('../utils/deepseek'); // Adjust the path as needed
+const getDeepSeekEmbedding = require('../utils/deepseek');
+const { igdl } = require('btch-downloader');// Adjust the path as needed
 const router = express.Router();
 
 // You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
@@ -20,111 +21,21 @@ const {
 
 
 async function getInstagramVideoUrl(reelUrl) {
-    let browser;
     try {
-        browser = await puppeteer.launch({ headless: 'new' });
-        const page = await browser.newPage();
+        const result = await igdl(reelUrl);
 
-        // Set user agent to mimic a real browser
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-
-        await page.goto(reelUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        // 1. Try to auto-accept the cookie banner
-        try {
-            await page.waitForSelector('button._a9--', { timeout: 4000 });
-            await page.click('button._a9--');
-            console.log('Clicked Allow all cookies');
-            await page.waitForTimeout(500); // brief pause
-        } catch {
-            console.log('No cookie banner detected');
+        // The result is usually an array of objects with a `url` key for the direct mp4
+        // For example: [ { url: "https://...mp4", ... }, ... ]
+        if (Array.isArray(result) && result.length > 0 && result[0].url && result[0].url.startsWith('http')) {
+            return result[0].url;
         }
 
-        // 2. Try to auto-close the login modal (if present)
-        try {
-            // Instagram sometimes uses a [aria-label="Close"] button or SVG
-            await page.waitForSelector('svg[aria-label="Close"], button[aria-label="Close"]', { timeout: 4000 });
-            await page.click('svg[aria-label="Close"], button[aria-label="Close"]');
-            console.log('Closed login modal');
-            await page.waitForTimeout(500);
-        } catch {
-            console.log('No login modal detected');
-        }
-
-        let videoUrl = null;
-
-        // Method 1: Try extracting from og:video meta tag
-        try {
-            await page.waitForSelector('meta[property="og:video"]', { timeout: 5000 });
-            videoUrl = await page.$eval('meta[property="og:video"]', el => el.content);
-            if (videoUrl && videoUrl.startsWith('https://')) {
-                console.log('Extracted video URL from og:video:', videoUrl);
-                return videoUrl;
-            }
-        } catch (e) {
-            console.log('Method 1 failed: og:video not found');
-        }
-
-        // Method 2: Try getting video element source
-        if (!videoUrl) {
-            try {
-                await page.waitForSelector('video', { timeout: 7000 });
-                videoUrl = await page.$eval('video', video => video.src);
-                // Sometimes this will be a blob, so only use if HTTPS
-                if (videoUrl && videoUrl.startsWith('https://')) {
-                    console.log('Extracted video URL from video element:', videoUrl);
-                    return videoUrl;
-                } else {
-                    console.log('Video src is a blob or invalid, skipping');
-                }
-            } catch (e) {
-                console.log('Method 2 failed: video element not found');
-            }
-        }
-
-        // Method 3: Search for JSON data in script tags
-        if (!videoUrl) {
-            try {
-                const scriptContent = await page.$$eval('script', scripts =>
-                    scripts.map(script => script.innerHTML).join('\n')
-                );
-
-                // First pattern: Look for video_url in standard JSON structure
-                const jsonMatch = scriptContent.match(/"video_url":"(https:[^"]+\.mp4[^"]*)"/);
-                if (jsonMatch && jsonMatch[1]) {
-                    videoUrl = jsonMatch[1].replace(/\\u0026/g, '&');
-                    console.log('Extracted video_url from JSON:', videoUrl);
-                    return videoUrl;
-                }
-
-                // Second pattern: Look for video resources in GraphQL data
-                if (!videoUrl) {
-                    const graphqlMatch = scriptContent.match(/"video_versions":\s*\[\s*\{[^\}]*"url":"(https:[^"]+\.mp4[^"]*)"/);
-                    if (graphqlMatch && graphqlMatch[1]) {
-                        videoUrl = graphqlMatch[1].replace(/\\u0026/g, '&');
-                        console.log('Extracted video_versions url from JSON:', videoUrl);
-                        return videoUrl;
-                    }
-                }
-            } catch (e) {
-                console.log('Method 3 failed: JSON extraction error');
-            }
-        }
-
-        // Final validation
-        if (!videoUrl || !videoUrl.startsWith('https://')) {
-            throw new Error('Unable to extract video URL. Possible reasons:\n' +
-                '- Reel is private or removed\n' +
-                '- Instagram changed their page structure\n' +
-                '- Slow network connection (try increasing timeout)');
-        }
-
-        return videoUrl;
-    } finally {
-        if (browser) await browser.close();
+        throw new Error('No valid MP4 URL found in btch-downloader result');
+    } catch (err) {
+        console.error('btch-downloader igdl error:', err);
+        throw new Error('Failed to extract video URL using btch-downloader');
     }
 }
-
 // Helper: Upload to R2
 const s3 = new S3Client({
     region: 'auto',
