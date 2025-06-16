@@ -18,6 +18,8 @@ const {
 
 // Helper: Get the real Instagram video URL with multiple extraction strategies
 
+const puppeteer = require('puppeteer');
+
 async function getInstagramVideoUrl(reelUrl) {
     let browser;
     try {
@@ -29,12 +31,37 @@ async function getInstagramVideoUrl(reelUrl) {
 
         await page.goto(reelUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
+        // 1. Try to auto-accept the cookie banner
+        try {
+            await page.waitForSelector('button._a9--', { timeout: 4000 });
+            await page.click('button._a9--');
+            console.log('Clicked Allow all cookies');
+            await page.waitForTimeout(500); // brief pause
+        } catch {
+            console.log('No cookie banner detected');
+        }
+
+        // 2. Try to auto-close the login modal (if present)
+        try {
+            // Instagram sometimes uses a [aria-label="Close"] button or SVG
+            await page.waitForSelector('svg[aria-label="Close"], button[aria-label="Close"]', { timeout: 4000 });
+            await page.click('svg[aria-label="Close"], button[aria-label="Close"]');
+            console.log('Closed login modal');
+            await page.waitForTimeout(500);
+        } catch {
+            console.log('No login modal detected');
+        }
+
         let videoUrl = null;
 
         // Method 1: Try extracting from og:video meta tag
         try {
             await page.waitForSelector('meta[property="og:video"]', { timeout: 5000 });
             videoUrl = await page.$eval('meta[property="og:video"]', el => el.content);
+            if (videoUrl && videoUrl.startsWith('https://')) {
+                console.log('Extracted video URL from og:video:', videoUrl);
+                return videoUrl;
+            }
         } catch (e) {
             console.log('Method 1 failed: og:video not found');
         }
@@ -42,8 +69,15 @@ async function getInstagramVideoUrl(reelUrl) {
         // Method 2: Try getting video element source
         if (!videoUrl) {
             try {
-                await page.waitForSelector('video', { timeout: 5000 });
+                await page.waitForSelector('video', { timeout: 7000 });
                 videoUrl = await page.$eval('video', video => video.src);
+                // Sometimes this will be a blob, so only use if HTTPS
+                if (videoUrl && videoUrl.startsWith('https://')) {
+                    console.log('Extracted video URL from video element:', videoUrl);
+                    return videoUrl;
+                } else {
+                    console.log('Video src is a blob or invalid, skipping');
+                }
             } catch (e) {
                 console.log('Method 2 failed: video element not found');
             }
@@ -60,13 +94,17 @@ async function getInstagramVideoUrl(reelUrl) {
                 const jsonMatch = scriptContent.match(/"video_url":"(https:[^"]+\.mp4[^"]*)"/);
                 if (jsonMatch && jsonMatch[1]) {
                     videoUrl = jsonMatch[1].replace(/\\u0026/g, '&');
+                    console.log('Extracted video_url from JSON:', videoUrl);
+                    return videoUrl;
                 }
 
                 // Second pattern: Look for video resources in GraphQL data
                 if (!videoUrl) {
-                    const graphqlMatch = scriptContent.match(/"video_versions":\[{"type":\d+,"url":"(https:[^"]+\.mp4[^"]*)"/);
+                    const graphqlMatch = scriptContent.match(/"video_versions":\s*\[\s*\{[^\}]*"url":"(https:[^"]+\.mp4[^"]*)"/);
                     if (graphqlMatch && graphqlMatch[1]) {
                         videoUrl = graphqlMatch[1].replace(/\\u0026/g, '&');
+                        console.log('Extracted video_versions url from JSON:', videoUrl);
+                        return videoUrl;
                     }
                 }
             } catch (e) {
@@ -87,6 +125,7 @@ async function getInstagramVideoUrl(reelUrl) {
         if (browser) await browser.close();
     }
 }
+
 // Helper: Upload to R2
 const s3 = new S3Client({
     region: 'auto',
