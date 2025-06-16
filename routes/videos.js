@@ -5,7 +5,7 @@ const Source = require('../models/Source');
 const puppeteer = require('puppeteer');
 const axios = require('axios'); // Replace fetch with axios
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const getDeepSeekEmbedding = require('../utils/deepseek');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { igdl } = require('btch-downloader');// Adjust the path as needed
 const router = express.Router();
 
