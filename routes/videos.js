@@ -14,6 +14,7 @@ const {
     R2_ENDPOINT,
     R2_ACCESS_KEY,
     R2_SECRET_KEY,
+    R2_PUBLIC_URL,
     R2_BUCKET
 } = process.env;
 
@@ -65,7 +66,7 @@ async function uploadToR2(videoUrl, filename) {
         await s3.send(command);
 
         // The public URL should use the r2.dev address, not the S3 API URL
-        const r2Url = `${process.env.R2_PUBLIC_UR}/${filename}`;
+        const r2Url = `${process.env.R2_PUBLIC_URL}/${filename}`;
         // If R2_PUBLIC_URL is 'https://pub-055f53ce13db4571bdeacb9e6ea6ba9a.r2.dev'
         // then the file will be accessible at:
         // https://pub-055f53ce13db4571bdeacb9e6ea6ba9a.r2.dev/filename
