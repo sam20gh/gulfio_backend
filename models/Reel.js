@@ -9,13 +9,13 @@ const ReelSchema = new Schema({
     caption: { type: String, default: null },
     // Social features:
     likes: { type: Number, default: 0 },
-    likedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    likedBy: [{ type: String, default: [] }],
     dislikes: { type: Number, default: 0 },
-    dislikedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    dislikedBy: [{ type: String, default: [] }],
     viewCount: { type: Number, default: 0 },
-    viewedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    viewedBy: [{ type: String, default: [] }],
     saves: { type: Number, default: 0 },
-    savedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    savedBy: [{ type: String, default: [] }],
     embedding: {
         type: [Number],
         default: [],

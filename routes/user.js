@@ -235,12 +235,12 @@ router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
     const reel = await Reel.findById(reelObjectId);
     if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id || user._id.toString();
+    const userId = user.supabase_id;
 
     const isLiked = user.liked_reels?.some(id => id.equals(reelObjectId));
     const isDisliked = user.disliked_reels?.some(id => id.equals(reelObjectId));
-    const wasLikedBy = reel.likedBy?.includes(userId);
-    const wasDislikedBy = reel.dislikedBy?.includes(userId);
+    const wasLikedBy = reel.likedBy.includes(userId);
+    const wasDislikedBy = reel.dislikedBy.includes(userId);
 
     if (action === 'like') {
         // --- User ---
@@ -287,7 +287,6 @@ router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
     });
 });
 
-
 // SAVE or UNSAVE a Reel
 router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
@@ -301,10 +300,9 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     const reel = await Reel.findById(reelObjectId);
     if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id || user._id.toString();
-
+    const userId = user.supabase_id;
     const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
-    const wasSavedBy = (reel.savedBy || []).includes(userId);
+    const wasSavedBy = reel.savedBy.includes(userId);
 
     if (isSaved) {
         // --- User ---
@@ -312,7 +310,7 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
         // --- Reel ---
         if (wasSavedBy) {
             reel.saves = Math.max((reel.saves || 0) - 1, 0);
-            reel.savedBy = (reel.savedBy || []).filter(id => id !== userId);
+            reel.savedBy = reel.savedBy.filter(id => id !== userId);
         }
     } else {
         // --- User ---
@@ -320,7 +318,6 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
         // --- Reel ---
         if (!wasSavedBy) {
             reel.saves = (reel.saves || 0) + 1;
-            reel.savedBy = reel.savedBy || [];
             reel.savedBy.push(userId);
         }
     }
@@ -336,7 +333,6 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     });
 });
 
-
 // VIEW a Reel (mark as viewed)
 router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
@@ -350,10 +346,9 @@ router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
     const reel = await Reel.findById(reelObjectId);
     if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id || user._id.toString();
-
+    const userId = user.supabase_id;
     const alreadyViewed = user.viewed_reels?.some(id => id.equals(reelObjectId));
-    const wasViewedBy = (reel.viewedBy || []).includes(userId);
+    const wasViewedBy = reel.viewedBy.includes(userId);
 
     if (!alreadyViewed) {
         // --- User ---
@@ -361,7 +356,6 @@ router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
         // --- Reel ---
         if (!wasViewedBy) {
             reel.viewCount = (reel.viewCount || 0) + 1;
-            reel.viewedBy = reel.viewedBy || [];
             reel.viewedBy.push(userId);
         }
         await user.save();
