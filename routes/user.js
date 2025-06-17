@@ -3,6 +3,7 @@ const router = express.Router();
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const Article = require('../models/Article');
+const mongoose = require('mongoose');
 const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
