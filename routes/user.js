@@ -334,8 +334,7 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
 });
 
 // VIEW a Reel (mark as viewed)
-router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
+router.post('/:id/view-reel', async (req, res) => {
     const reelId = req.params.id;
 
     if (!mongoose.Types.ObjectId.isValid(reelId)) {
@@ -346,21 +345,45 @@ router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
     const reel = await Reel.findById(reelObjectId);
     if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id;
-    const alreadyViewed = user.viewed_reels?.some(id => id.equals(reelObjectId));
-    const wasViewedBy = reel.viewedBy.includes(userId);
-
-    if (!alreadyViewed) {
-        // --- User ---
-        user.viewed_reels.addToSet(reelObjectId);
-        // --- Reel ---
-        if (!wasViewedBy) {
-            reel.viewCount = (reel.viewCount || 0) + 1;
-            reel.viewedBy.push(userId);
+    // Try to get the logged-in user (if available)
+    let userId = null;
+    let user = null;
+    try {
+        // Optional: Use your auth middleware here, or manually decode token if needed
+        if (req.headers.authorization) {
+            // e.g. with JWT, decode and find user (pseudo-code):
+            // const token = req.headers.authorization.replace('Bearer ', '');
+            // const decoded = jwt.verify(token, YOUR_SECRET);
+            // user = await User.findOne({ supabase_id: decoded.sub });
+            // if (user) userId = user.supabase_id;
+            // For now, rely on req.mongoUser if your middleware is active
+            user = req.mongoUser;
+            userId = user?.supabase_id;
         }
-        await user.save();
-        await reel.save();
+    } catch (e) {
+        // Ignore error; treat as not logged in
     }
+
+    let shouldSave = false;
+
+    if (user && userId) {
+        // If user has never viewed, mark in user and reel and increment
+        const alreadyViewed = user.viewed_reels?.some(id => id.equals(reelObjectId));
+        const wasViewedBy = reel.viewedBy.includes(userId);
+        if (!alreadyViewed || !wasViewedBy) {
+            reel.viewCount = (reel.viewCount || 0) + 1;
+            shouldSave = true;
+        }
+        if (!alreadyViewed) user.viewed_reels.addToSet(reelObjectId);
+        if (!wasViewedBy) reel.viewedBy.push(userId);
+        await user.save();
+    } else {
+        // Not logged in: always increment viewCount
+        reel.viewCount = (reel.viewCount || 0) + 1;
+        shouldSave = true;
+    }
+
+    if (shouldSave) await reel.save();
 
     res.json({
         viewed: true,
