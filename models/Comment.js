@@ -1,22 +1,21 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-const ReplySchema = new Schema({
-    userId: String,
-    username: String,
-    reply: String,
-    createdAt: { type: Date, default: Date.now },
-});
-
-const CommentSchema = new Schema({
-    articleId: String,
-    userId: String,
-    username: String,
-    comment: String,
-    likedBy: [String],
-    dislikedBy: [String],
-    replies: [ReplySchema],  // <-- Added this
-    createdAt: { type: Date, default: Date.now },
+const CommentSchema = new mongoose.Schema({
+    articleId: { type: String, required: false },
+    reelId: { type: String, required: false },
+    userId: { type: String, required: true },
+    username: { type: String },
+    comment: { type: String, required: true },
+    likedBy: [{ type: String, default: [] }],
+    dislikedBy: [{ type: String, default: [] }],
+    replies: [{
+        userId: String,
+        username: String,
+        reply: String,
+        createdAt: Date,
+    }],
+    createdAt: { type: Date, default: Date.now }
 });
 
 module.exports = mongoose.model('Comment', CommentSchema);

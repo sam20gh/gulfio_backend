@@ -16,17 +16,29 @@ router.get('/:articleId', async (req, res) => {
         res.status(500).json({ message: 'Failed to get comments' });
     }
 });
+// GET comments for a reel
+router.get('/reel/:reelId', async (req, res) => {
+    try {
+        const { reelId } = req.params;
+        const comments = await Comment.find({ reelId })
+            .sort({ createdAt: -1 });
+        res.json(comments);
+    } catch (error) {
+        console.error('GET /comments/reel/:reelId error:', error);
+        res.status(500).json({ message: 'Failed to get reel comments' });
+    }
+});
 
 // POST new comment
 router.post('/', auth, async (req, res) => {
     try {
-        const { articleId, userId, username, comment } = req.body;
-        if (!articleId || !userId || !comment) {
+        const { articleId, reelId, userId, username, comment } = req.body;
+        if ((!articleId && !reelId) || !userId || !comment) {
             return res.status(400).json({ message: 'Missing fields' });
         }
-
         const newComment = new Comment({
             articleId,
+            reelId,
             userId,
             username,
             comment,
@@ -40,6 +52,7 @@ router.post('/', auth, async (req, res) => {
         res.status(500).json({ message: 'Failed to post comment' });
     }
 });
+
 // PATCH /comments/:id — Edit a comment
 router.patch('/:id', auth, async (req, res) => {
     const { comment } = req.body;
