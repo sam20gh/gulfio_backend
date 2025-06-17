@@ -14,6 +14,8 @@ const ReelSchema = new Schema({
     dislikedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
     viewCount: { type: Number, default: 0 },
     viewedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
+    saves: { type: Number, default: 0 },
+    savedBy: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
     embedding: {
         type: [Number],
         default: [],

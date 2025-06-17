@@ -232,29 +232,61 @@ router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
     }
 
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
+    const reel = await Reel.findById(reelObjectId);
+    if (!reel) return res.status(404).json({ message: 'Reel not found' });
+
+    const userId = user.supabase_id || user._id.toString();
+
     const isLiked = user.liked_reels?.some(id => id.equals(reelObjectId));
     const isDisliked = user.disliked_reels?.some(id => id.equals(reelObjectId));
+    const wasLikedBy = reel.likedBy?.includes(userId);
+    const wasDislikedBy = reel.dislikedBy?.includes(userId);
 
     if (action === 'like') {
+        // --- User ---
         if (!isLiked) user.liked_reels.push(reelObjectId);
         if (isDisliked) user.disliked_reels.pull(reelObjectId);
-    } else if (action === 'dislike') {
-        if (!isDisliked) {
-            user.disliked_reels = user.disliked_reels || [];
-            user.disliked_reels.push(reelObjectId);
+
+        // --- Reel ---
+        if (!wasLikedBy) {
+            reel.likes += 1;
+            reel.likedBy.push(userId);
         }
+        if (wasDislikedBy) {
+            reel.dislikes = Math.max(reel.dislikes - 1, 0);
+            reel.dislikedBy = reel.dislikedBy.filter(id => id !== userId);
+        }
+    } else if (action === 'dislike') {
+        // --- User ---
+        if (!isDisliked) user.disliked_reels.push(reelObjectId);
         if (isLiked) user.liked_reels.pull(reelObjectId);
+
+        // --- Reel ---
+        if (!wasDislikedBy) {
+            reel.dislikes += 1;
+            reel.dislikedBy.push(userId);
+        }
+        if (wasLikedBy) {
+            reel.likes = Math.max(reel.likes - 1, 0);
+            reel.likedBy = reel.likedBy.filter(id => id !== userId);
+        }
     } else {
         return res.status(400).json({ message: 'Invalid action type' });
     }
 
     await user.save();
+    await reel.save();
 
     res.json({
         liked_reels: user.liked_reels,
-        disliked_reels: user.disliked_reels || [],
+        disliked_reels: user.disliked_reels,
+        likes: reel.likes,
+        dislikes: reel.dislikes,
+        likedBy: reel.likedBy,
+        dislikedBy: reel.dislikedBy,
     });
 });
+
 
 // SAVE or UNSAVE a Reel
 router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
@@ -266,26 +298,44 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     }
 
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
+    const reel = await Reel.findById(reelObjectId);
+    if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    try {
-        const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
+    const userId = user.supabase_id || user._id.toString();
 
-        if (isSaved) {
-            user.saved_reels.pull(reelObjectId);
-        } else {
-            user.saved_reels.addToSet(reelObjectId);
+    const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
+    const wasSavedBy = (reel.savedBy || []).includes(userId);
+
+    if (isSaved) {
+        // --- User ---
+        user.saved_reels.pull(reelObjectId);
+        // --- Reel ---
+        if (wasSavedBy) {
+            reel.saves = Math.max((reel.saves || 0) - 1, 0);
+            reel.savedBy = (reel.savedBy || []).filter(id => id !== userId);
         }
-
-        await user.save();
-        res.json({
-            isSaved: !isSaved,
-            saved_reels: user.saved_reels,
-        });
-    } catch (err) {
-        console.error('Error saving/unsaving reel:', err);
-        res.status(500).json({ message: 'Error saving/unsaving reel' });
+    } else {
+        // --- User ---
+        user.saved_reels.addToSet(reelObjectId);
+        // --- Reel ---
+        if (!wasSavedBy) {
+            reel.saves = (reel.saves || 0) + 1;
+            reel.savedBy = reel.savedBy || [];
+            reel.savedBy.push(userId);
+        }
     }
+
+    await user.save();
+    await reel.save();
+
+    res.json({
+        isSaved: !isSaved,
+        saved_reels: user.saved_reels,
+        saves: reel.saves,
+        savedBy: reel.savedBy,
+    });
 });
+
 
 // VIEW a Reel (mark as viewed)
 router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
@@ -297,14 +347,34 @@ router.post('/:id/view-reel', auth, ensureMongoUser, async (req, res) => {
     }
 
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
+    const reel = await Reel.findById(reelObjectId);
+    if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    if (!user.viewed_reels?.some(id => id.equals(reelObjectId))) {
+    const userId = user.supabase_id || user._id.toString();
+
+    const alreadyViewed = user.viewed_reels?.some(id => id.equals(reelObjectId));
+    const wasViewedBy = (reel.viewedBy || []).includes(userId);
+
+    if (!alreadyViewed) {
+        // --- User ---
         user.viewed_reels.addToSet(reelObjectId);
+        // --- Reel ---
+        if (!wasViewedBy) {
+            reel.viewCount = (reel.viewCount || 0) + 1;
+            reel.viewedBy = reel.viewedBy || [];
+            reel.viewedBy.push(userId);
+        }
         await user.save();
+        await reel.save();
     }
 
-    res.json({ viewed_reels: user.viewed_reels });
+    res.json({
+        viewed: true,
+        viewCount: reel.viewCount,
+        viewedBy: reel.viewedBy,
+    });
 });
+
 // GET liked reels
 router.get('/:id/liked-reels', async (req, res) => {
     try {
@@ -373,7 +443,16 @@ router.get('/:id/viewed-reels', async (req, res) => {
     }
 });
 
-
+router.get('/reels/:id', async (req, res) => {
+    try {
+        const reel = await Reel.findById(req.params.id);
+        if (!reel) return res.status(404).json({ message: 'Reel not found' });
+        res.json(reel);
+    } catch (err) {
+        console.error('Error in /reels/:id:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 
 router.post('/update-embedding', auth, async (req, res) => {
     const { embedding } = req.body;
