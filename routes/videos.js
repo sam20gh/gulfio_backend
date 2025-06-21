@@ -17,7 +17,12 @@ const {
     R2_PUBLIC_URL,
     R2_BUCKET
 } = process.env;
-
+function cosineSimilarity(vec1, vec2) {
+    const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
+    const magnitudeA = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
+    const magnitudeB = Math.sqrt(vec2.reduce((sum, val) => sum + val * val, 0));
+    return dotProduct / (magnitudeA * magnitudeB);
+}
 // Helper: Get the real Instagram video URL with multiple extraction strategies
 
 
@@ -90,6 +95,25 @@ router.get('/', async (req, res) => {
         console.error(err.message);
         res.status(500).json({ error: 'Failed to fetch videos' });
     }
+});
+router.post('/related', async (req, res) => {
+    const { embedding, sourceId } = req.body;
+    if (!embedding || !sourceId) return res.status(400).json({ error: 'Missing embedding or sourceId' });
+
+    const videos = await Video.find({ source: sourceId, embedding: { $exists: true, $type: 'array' } });
+    let bestMatch = null;
+    let bestScore = -Infinity;
+
+    for (const video of videos) {
+        const sim = cosineSimilarity(embedding, video.embedding);
+        if (sim > bestScore) {
+            bestScore = sim;
+            bestMatch = video;
+        }
+    }
+
+    if (bestMatch) return res.json(bestMatch);
+    return res.status(404).json({ message: 'No related video found' });
 });
 
 router.get('/reels', async (req, res) => {
