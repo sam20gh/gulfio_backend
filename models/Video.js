@@ -9,7 +9,11 @@ const VideoSchema = new Schema({
     description: { type: String },
     publishedAt: { type: Date },
     thumbnailUrl: { type: String },
-    scrapedAt: { type: Date, default: Date.now }
+    scrapedAt: { type: Date, default: Date.now },
+    embedding: {
+        type: [Number],
+        default: [],
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Video', VideoSchema);

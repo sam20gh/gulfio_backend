@@ -94,7 +94,14 @@ router.get('/', async (req, res) => {
 
 router.get('/reels', async (req, res) => {
     try {
-        const reels = await Reel.find().sort({ scrapedAt: -1 }).limit(20).select('-embedding');
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = parseInt(req.query.skip) || 0;
+
+        const reels = await Reel.find()
+            .sort({ scrapedAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
         res.json(reels);
     } catch (err) {
         console.error(err.message);
