@@ -12,41 +12,44 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
     const user = req.mongoUser;
 
     try {
-        // Find all sources under this group
         const sources = await Source.find({ groupName });
 
         if (!sources.length) {
             return res.status(404).json({ message: 'No sources found for this group' });
         }
 
-        // Pick the first source as the "main" representative
         const mainSource = sources[0];
-
         const sourceIds = sources.map(source => source._id);
 
         const topArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ likeCount: -1 })
             .limit(5)
-            .select('_id title publishedAt likeCount url image'); // ✅ added url and image
+            .select('_id title publishedAt likeCount url image');
 
         const recentArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ publishedAt: -1 })
             .limit(10)
             .select('_id title publishedAt url image');
 
-        // Check if user is following this group
+        // ✅ Fetch reels for all sources in this group
+        const reels = await Reel.find({ source: { $in: sourceIds } })
+            .sort({ publishedAt: -1 })
+            .limit(10)
+            .select('_id description videoUrl thumbnail publishedAt');
+
         const userFollowing = user.following_sources.includes(groupName);
 
         res.json({
             sourceInfo: {
                 name: mainSource.name,
                 icon: mainSource.icon,
-                followers: sources.reduce((acc, s) => acc + (s.followers || 0), 0), // Sum followers
+                followers: sources.reduce((acc, s) => acc + (s.followers || 0), 0),
+                _id: mainSource._id,
             },
             topArticles,
             recentArticles,
+            reels,
             userFollowing,
-            reels
         });
 
     } catch (error) {
@@ -54,6 +57,7 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
         res.status(500).json({ message: 'Error fetching source group' });
     }
 });
+
 // Follow/Unfollow Source Group
 router.post('/follow-group', auth, ensureMongoUser, async (req, res) => {
     const { groupName } = req.body;
