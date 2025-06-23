@@ -45,7 +45,8 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
             },
             topArticles,
             recentArticles,
-            userFollowing
+            userFollowing,
+            reels
         });
 
     } catch (error) {
