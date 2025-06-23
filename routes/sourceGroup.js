@@ -3,6 +3,7 @@ const router = express.Router();
 const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
+const Reel = require('../models/Reel');
 const auth = require('../middleware/auth'); // Supabase auth
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 
