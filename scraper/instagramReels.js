@@ -86,7 +86,8 @@ async function scrapeReelsForSource(sourceId, username) {
             if (existing) continue;
 
             try {
-                const rawUrl = await getInstagramVideoUrl(link);
+                const safeLink = link.includes('?') ? link : `${link}?utm_source=ig_web_copy_link`;
+                const rawUrl = await getInstagramVideoUrl(safeLink);
                 const filename = `gulfio-${Date.now()}.mp4`;
                 const finalUrl = await uploadToR2(rawUrl, filename);
 
