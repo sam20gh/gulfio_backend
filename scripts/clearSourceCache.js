@@ -1,14 +1,15 @@
-// clearSourceCache.js
 const redis = require('../utils/redis');
 
 const sourceId = '685f1af2fbf11130553a51c9';
 
 (async () => {
     try {
+        await redis.connect(); // ✅ ensure connection is ready
+
         const keys = await redis.keys(`*${sourceId}*`);
         if (keys.length === 0) {
             console.log('No keys matched.');
-            process.exit(0);
+            return process.exit(0);
         }
 
         console.log(`Found ${keys.length} keys. Deleting...`);
