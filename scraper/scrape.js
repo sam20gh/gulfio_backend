@@ -44,8 +44,12 @@ async function scrapeAllSources(frequency = null) {
 
             for (const link of links) {
                 try {
+                    console.log(`🕵️ Checking: ${link}`);
                     const exists = await Article.findOne({ url: link });
-                    if (exists) continue;
+                    if (exists) {
+                        console.log('⏩ Already exists in DB');
+                        continue;
+                    }
 
                     let pageHtml;
                     if (source.name.toLowerCase().includes('gulfi news')) {
