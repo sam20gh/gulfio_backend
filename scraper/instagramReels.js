@@ -1,5 +1,56 @@
 const puppeteer = require('puppeteer');
 const Reel = require('../models/Reel');
+const { igdl } = require('btch-downloader');
+const axios = require('axios');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+
+const {
+    R2_ENDPOINT,
+    R2_ACCESS_KEY,
+    R2_SECRET_KEY,
+    R2_PUBLIC_URL,
+    R2_BUCKET
+} = process.env;
+
+const s3 = new S3Client({
+    region: 'auto',
+    endpoint: R2_ENDPOINT,
+    credentials: {
+        accessKeyId: R2_ACCESS_KEY,
+        secretAccessKey: R2_SECRET_KEY,
+    }
+});
+
+async function getInstagramVideoUrl(reelUrl) {
+    try {
+        const result = await igdl(reelUrl);
+        if (Array.isArray(result) && result.length > 0 && result[0].url?.startsWith('http')) {
+            return result[0].url;
+        }
+        throw new Error('No valid MP4 URL found in btch-downloader result');
+    } catch (err) {
+        console.error('btch-downloader igdl error:', err);
+        throw new Error('Failed to extract video URL using btch-downloader');
+    }
+}
+
+async function uploadToR2(videoUrl, filename) {
+    try {
+        const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+        const command = new PutObjectCommand({
+            Bucket: R2_BUCKET,
+            Key: filename,
+            Body: buffer,
+            ContentType: 'video/mp4'
+        });
+        await s3.send(command);
+        return `${R2_PUBLIC_URL}/${filename}`;
+    } catch (error) {
+        console.error('Error in uploadToR2:', error);
+        throw new Error(`Failed to upload to R2: ${error.message}`);
+    }
+}
 
 async function scrapeReelsForSource(sourceId, username) {
     const browser = await puppeteer.launch({
@@ -14,23 +65,15 @@ async function scrapeReelsForSource(sourceId, username) {
             timeout: 60000,
         });
 
-        // Wait for the container to load
         await page.waitForSelector('main', { timeout: 10000 });
 
-        // Scroll a few times to trigger lazy loading
         for (let i = 0; i < 3; i++) {
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
             await page.waitForTimeout(2000);
         }
 
-        // Now try to find all ._aajy elements with parent anchor tags
         const reelLinks = await page.$$eval('._aajy', nodes =>
-            nodes
-                .map(node => {
-                    const anchor = node.closest('a');
-                    return anchor ? anchor.href : null;
-                })
-                .filter(Boolean)
+            nodes.map(node => node.closest('a')?.href).filter(Boolean)
         );
 
         console.log(`🎯 Found ${reelLinks.length} reel links`);
@@ -38,28 +81,26 @@ async function scrapeReelsForSource(sourceId, username) {
         const inserted = [];
 
         for (const link of reelLinks) {
-            await page.goto(link, { waitUntil: 'networkidle2', timeout: 30000 });
-
-            await page.waitForTimeout(1000);
-
-            const videoUrl = await page.evaluate(() => {
-                const video = document.querySelector('video');
-                return video ? video.src : null;
-            });
-
-            if (!videoUrl) continue;
-
             const reelId = link.split('/').filter(Boolean).pop();
             const existing = await Reel.findOne({ reelId });
+            if (existing) continue;
 
-            if (!existing) {
+            try {
+                const rawUrl = await getInstagramVideoUrl(link);
+                const filename = `gulfio-${Date.now()}.mp4`;
+                const finalUrl = await uploadToR2(rawUrl, filename);
+
                 const reel = await Reel.create({
                     source: sourceId,
                     reelId,
-                    videoUrl,
+                    videoUrl: finalUrl,
                     scrapedAt: new Date(),
                 });
+
                 inserted.push(reel);
+                console.log(`✅ Inserted: ${reelId}`);
+            } catch (err) {
+                console.warn(`⚠️ Skipping ${link} due to error: ${err.message}`);
             }
         }
 
