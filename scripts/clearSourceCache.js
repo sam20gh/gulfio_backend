@@ -4,8 +4,6 @@ const sourceId = '685f1af2fbf11130553a51c9';
 
 (async () => {
     try {
-        await redis.connect(); // ✅ ensure connection is ready
-
         const keys = await redis.keys(`*${sourceId}*`);
         if (keys.length === 0) {
             console.log('No keys matched.');
