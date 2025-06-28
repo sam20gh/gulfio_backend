@@ -1,5 +1,5 @@
 // clearSourceCache.js
-const redis = require('./redis');
+const redis = require('./utils/redis');
 
 const sourceId = '685f1af2fbf11130553a51c9';
 
