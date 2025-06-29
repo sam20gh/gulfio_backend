@@ -69,7 +69,7 @@ async function scrapeReelsForSource(sourceId, username) {
 
         for (let i = 0; i < 3; i++) {
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
-            await page.waitForTimeout(2000);
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
         const reelLinks = await page.$$eval('._aajy', nodes =>
