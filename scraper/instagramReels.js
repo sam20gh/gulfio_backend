@@ -82,12 +82,20 @@ async function scrapeReelsForSource(sourceId, username) {
 
         for (const link of reelLinks) {
             const reelId = link.split('/').filter(Boolean).pop();
-            const existing = await Reel.findOne({ reelId });
-            if (existing) continue;
+            const existingById = await Reel.findOne({ reelId });
+            if (existingById) continue;
 
             try {
                 const safeLink = link.includes('?') ? link : `${link}?utm_source=ig_web_copy_link`;
                 const rawUrl = await getInstagramVideoUrl(safeLink);
+
+                // 🔍 Check by videoUrl before uploading
+                const existingByUrl = await Reel.findOne({ videoUrl: rawUrl });
+                if (existingByUrl) {
+                    console.log(`⚠️ Skipping ${reelId} – duplicate videoUrl`);
+                    continue;
+                }
+
                 const filename = `gulfio-${Date.now()}.mp4`;
                 const finalUrl = await uploadToR2(rawUrl, filename);
 
@@ -104,6 +112,8 @@ async function scrapeReelsForSource(sourceId, username) {
                 console.warn(`⚠️ Skipping ${link} due to error: ${err.message}`);
             }
         }
+
+
 
         console.log(`✅ Upserted ${inserted.length} reels`);
         return inserted;
