@@ -72,12 +72,11 @@ async function scrapeReelsForSource(sourceId, username) {
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
-        const reelLinks = await page.$$eval('._aajy', nodes =>
-            nodes.map(node => node.closest('a')?.href).filter(Boolean)
+        const reelLinks = await page.$$eval('._aajz', nodes =>
+            nodes.map(node => node.closest('a')?.href).filter(href => href?.includes('/reel/'))
         );
 
         console.log(`🎯 Found ${reelLinks.length} reel links`);
-
         const inserted = [];
 
         for (const link of reelLinks) {
@@ -86,15 +85,27 @@ async function scrapeReelsForSource(sourceId, username) {
             if (existingById) continue;
 
             try {
-                const safeLink = link.includes('?') ? link : `${link}?utm_source=ig_web_copy_link`;
+                const safeLink = `${link}?utm_source=ig_web_copy_link`;
                 const rawUrl = await getInstagramVideoUrl(safeLink);
 
-                // 🔍 Check by videoUrl before uploading
                 const existingByUrl = await Reel.findOne({ videoUrl: rawUrl });
                 if (existingByUrl) {
                     console.log(`⚠️ Skipping ${reelId} – duplicate videoUrl`);
                     continue;
                 }
+
+                await page.goto(link, { waitUntil: 'networkidle2', timeout: 30000 });
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                // Extract caption
+                const caption = await page.evaluate(() => {
+                    const spanTags = document.querySelectorAll('main article span');
+                    for (let span of spanTags) {
+                        const text = span.innerText?.trim();
+                        if (text && text.length > 5) return text;
+                    }
+                    return '';
+                });
 
                 const filename = `gulfio-${Date.now()}.mp4`;
                 const finalUrl = await uploadToR2(rawUrl, filename);
@@ -103,6 +114,7 @@ async function scrapeReelsForSource(sourceId, username) {
                     source: sourceId,
                     reelId,
                     videoUrl: finalUrl,
+                    caption, // ✅ caption field as per your schema
                     scrapedAt: new Date(),
                 });
 
@@ -112,8 +124,6 @@ async function scrapeReelsForSource(sourceId, username) {
                 console.warn(`⚠️ Skipping ${link} due to error: ${err.message}`);
             }
         }
-
-
 
         console.log(`✅ Upserted ${inserted.length} reels`);
         return inserted;
