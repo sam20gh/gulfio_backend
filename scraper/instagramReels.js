@@ -60,6 +60,7 @@ async function scrapeReelsForSource(sourceId, username) {
 
     const page = await browser.newPage();
     try {
+        console.log(`🚀 Navigating to https://www.instagram.com/${username}/reels`);
         await page.goto(`https://www.instagram.com/${username}/reels`, {
             waitUntil: 'networkidle2',
             timeout: 60000,
@@ -67,25 +68,73 @@ async function scrapeReelsForSource(sourceId, username) {
 
         await page.waitForSelector('main', { timeout: 10000 });
 
+        // Scroll to load more reels
+        console.log('📜 Scrolling to load more reels...');
         for (let i = 0; i < 3; i++) {
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
-        const reelLinks = await page.$$eval('._aajz', nodes =>
-            nodes.map(node => node.closest('a')?.href).filter(href => href?.includes('/reel/'))
-        );
+        // Extract reel links by clicking on _aajz elements
+        console.log('🔍 Extracting reel links from _aajz elements...');
+        const reelData = await page.evaluate(() => {
+            const reelElements = document.querySelectorAll('._aajz');
+            const reels = [];
 
-        console.log(`🎯 Found ${reelLinks.length} reel links`);
+            reelElements.forEach(element => {
+                // Find the parent link element
+                const linkElement = element.closest('a');
+                if (linkElement && linkElement.href && linkElement.href.includes('/reel/')) {
+                    // Try to extract caption from nearby elements
+                    let caption = '';
+
+                    // Look for caption in various possible locations
+                    const captionSelectors = [
+                        'img[alt]', // Alt text often contains caption
+                        '[aria-label]', // Aria labels might contain caption
+                        'span', // Generic span elements
+                    ];
+
+                    for (const selector of captionSelectors) {
+                        const captionElement = element.querySelector(selector) ||
+                            linkElement.querySelector(selector);
+                        if (captionElement) {
+                            const text = captionElement.alt ||
+                                captionElement.getAttribute('aria-label') ||
+                                captionElement.innerText;
+                            if (text && text.trim().length > 5) {
+                                caption = text.trim();
+                                break;
+                            }
+                        }
+                    }
+
+                    reels.push({
+                        url: linkElement.href,
+                        caption: caption
+                    });
+                }
+            });
+
+            return reels;
+        });
+
+        console.log(`🎯 Found ${reelData.length} reel links`);
         const inserted = [];
 
-        for (const link of reelLinks) {
-            const reelId = link.split('/').filter(Boolean).pop();
+        for (const reelInfo of reelData) {
+            const reelId = reelInfo.url.split('/').filter(Boolean).pop().split('?')[0];
             const existingById = await Reel.findOne({ reelId });
-            if (existingById) continue;
+            if (existingById) {
+                console.log(`⚠️ Skipping ${reelId} – already exists`);
+                continue;
+            }
 
             try {
-                const safeLink = `${link}?utm_source=ig_web_copy_link`;
+                // Append utm_source parameter as you requested
+                const safeLink = `${reelInfo.url.split('?')[0]}?utm_source=ig_web_copy_link`;
+                console.log(`📥 Processing reel: ${safeLink}`);
+
                 const rawUrl = await getInstagramVideoUrl(safeLink);
 
                 const existingByUrl = await Reel.findOne({ videoUrl: rawUrl });
@@ -94,38 +143,50 @@ async function scrapeReelsForSource(sourceId, username) {
                     continue;
                 }
 
-                await page.goto(link, { waitUntil: 'networkidle2', timeout: 30000 });
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                // If no caption was found from the listing page, try to get it from the individual reel page
+                let finalCaption = reelInfo.caption;
+                if (!finalCaption || finalCaption.length < 10) {
+                    console.log(`🔍 Fetching detailed caption for ${reelId}`);
+                    try {
+                        await page.goto(reelInfo.url, { waitUntil: 'networkidle2', timeout: 30000 });
+                        await new Promise(resolve => setTimeout(resolve, 2000));
 
-                // Extract caption
-                const caption = await page.evaluate(() => {
-                    const spanTags = document.querySelectorAll('main article span');
-                    for (let span of spanTags) {
-                        const text = span.innerText?.trim();
-                        if (text && text.length > 5) return text;
+                        finalCaption = await page.evaluate(() => {
+                            const spanTags = document.querySelectorAll('main article span');
+                            for (let span of spanTags) {
+                                const text = span.innerText?.trim();
+                                if (text && text.length > 5) return text;
+                            }
+                            return '';
+                        });
+                    } catch (captionError) {
+                        console.warn(`⚠️ Could not fetch detailed caption for ${reelId}: ${captionError.message}`);
                     }
-                    return '';
-                });
+                }
 
-                const filename = `gulfio-${Date.now()}.mp4`;
+                const filename = `gulfio-${Date.now()}-${reelId}.mp4`;
                 const finalUrl = await uploadToR2(rawUrl, filename);
 
                 const reel = await Reel.create({
                     source: sourceId,
                     reelId,
                     videoUrl: finalUrl,
-                    caption, // ✅ caption field as per your schema
+                    caption: finalCaption,
                     scrapedAt: new Date(),
                 });
 
                 inserted.push(reel);
-                console.log(`✅ Inserted: ${reelId}`);
+                console.log(`✅ Inserted: ${reelId} with caption: ${finalCaption.substring(0, 50)}...`);
+
+                // Add small delay between processing reels to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
             } catch (err) {
-                console.warn(`⚠️ Skipping ${link} due to error: ${err.message}`);
+                console.warn(`⚠️ Skipping ${reelInfo.url} due to error: ${err.message}`);
             }
         }
 
-        console.log(`✅ Upserted ${inserted.length} reels`);
+        console.log(`✅ Successfully processed ${inserted.length} reels`);
         return inserted;
     } catch (err) {
         console.error('❌ Puppeteer scraping failed:', err.message);
