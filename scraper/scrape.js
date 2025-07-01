@@ -10,6 +10,7 @@ const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { scrapeYouTubeShortsForSource } = require('./youtubeShorts');
 
 async function scrapeAllSources(frequency = null) {
     let sources = await Source.find();
@@ -122,6 +123,11 @@ async function scrapeAllSources(frequency = null) {
                     source.instagramUsername
                 );
                 console.log(`  • ${reels.length} reels upserted`);
+            }
+            if (source.youtubeChannelId) {
+                console.log(`Scraping YouTube Shorts for ${source.name}`);
+                const ytReels = await scrapeYouTubeShortsForSource(source);
+                console.log(`  • ${ytReels.length} YouTube Shorts upserted`);
             }
 
             source.lastScraped = new Date();

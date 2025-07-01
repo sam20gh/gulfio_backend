@@ -1,0 +1,59 @@
+// scraper/youtubeShorts.js
+const axios = require('axios');
+const { youtube } = require('btch-downloader');
+const Reel = require('../models/Reel');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
+
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+
+async function scrapeYouTubeShortsForSource(source) {
+    const channelId = source.youtubeChannelId;
+    if (!channelId) return [];
+
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&key=${YOUTUBE_API_KEY}`;
+    const { data } = await axios.get(url);
+
+    const upsertedReels = [];
+
+    for (const item of data.items) {
+        const videoId = item.id.videoId;
+        const caption = item.snippet.title;
+        const publishedAt = item.snippet.publishedAt;
+
+        const youtubeUrl = `https://youtube.com/watch?v=${videoId}`;
+
+        try {
+            const result = await youtube(youtubeUrl);
+            const videoUrl = result?.[0]?.url;
+
+            if (!videoUrl) {
+                console.warn(`❌ No video URL found for ${videoId}`);
+                continue;
+            }
+
+            const exists = await Reel.findOne({ videoUrl });
+            if (exists) continue;
+
+            const embedding = await getDeepSeekEmbedding(caption);
+
+            const reel = new Reel({
+                source: source._id,
+                videoId,
+                videoUrl,
+                caption,
+                publishedAt,
+                scrapedAt: new Date(),
+                embedding
+            });
+
+            await reel.save();
+            upsertedReels.push(reel);
+        } catch (err) {
+            console.error(`❌ Error scraping YouTube video ${videoId}:`, err.message);
+        }
+    }
+
+    return upsertedReels;
+}
+
+module.exports = { scrapeYouTubeShortsForSource };
