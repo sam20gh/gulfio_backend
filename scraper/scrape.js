@@ -10,7 +10,7 @@ const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
-const { scrapeYouTubeShortsForSource } = require('./YouTubeShorts');
+const { scrapeYouTubeShortsForSource } = require('./youtubeShorts');
 
 async function scrapeAllSources(frequency = null) {
     let sources = await Source.find();
