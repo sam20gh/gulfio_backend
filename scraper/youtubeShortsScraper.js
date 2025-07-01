@@ -43,7 +43,7 @@ async function scrapeYouTubeShortsForSource(source) {
 
             const reel = new Reel({
                 source: source._id,
-                videoId,
+                reelId: videoId, // ✅ this is required by schema
                 videoUrl,
                 caption,
                 publishedAt,
