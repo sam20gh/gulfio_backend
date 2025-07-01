@@ -21,6 +21,7 @@ const ArticleSchema = new mongoose.Schema({
         type: [Number],
         default: [],
     },
+    relatedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
 });
 
 
