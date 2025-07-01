@@ -11,6 +11,7 @@ const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { scrapeYouTubeShortsForSource } = require('./youtubeShortsScraper.js');
+const { scrapeYouTubeForSource } = require('./youtubeScraper');
 
 async function scrapeAllSources(frequency = null) {
     let sources = await Source.find();
@@ -116,18 +117,25 @@ async function scrapeAllSources(frequency = null) {
                 }
             }
 
-            if (source.instagramUsername) {
-                console.log(`Scraping Reels for ${source.instagramUsername}`);
-                const reels = await scrapeReelsForSource(
-                    source._id,
-                    source.instagramUsername
-                );
-                console.log(`  • ${reels.length} reels upserted`);
-            }
+            // if (source.instagramUsername) {
+            //     console.log(`Scraping Reels for ${source.instagramUsername}`);
+            //     const reels = await scrapeReelsForSource(
+            //         source._id,
+            //         source.instagramUsername
+            //     );
+            //     console.log(`  • ${reels.length} reels upserted`);
+            // }
             if (source.youtubeChannelId) {
                 console.log(`Scraping YouTube Shorts for ${source.name}`);
                 const ytReels = await scrapeYouTubeShortsForSource(source);
                 console.log(`  • ${ytReels.length} YouTube Shorts upserted`);
+            }
+            try {
+                console.log(`Scraping full YouTube videos for ${source.name}`);
+                const savedVideos = await scrapeYouTubeForSource(source._id, source.youtubeChannelId);
+                console.log(`  • ${savedVideos.length} videos stored in Video collection`);
+            } catch (err) {
+                console.warn(`⚠️ Failed to scrape YouTube videos for ${source.name}:`, err.message);
             }
 
             source.lastScraped = new Date();

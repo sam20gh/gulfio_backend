@@ -362,6 +362,38 @@ articleRouter.get('/:id', async (req, res) => {
   }
 });
 
+articleRouter.get('/related-embedding/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const target = await Article.findById(id);
+    if (!target?.embedding) return res.status(404).json({ error: 'No embedding found' });
+
+    const allArticles = await Article.find({ _id: { $ne: id }, embedding: { $exists: true } });
+
+    const cosineSimilarity = (a, b) => {
+      let dot = 0, magA = 0, magB = 0;
+      for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        magA += a[i] * a[i];
+        magB += b[i] * b[i];
+      }
+      return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+    };
+
+    const related = allArticles
+      .map(a => ({
+        ...a.toObject(),
+        similarity: cosineSimilarity(target.embedding, a.embedding),
+      }))
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 5);
+
+    res.json(related);
+  } catch (err) {
+    console.error('Error finding related articles:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 
 
