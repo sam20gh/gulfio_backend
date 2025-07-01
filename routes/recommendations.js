@@ -19,7 +19,12 @@ router.get('/:supabaseId', async (req, res) => {
 
     const engagedArticles = await Article.find({ _id: { $in: allEngagedIds } }).select('-embedding').lean();
     const engagedCategories = [...new Set(engagedArticles.map(a => a.category).filter(Boolean))];
-    const engagedSources = [...new Set(engagedArticles.map(a => a.sourceId).filter(Boolean))];
+    const engagedSources = [...new Set(
+      engagedArticles
+        .map(a => a.sourceId)
+        .filter(Boolean)
+        .map(id => new mongoose.Types.ObjectId(id))
+    )];
 
     let recommended = await Article.aggregate([
       {
@@ -36,7 +41,7 @@ router.get('/:supabaseId', async (req, res) => {
           score: {
             $add: [
               { $multiply: [{ $ifNull: ['$likes', 0] }, 2] },
-              { $ifNull: ['$views', 0] },
+              { $ifNull: ['$viewCount', 0] }, // 👈 correct field
               {
                 $cond: {
                   if: {
