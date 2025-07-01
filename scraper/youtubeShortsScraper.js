@@ -10,7 +10,7 @@ async function scrapeYouTubeShortsForSource(source) {
     const channelId = source.youtubeChannelId;
     if (!channelId) return [];
 
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&key=${YOUTUBE_API_KEY}`;
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=2&key=${YOUTUBE_API_KEY}`;
     const { data } = await axios.get(url);
 
     const upsertedReels = [];
