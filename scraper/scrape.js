@@ -7,7 +7,6 @@ const Article = require('../models/Article');
 const User = require('../models/User');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const { scrapeReelsForSource } = require('./instagramReels');
-const { fetchYouTubeVideos } = require('./youtubeScraper');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
@@ -118,7 +117,7 @@ async function scrapeAllSources(frequency = null) {
 
             if (source.instagramUsername) {
                 console.log(`Scraping Reels for ${source.instagramUsername}`);
-                const reels = await fetchYouTubeVideos(
+                const reels = await scrapeReelsForSource(
                     source._id,
                     source.instagramUsername
                 );
