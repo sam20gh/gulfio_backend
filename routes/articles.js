@@ -470,68 +470,38 @@ articleRouter.delete('/:id', auth, async (req, res) => {
   await clearArticlesCache();
 });
 
-// 🔍 GET /articles/related/:id
-// articleRouter.get('/related/:id', async (req, res) => {
-//   try {
-//     const originalArticle = await Article.findById(req.params.id);
-//     const language = req.query.language || originalArticle?.language || 'english';
 
-//     if (!originalArticle) {
-//       return res.status(404).json({ message: 'Article not found' });
-//     }
-
-//     // ✅ Use MongoDB Aggregation to remove duplicates
-//     const relatedArticles = await Article.aggregate([
-//       {
-//         $match: {
-//           _id: { $ne: originalArticle._id },
-//           category: originalArticle.category,
-//           language: language // Add language filter
-//         },
-//       },
-//       {
-//         $group: {
-//           _id: "$_id",
-//           doc: { $first: "$$ROOT" }
-//         }
-//       },
-//       {
-//         $replaceRoot: { newRoot: "$doc" }
-//       },
-//       {
-//         $sort: { publishedAt: -1 }
-//       },
-//       {
-//         $limit: 20
-//       }
-//     ]);
-
-//     // Inject a unique fetchId to each article
-//     const enhancedRelatedArticles = relatedArticles.map(article => ({
-//       ...article,
-//       fetchId: new mongoose.Types.ObjectId().toString()
-//     }));
-
-//     console.log('✅ Related Articles after full deduplication:', enhancedRelatedArticles.map(a => a.fetchId));
-//     res.json(enhancedRelatedArticles);
-
-//   } catch (error) {
-//     console.error('Error fetching related articles:', error.message);
-//     res.status(500).json({ message: 'Server Error' });
-//   }
-// });
-// routes/articles.js
 articleRouter.get('/related/:id', async (req, res) => {
   try {
-    const article = await Article.findById(req.params.id).populate('relatedIds');
-    if (!article) return res.status(404).json({ error: 'Article not found' });
+    const article = await Article.findById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
 
-    res.json(article.relatedIds);
+    // Step 1: Try 5 most recent from same source
+    let related = await Article.find({
+      sourceId: article.sourceId,
+      _id: { $ne: article._id },
+    })
+      .sort({ publishedAt: -1 })
+      .limit(5);
+
+    // Step 2: Fallback to top 5 trending articles if not enough
+    if (!related || related.length < 5) {
+      related = await Article.find({
+        _id: { $ne: article._id },
+        viewCount: { $exists: true },
+      })
+        .sort({ viewCount: -1, publishedAt: -1 })
+        .limit(5);
+    }
+
+    res.json(related);
   } catch (err) {
-    console.error('❌ Error fetching related:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('❌ Error in /related/:id:', err);
+    res.status(500).json({ error: 'Failed to fetch related articles' });
   }
-});
+})
 
 articleRouter.post('/:id/update-embedding', auth, async (req, res) => {
   const { embedding } = req.body;
