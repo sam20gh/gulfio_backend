@@ -27,7 +27,8 @@ async function scrapeYouTubeShortsForSource(source) {
             const videoUrl = result?.[0]?.url;
 
             if (!videoUrl) {
-                console.warn(`❌ No video URL found for ${videoId}`);
+                console.warn(`❌ No video URL found in result for ${youtubeUrl}`);
+                console.dir(result, { depth: 5 });
                 continue;
             }
 
@@ -49,7 +50,8 @@ async function scrapeYouTubeShortsForSource(source) {
             await reel.save();
             upsertedReels.push(reel);
         } catch (err) {
-            console.error(`❌ Error scraping YouTube video ${videoId}:`, err.message);
+            console.error(`❌ Error calling btch-downloader for ${youtubeUrl}`);
+            console.error(err);
         }
     }
 
