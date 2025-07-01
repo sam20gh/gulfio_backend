@@ -24,7 +24,11 @@ async function scrapeYouTubeShortsForSource(source) {
 
         try {
             const result = await youtube(youtubeUrl);
-            const videoUrl = result?.[0]?.url;
+
+            // Handle both array and object formats
+            const videoUrl =
+                (Array.isArray(result) && result[0]?.url) ||
+                (typeof result === 'object' && result.mp4);
 
             if (!videoUrl) {
                 console.warn(`❌ No video URL found in result for ${youtubeUrl}`);
