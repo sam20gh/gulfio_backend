@@ -16,32 +16,29 @@ const {
 
 // AWS S3 client
 const s3 = new S3Client({
-    region: AWS_S3_REGION,
+    region: process.env.AWS_S3_REGION,
     credentials: {
-        accessKeyId: AWS_ACCESS_KEY_ID,
-        secretAccessKey: AWS_SECRET_ACCESS_KEY,
-    }
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
 });
 
+
 async function uploadToS3(videoUrl, filename) {
-    try {
-        const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
+    const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data);
 
-        const command = new PutObjectCommand({
-            Bucket: AWS_S3_BUCKET,
-            Key: filename,
-            Body: buffer,
-            ContentType: 'video/mp4',
-            ACL: 'public-read',
-        });
+    const command = new PutObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: filename,
+        Body: buffer,
+        ContentType: 'video/mp4',
+        ACL: 'public-read' // 👈 Required for public access
+    });
 
-        await s3.send(command);
-        return `${AWS_S3_PUBLIC_URL}/${filename}`;
-    } catch (error) {
-        console.error('Error uploading to S3:', error);
-        throw error;
-    }
+    await s3.send(command);
+
+    return `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
 }
 
 async function scrapeYouTubeShortsForSource(source) {
