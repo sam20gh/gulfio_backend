@@ -1,33 +1,31 @@
 // scraper/youtubeShortsScraper.js
-const axios = require('axios');
+const https = require('https');
 const { youtube } = require('btch-downloader');
 const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
-const {
-    AWS_S3_REGION,
-    AWS_S3_BUCKET,
-    AWS_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY,
-    AWS_S3_PUBLIC_URL,
-    YOUTUBE_API_KEY
-} = process.env;
+// const {
+//     AWS_S3_REGION,
+//     AWS_S3_BUCKET,
+//     AWS_ACCESS_KEY_ID,
+//     AWS_SECRET_ACCESS_KEY,
+//     AWS_S3_PUBLIC_URL,
+//     YOUTUBE_API_KEY
+// } = process.env;
 
 // AWS S3 client
 const s3 = new S3Client({
-    region: AWS_S3_REGION,
+    region: process.env.AWS_S3_REGION,
     credentials: {
-        accessKeyId: AWS_ACCESS_KEY_ID,
-        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     },
 });
 
-
 async function uploadToS3(videoUrl, filename) {
-    try {
-        const response = await axios.get(videoUrl, {
-            responseType: 'arraybuffer',
+    return new Promise((resolve, reject) => {
+        https.get(videoUrl, {
             headers: {
                 'User-Agent':
                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
@@ -35,24 +33,33 @@ async function uploadToS3(videoUrl, filename) {
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Referer': 'https://www.youtube.com/',
             },
-        });
+        }, async (res) => {
+            if (res.statusCode !== 200) {
+                return reject(new Error(`Download failed: Status code ${res.statusCode}`));
+            }
 
-        const buffer = Buffer.from(response.data);
+            const chunks = [];
+            res.on('data', (chunk) => chunks.push(chunk));
+            res.on('end', async () => {
+                const buffer = Buffer.concat(chunks);
+                const command = new PutObjectCommand({
+                    Bucket: process.env.AWS_S3_BUCKET,
+                    Key: filename,
+                    Body: buffer,
+                    ContentType: 'video/mp4',
+                    ACL: 'public-read',
+                });
 
-        const command = new PutObjectCommand({
-            Bucket: process.env.AWS_S3_BUCKET,
-            Key: filename,
-            Body: buffer,
-            ContentType: 'video/mp4',
-            ACL: 'public-read',
-        });
-
-        await s3.send(command);
-        return `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
-    } catch (err) {
-        console.error('❌ Error uploading to S3:', err.message);
-        throw err;
-    }
+                try {
+                    await s3.send(command);
+                    const url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
+                    resolve(url);
+                } catch (uploadErr) {
+                    reject(uploadErr);
+                }
+            });
+        }).on('error', reject);
+    });
 }
 
 async function scrapeYouTubeShortsForSource(source) {
