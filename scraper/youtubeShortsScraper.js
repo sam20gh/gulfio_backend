@@ -25,20 +25,34 @@ const s3 = new S3Client({
 
 
 async function uploadToS3(videoUrl, filename) {
-    const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
-    const buffer = Buffer.from(response.data);
+    try {
+        const response = await axios.get(videoUrl, {
+            responseType: 'arraybuffer',
+            headers: {
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/',
+            },
+        });
 
-    const command = new PutObjectCommand({
-        Bucket: process.env.AWS_S3_BUCKET,
-        Key: filename,
-        Body: buffer,
-        ContentType: 'video/mp4',
-        ACL: 'public-read' // 👈 Required for public access
-    });
+        const buffer = Buffer.from(response.data);
 
-    await s3.send(command);
+        const command = new PutObjectCommand({
+            Bucket: process.env.AWS_S3_BUCKET,
+            Key: filename,
+            Body: buffer,
+            ContentType: 'video/mp4',
+            ACL: 'public-read',
+        });
 
-    return `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
+        await s3.send(command);
+        return `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
+    } catch (err) {
+        console.error('❌ Error uploading to S3:', err.message);
+        throw err;
+    }
 }
 
 async function scrapeYouTubeShortsForSource(source) {
