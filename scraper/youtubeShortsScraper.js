@@ -15,17 +15,55 @@ const {
     YOUTUBE_API_KEY
 } = process.env;
 
+// Validation function
+function validateEnvironment() {
+    const requiredVars = {
+        'YOUTUBE_API_KEY': YOUTUBE_API_KEY,
+        'AWS_S3_REGION': AWS_S3_REGION,
+        'AWS_S3_BUCKET': AWS_S3_BUCKET,
+        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY
+    };
+
+    const missing = Object.entries(requiredVars)
+        .filter(([key, value]) => !value)
+        .map(([key]) => key);
+
+    if (missing.length > 0) {
+        console.error(`❌ Missing required environment variables: ${missing.join(', ')}`);
+        return false;
+    }
+
+    console.log(`✅ All required environment variables are set`);
+    return true;
+}
+
 // AWS S3 client
 const s3 = new S3Client({
-    region: process.env.AWS_S3_REGION,
+    region: AWS_S3_REGION,
     credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
     },
 });
 
 async function uploadToS3(videoUrl, filename) {
+    console.log(`     📤 Starting S3 upload for file: ${filename}`);
+    console.log(`     🔗 Source video URL: ${videoUrl}`);
+
+    // Validate S3 configuration
+    if (!AWS_S3_BUCKET || !AWS_S3_REGION || !AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY) {
+        const missingVars = [];
+        if (!AWS_S3_BUCKET) missingVars.push('AWS_S3_BUCKET');
+        if (!AWS_S3_REGION) missingVars.push('AWS_S3_REGION');
+        if (!AWS_ACCESS_KEY_ID) missingVars.push('AWS_ACCESS_KEY_ID');
+        if (!AWS_SECRET_ACCESS_KEY) missingVars.push('AWS_SECRET_ACCESS_KEY');
+        throw new Error(`Missing required S3 environment variables: ${missingVars.join(', ')}`);
+    }
+
     return new Promise((resolve, reject) => {
+        console.log(`     ⬇️ Downloading video from: ${videoUrl}`);
+
         https.get(videoUrl, {
             headers: {
                 'User-Agent':
@@ -36,89 +74,182 @@ async function uploadToS3(videoUrl, filename) {
             },
             maxRedirects: 5,
         }, async (res) => {
+            console.log(`     📊 Download response status: ${res.statusCode}`);
+            console.log(`     📋 Response headers:`, res.headers);
+
             if (res.statusCode !== 200) {
                 return reject(new Error(`Download failed: Status code ${res.statusCode}`));
             }
 
             const chunks = [];
-            res.on('data', (chunk) => chunks.push(chunk));
+            let totalBytes = 0;
+
+            res.on('data', (chunk) => {
+                chunks.push(chunk);
+                totalBytes += chunk.length;
+                if (chunks.length % 100 === 0) { // Log every 100 chunks
+                    console.log(`     📥 Downloaded ${totalBytes} bytes so far...`);
+                }
+            });
+
             res.on('end', async () => {
+                console.log(`     ✅ Download completed. Total size: ${totalBytes} bytes`);
+
                 const buffer = Buffer.concat(chunks);
+                console.log(`     📦 Buffer created, size: ${buffer.length} bytes`);
+
                 const command = new PutObjectCommand({
-                    Bucket: process.env.AWS_S3_BUCKET,
+                    Bucket: AWS_S3_BUCKET,
                     Key: filename,
                     Body: buffer,
                     ContentType: 'video/mp4',
                     ACL: 'public-read',
                 });
 
+                console.log(`     ☁️ Uploading to S3 bucket: ${AWS_S3_BUCKET}`);
+                console.log(`     📁 S3 key: ${filename}`);
+
                 try {
-                    await s3.send(command);
-                    const url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
+                    const result = await s3.send(command);
+                    console.log(`     ✅ S3 upload successful:`, result);
+
+                    const url = `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
+                    console.log(`     🔗 Final S3 URL: ${url}`);
                     resolve(url);
                 } catch (uploadErr) {
+                    console.error(`     ❌ S3 upload failed:`, uploadErr);
                     reject(uploadErr);
                 }
             });
-        }).on('error', reject);
+        }).on('error', (downloadErr) => {
+            console.error(`     ❌ Download failed:`, downloadErr);
+            reject(downloadErr);
+        });
     });
 }
 async function scrapeYouTubeShortsForSource(source) {
-    const channelId = source.youtubeChannelId;
-    if (!channelId) return [];
+    console.log(`🎬 Starting YouTube Shorts scraping for source: ${source.name}`);
 
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=5&key=${YOUTUBE_API_KEY}`;
-    const { data } = await axios.get(url);
-    const upsertedReels = [];
-
-    for (const item of data.items) {
-        const videoId = item.id.videoId;
-        const caption = item.snippet.title;
-        const publishedAt = item.snippet.publishedAt;
-
-        const youtubeUrl = `https://youtube.com/watch?v=${videoId}`;
-
-        try {
-            const result = await youtube(youtubeUrl);
-
-            const rawUrl =
-                (Array.isArray(result) && result[0]?.url) ||
-                (typeof result === 'object' && result.mp4);
-
-            if (!rawUrl || !rawUrl.startsWith('http')) {
-                console.warn(`❌ No video URL found for ${youtubeUrl}`);
-                continue;
-            }
-
-            const exists = await Reel.findOne({ videoUrl: rawUrl });
-            if (exists) {
-                console.log(`⚠️ Skipping ${videoId} – duplicate videoUrl`);
-                continue;
-            }
-
-            const filename = `gulfio-${Date.now()}-${videoId}.mp4`;
-            const finalUrl = await uploadToS3(rawUrl, filename);
-
-            const embedding = await getDeepSeekEmbedding(caption);
-
-            const reel = await Reel.create({
-                source: source._id,
-                reelId: videoId,
-                videoUrl: finalUrl,
-                caption,
-                publishedAt,
-                scrapedAt: new Date(),
-                embedding
-            });
-
-            upsertedReels.push(reel);
-            console.log(`✅ Inserted: ${videoId} – ${caption.substring(0, 50)}...`);
-        } catch (err) {
-            console.error(`❌ Failed for ${youtubeUrl}:`, err.message);
-        }
+    // Validate environment first
+    if (!validateEnvironment()) {
+        console.error(`❌ Environment validation failed for source: ${source.name}`);
+        return [];
     }
 
-    return upsertedReels;
+    const channelId = source.youtubeChannelId;
+    if (!channelId) {
+        console.log(`❌ No YouTube channel ID found for source: ${source.name}`);
+        return [];
+    }
+
+    console.log(`📺 Channel ID: ${channelId}`);
+
+    if (!YOUTUBE_API_KEY) {
+        console.error(`❌ YOUTUBE_API_KEY is not set in environment variables`);
+        return [];
+    }
+
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=5&key=${YOUTUBE_API_KEY}`;
+    console.log(`🔍 YouTube API URL: ${url.replace(YOUTUBE_API_KEY, 'API_KEY_HIDDEN')}`);
+
+    try {
+        const { data } = await axios.get(url);
+        console.log(`📊 YouTube API Response:`, {
+            totalResults: data.pageInfo?.totalResults || 0,
+            resultsPerPage: data.pageInfo?.resultsPerPage || 0,
+            itemsFound: data.items?.length || 0
+        });
+
+        if (!data.items || data.items.length === 0) {
+            console.log(`⚠️ No YouTube Shorts found for channel: ${channelId}`);
+            return [];
+        }
+
+        console.log(`📋 Found ${data.items.length} YouTube Shorts to process`);
+        const upsertedReels = [];
+
+        for (const item of data.items) {
+            const videoId = item.id.videoId;
+            const caption = item.snippet.title;
+            const publishedAt = item.snippet.publishedAt;
+
+            console.log(`\n🎯 Processing video ${upsertedReels.length + 1}/${data.items.length}`);
+            console.log(`   📹 Video ID: ${videoId}`);
+            console.log(`   📝 Title: ${caption}`);
+            console.log(`   📅 Published: ${publishedAt}`);
+
+            const youtubeUrl = `https://youtube.com/watch?v=${videoId}`;
+            console.log(`   🔗 YouTube URL: ${youtubeUrl}`);
+
+            try {
+                console.log(`   ⬇️ Attempting to extract download URL using btch-downloader...`);
+                const result = await youtube(youtubeUrl);
+                console.log(`   📦 btch-downloader result type:`, typeof result);
+                console.log(`   📊 btch-downloader result:`, JSON.stringify(result, null, 2));
+
+                const rawUrl =
+                    (Array.isArray(result) && result[0]?.url) ||
+                    (typeof result === 'object' && result.mp4);
+
+                console.log(`   🎥 Extracted raw URL: ${rawUrl}`);
+
+                if (!rawUrl || !rawUrl.startsWith('http')) {
+                    console.warn(`   ❌ No valid video URL found for ${youtubeUrl}`);
+                    console.warn(`   ❌ Raw URL value:`, rawUrl);
+                    continue;
+                }
+
+                console.log(`   🔍 Checking for duplicate videoUrl in database...`);
+                const exists = await Reel.findOne({ videoUrl: rawUrl });
+                if (exists) {
+                    console.log(`   ⚠️ Skipping ${videoId} – duplicate videoUrl found`);
+                    continue;
+                }
+
+                console.log(`   ☁️ Uploading to S3...`);
+                const filename = `gulfio-${Date.now()}-${videoId}.mp4`;
+                console.log(`   📁 S3 filename: ${filename}`);
+
+                const finalUrl = await uploadToS3(rawUrl, filename);
+                console.log(`   ✅ S3 upload successful: ${finalUrl}`);
+
+                console.log(`   🤖 Generating embedding for caption...`);
+                const embedding = await getDeepSeekEmbedding(caption);
+                console.log(`   ✅ Embedding generated, length: ${embedding?.length || 'undefined'}`);
+
+                console.log(`   💾 Saving to database...`);
+                const reel = await Reel.create({
+                    source: source._id,
+                    reelId: videoId,
+                    videoUrl: finalUrl,
+                    caption,
+                    publishedAt,
+                    scrapedAt: new Date(),
+                    embedding
+                });
+
+                upsertedReels.push(reel);
+                console.log(`   ✅ Successfully processed: ${videoId} – ${caption.substring(0, 50)}...`);
+
+            } catch (err) {
+                console.error(`   ❌ Failed processing ${youtubeUrl}:`);
+                console.error(`   ❌ Error name: ${err.name}`);
+                console.error(`   ❌ Error message: ${err.message}`);
+                console.error(`   ❌ Error stack: ${err.stack}`);
+            }
+        }
+
+        console.log(`\n🎉 YouTube Shorts scraping completed for ${source.name}`);
+        console.log(`📊 Successfully processed: ${upsertedReels.length}/${data.items.length} videos`);
+        return upsertedReels;
+
+    } catch (err) {
+        console.error(`❌ Fatal error in YouTube Shorts scraping for ${source.name}:`);
+        console.error(`❌ Error name: ${err.name}`);
+        console.error(`❌ Error message: ${err.message}`);
+        console.error(`❌ Error stack: ${err.stack}`);
+        return [];
+    }
 }
 
 module.exports = { scrapeYouTubeShortsForSource };

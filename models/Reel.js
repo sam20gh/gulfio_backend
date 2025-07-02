@@ -6,6 +6,7 @@ const ReelSchema = new Schema({
     reelId: { type: String, required: true },
     videoUrl: { type: String, required: true },
     scrapedAt: { type: Date, default: Date.now },
+    publishedAt: { type: Date, default: null }, // Added this field
     caption: { type: String, default: null },
     // Social features:
     likes: { type: Number, default: 0 },
