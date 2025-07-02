@@ -1,7 +1,8 @@
-// scraper/youtubeShortsScraper.js
+// Alternative YouTube Shorts scraper using RSS feeds (no API quota limits)
 const axios = require('axios');
 const { https } = require('follow-redirects');
 const { youtube } = require('btch-downloader');
+const xml2js = require('xml2js'); // You'll need to install this: npm install xml2js
 const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
@@ -11,32 +12,7 @@ const {
     AWS_S3_BUCKET,
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
-    AWS_S3_PUBLIC_URL,
-    YOUTUBE_API_KEY
 } = process.env;
-
-// Validation function
-function validateEnvironment() {
-    const requiredVars = {
-        'YOUTUBE_API_KEY': YOUTUBE_API_KEY,
-        'AWS_S3_REGION': AWS_S3_REGION,
-        'AWS_S3_BUCKET': AWS_S3_BUCKET,
-        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
-        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY
-    };
-
-    const missing = Object.entries(requiredVars)
-        .filter(([key, value]) => !value)
-        .map(([key]) => key);
-
-    if (missing.length > 0) {
-        console.error(`❌ Missing required environment variables: ${missing.join(', ')}`);
-        return false;
-    }
-
-    console.log(`✅ All required environment variables are set`);
-    return true;
-}
 
 // AWS S3 client
 const s3 = new S3Client({
@@ -47,23 +23,35 @@ const s3 = new S3Client({
     },
 });
 
+// Validation function
+function validateEnvironment() {
+    const requiredVars = {
+        'AWS_S3_REGION': AWS_S3_REGION,
+        'AWS_S3_BUCKET': AWS_S3_BUCKET,
+        'AWS_ACCESS_KEY_ID': AWS_ACCESS_KEY_ID,
+        'AWS_SECRET_ACCESS_KEY': AWS_SECRET_ACCESS_KEY
+    };
+    
+    const missing = Object.entries(requiredVars)
+        .filter(([key, value]) => !value)
+        .map(([key]) => key);
+    
+    if (missing.length > 0) {
+        console.error(`❌ Missing required environment variables: ${missing.join(', ')}`);
+        return false;
+    }
+    
+    console.log(`✅ All required environment variables are set`);
+    return true;
+}
+
 async function uploadToS3(videoUrl, filename) {
     console.log(`     📤 Starting S3 upload for file: ${filename}`);
     console.log(`     🔗 Source video URL: ${videoUrl}`);
-
-    // Validate S3 configuration
-    if (!AWS_S3_BUCKET || !AWS_S3_REGION || !AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY) {
-        const missingVars = [];
-        if (!AWS_S3_BUCKET) missingVars.push('AWS_S3_BUCKET');
-        if (!AWS_S3_REGION) missingVars.push('AWS_S3_REGION');
-        if (!AWS_ACCESS_KEY_ID) missingVars.push('AWS_ACCESS_KEY_ID');
-        if (!AWS_SECRET_ACCESS_KEY) missingVars.push('AWS_SECRET_ACCESS_KEY');
-        throw new Error(`Missing required S3 environment variables: ${missingVars.join(', ')}`);
-    }
-
+    
     return new Promise((resolve, reject) => {
         console.log(`     ⬇️ Downloading video from: ${videoUrl}`);
-
+        
         https.get(videoUrl, {
             headers: {
                 'User-Agent':
@@ -75,29 +63,28 @@ async function uploadToS3(videoUrl, filename) {
             maxRedirects: 5,
         }, async (res) => {
             console.log(`     📊 Download response status: ${res.statusCode}`);
-            console.log(`     📋 Response headers:`, res.headers);
-
+            
             if (res.statusCode !== 200) {
                 return reject(new Error(`Download failed: Status code ${res.statusCode}`));
             }
 
             const chunks = [];
             let totalBytes = 0;
-
+            
             res.on('data', (chunk) => {
                 chunks.push(chunk);
                 totalBytes += chunk.length;
-                if (chunks.length % 100 === 0) { // Log every 100 chunks
+                if (chunks.length % 100 === 0) {
                     console.log(`     📥 Downloaded ${totalBytes} bytes so far...`);
                 }
             });
-
+            
             res.on('end', async () => {
                 console.log(`     ✅ Download completed. Total size: ${totalBytes} bytes`);
-
+                
                 const buffer = Buffer.concat(chunks);
                 console.log(`     📦 Buffer created, size: ${buffer.length} bytes`);
-
+                
                 const command = new PutObjectCommand({
                     Bucket: AWS_S3_BUCKET,
                     Key: filename,
@@ -107,12 +94,11 @@ async function uploadToS3(videoUrl, filename) {
                 });
 
                 console.log(`     ☁️ Uploading to S3 bucket: ${AWS_S3_BUCKET}`);
-                console.log(`     📁 S3 key: ${filename}`);
 
                 try {
                     const result = await s3.send(command);
-                    console.log(`     ✅ S3 upload successful:`, result);
-
+                    console.log(`     ✅ S3 upload successful`);
+                    
                     const url = `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
                     console.log(`     🔗 Final S3 URL: ${url}`);
                     resolve(url);
@@ -127,15 +113,31 @@ async function uploadToS3(videoUrl, filename) {
         });
     });
 }
-async function scrapeYouTubeShortsForSource(source) {
-    console.log(`🎬 Starting YouTube Shorts scraping for source: ${source.name}`);
 
+// Check if a video is likely a YouTube Short based on duration
+async function isLikelyShort(videoId) {
+    try {
+        console.log(`   🕒 Checking if video ${videoId} is a short...`);
+        const result = await youtube(`https://youtube.com/watch?v=${videoId}`);
+        
+        // If btch-downloader can extract it successfully, assume it's accessible
+        // Note: You might want to add additional checks here based on video metadata
+        return result && (result.mp4 || (Array.isArray(result) && result[0]?.url));
+    } catch (error) {
+        console.log(`   ⚠️ Could not verify if ${videoId} is a short: ${error.message}`);
+        return false;
+    }
+}
+
+async function scrapeYouTubeShortsViaRSS(source) {
+    console.log(`🎬 Starting RSS-based YouTube Shorts scraping for source: ${source.name}`);
+    
     // Validate environment first
     if (!validateEnvironment()) {
         console.error(`❌ Environment validation failed for source: ${source.name}`);
         return [];
     }
-
+    
     const channelId = source.youtubeChannelId;
     if (!channelId) {
         console.log(`❌ No YouTube channel ID found for source: ${source.name}`);
@@ -143,60 +145,67 @@ async function scrapeYouTubeShortsForSource(source) {
     }
 
     console.log(`📺 Channel ID: ${channelId}`);
-
-    if (!YOUTUBE_API_KEY) {
-        console.error(`❌ YOUTUBE_API_KEY is not set in environment variables`);
-        return [];
-    }
-
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=5&key=${YOUTUBE_API_KEY}`;
-    console.log(`🔍 YouTube API URL: ${url.replace(YOUTUBE_API_KEY, 'API_KEY_HIDDEN')}`);    try {
-        const { data } = await axios.get(url);
-        console.log(`📊 YouTube API Response:`, {
-            totalResults: data.pageInfo?.totalResults || 0,
-            resultsPerPage: data.pageInfo?.resultsPerPage || 0,
-            itemsFound: data.items?.length || 0
-        });
+    
+    // Use RSS feed instead of API
+    const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+    console.log(`📡 RSS URL: ${rssUrl}`);
+    
+    try {
+        const { data: xmlData } = await axios.get(rssUrl);
+        console.log(`✅ RSS feed fetched successfully`);
         
-        if (!data.items || data.items.length === 0) {
-            console.log(`⚠️ No YouTube Shorts found for channel: ${channelId}`);
+        // Parse XML
+        const parser = new xml2js.Parser();
+        const result = await parser.parseStringPromise(xmlData);
+        
+        const entries = result.feed?.entry || [];
+        console.log(`📋 Found ${entries.length} total videos in RSS feed`);
+        
+        if (entries.length === 0) {
+            console.log(`⚠️ No videos found in RSS feed for channel: ${channelId}`);
             return [];
         }
         
-        console.log(`📋 Found ${data.items.length} YouTube Shorts to process`);
+        // Limit to recent videos (last 10) to check for shorts
+        const recentEntries = entries.slice(0, 10);
+        console.log(`🔍 Checking ${recentEntries.length} recent videos for shorts...`);
+        
         const upsertedReels = [];
-
-        for (const item of data.items) {
-            const videoId = item.id.videoId;
-            const caption = item.snippet.title;
-            const publishedAt = item.snippet.publishedAt;
-
-            console.log(`\n🎯 Processing video ${upsertedReels.length + 1}/${data.items.length}`);
+        
+        for (let i = 0; i < recentEntries.length; i++) {
+            const entry = recentEntries[i];
+            const videoId = entry['yt:videoId']?.[0];
+            const title = entry.title?.[0];
+            const publishedAt = entry.published?.[0];
+            
+            if (!videoId || !title) {
+                console.log(`   ⚠️ Skipping entry ${i + 1}: missing videoId or title`);
+                continue;
+            }
+            
+            console.log(`\n🎯 Processing video ${i + 1}/${recentEntries.length}`);
             console.log(`   📹 Video ID: ${videoId}`);
-            console.log(`   📝 Title: ${caption}`);
+            console.log(`   📝 Title: ${title}`);
             console.log(`   📅 Published: ${publishedAt}`);
 
-            const youtubeUrl = `https://youtube.com/watch?v=${videoId}`;
-            console.log(`   🔗 YouTube URL: ${youtubeUrl}`);
-
             try {
+                // Check if this video is likely a short by trying to extract it
+                const youtubeUrl = `https://youtube.com/watch?v=${videoId}`;
+                console.log(`   🔗 YouTube URL: ${youtubeUrl}`);
+                
                 console.log(`   ⬇️ Attempting to extract download URL using btch-downloader...`);
-                const result = await youtube(youtubeUrl);
-                console.log(`   📦 btch-downloader result type:`, typeof result);
-                console.log(`   📊 btch-downloader result:`, JSON.stringify(result, null, 2));
-
-                const rawUrl =
-                    (Array.isArray(result) && result[0]?.url) ||
-                    (typeof result === 'object' && result.mp4);
-
-                console.log(`   🎥 Extracted raw URL: ${rawUrl}`);
+                const downloadResult = await youtube(youtubeUrl);
+                console.log(`   📦 btch-downloader result type:`, typeof downloadResult);
+                
+                const rawUrl = (typeof downloadResult === 'object' && downloadResult.mp4);
+                console.log(`   🎥 Extracted raw URL: ${rawUrl ? rawUrl.substring(0, 100) + '...' : 'Not found'}`);
 
                 if (!rawUrl || !rawUrl.startsWith('http')) {
                     console.warn(`   ❌ No valid video URL found for ${youtubeUrl}`);
-                    console.warn(`   ❌ Raw URL value:`, rawUrl);
                     continue;
                 }
-
+                
+                // Check for duplicates
                 console.log(`   🔍 Checking for duplicate videoUrl in database...`);
                 const exists = await Reel.findOne({ videoUrl: rawUrl });
                 if (exists) {
@@ -205,14 +214,14 @@ async function scrapeYouTubeShortsForSource(source) {
                 }
 
                 console.log(`   ☁️ Uploading to S3...`);
-                const filename = `gulfio-${Date.now()}-${videoId}.mp4`;
+                const filename = `gulfio-rss-${Date.now()}-${videoId}.mp4`;
                 console.log(`   📁 S3 filename: ${filename}`);
-
+                
                 const finalUrl = await uploadToS3(rawUrl, filename);
                 console.log(`   ✅ S3 upload successful: ${finalUrl}`);
 
                 console.log(`   🤖 Generating embedding for caption...`);
-                const embedding = await getDeepSeekEmbedding(caption);
+                const embedding = await getDeepSeekEmbedding(title);
                 console.log(`   ✅ Embedding generated, length: ${embedding?.length || 'undefined'}`);
 
                 console.log(`   💾 Saving to database...`);
@@ -220,49 +229,41 @@ async function scrapeYouTubeShortsForSource(source) {
                     source: source._id,
                     reelId: videoId,
                     videoUrl: finalUrl,
-                    caption,
-                    publishedAt,
+                    caption: title,
+                    publishedAt: publishedAt ? new Date(publishedAt) : new Date(),
                     scrapedAt: new Date(),
                     embedding
                 });
-
+                
                 upsertedReels.push(reel);
-                console.log(`   ✅ Successfully processed: ${videoId} – ${caption.substring(0, 50)}...`);
-
+                console.log(`   ✅ Successfully processed: ${videoId} – ${title.substring(0, 50)}...`);
+                
+                // Limit to 5 shorts maximum to avoid overwhelming the system
+                if (upsertedReels.length >= 5) {
+                    console.log(`   🛑 Reached maximum of 5 shorts, stopping...`);
+                    break;
+                }
+                
             } catch (err) {
-                console.error(`   ❌ Failed processing ${youtubeUrl}:`);
+                console.error(`   ❌ Failed processing ${videoId}:`);
                 console.error(`   ❌ Error name: ${err.name}`);
                 console.error(`   ❌ Error message: ${err.message}`);
-                console.error(`   ❌ Error stack: ${err.stack}`);
+                // Continue with next video instead of stopping
             }
         }
 
-        console.log(`\n🎉 YouTube Shorts scraping completed for ${source.name}`);
-        console.log(`📊 Successfully processed: ${upsertedReels.length}/${data.items.length} videos`);
+        console.log(`\n🎉 RSS-based YouTube Shorts scraping completed for ${source.name}`);
+        console.log(`📊 Successfully processed: ${upsertedReels.length} shorts`);
         return upsertedReels;
-
+        
     } catch (err) {
-        console.error(`❌ Fatal error in YouTube Shorts scraping for ${source.name}:`);
+        console.error(`❌ Fatal error in RSS-based YouTube Shorts scraping for ${source.name}:`);
         console.error(`❌ Error name: ${err.name}`);
         console.error(`❌ Error message: ${err.message}`);
         
-        // Handle specific YouTube API errors
         if (err.response) {
             console.error(`❌ HTTP Status: ${err.response.status}`);
             console.error(`❌ HTTP Status Text: ${err.response.statusText}`);
-            console.error(`❌ Response Data:`, JSON.stringify(err.response.data, null, 2));
-            
-            if (err.response.status === 403) {
-                console.error(`❌ YouTube API quota exceeded! Consider:`);
-                console.error(`   1. Wait for quota reset (daily limit)`);
-                console.error(`   2. Request quota increase from Google`);
-                console.error(`   3. Use multiple API keys with rotation`);
-                console.error(`   4. Implement caching to reduce API calls`);
-            } else if (err.response.status === 400) {
-                console.error(`❌ Bad request - check channel ID: ${source.youtubeChannelId}`);
-            } else if (err.response.status === 404) {
-                console.error(`❌ Channel not found: ${source.youtubeChannelId}`);
-            }
         } else {
             console.error(`❌ Error stack: ${err.stack}`);
         }
@@ -270,4 +271,4 @@ async function scrapeYouTubeShortsForSource(source) {
     }
 }
 
-module.exports = { scrapeYouTubeShortsForSource };
+module.exports = { scrapeYouTubeShortsViaRSS };
