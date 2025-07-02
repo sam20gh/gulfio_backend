@@ -1,6 +1,7 @@
 // scraper/youtubeShortsScraper.js
 const axios = require('axios');
 const https = require('https');
+const { https } = require('follow-redirects');
 const { youtube } = require('btch-downloader');
 const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
@@ -34,6 +35,7 @@ async function uploadToS3(videoUrl, filename) {
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Referer': 'https://www.youtube.com/',
             },
+            maxRedirects: 5,
         }, async (res) => {
             if (res.statusCode !== 200) {
                 return reject(new Error(`Download failed: Status code ${res.statusCode}`));
@@ -62,7 +64,6 @@ async function uploadToS3(videoUrl, filename) {
         }).on('error', reject);
     });
 }
-
 async function scrapeYouTubeShortsForSource(source) {
     const channelId = source.youtubeChannelId;
     if (!channelId) return [];
