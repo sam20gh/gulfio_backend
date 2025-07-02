@@ -1,10 +1,48 @@
-// scraper/youtubeShorts.js
+// scraper/youtubeShortsScraper.js
 const axios = require('axios');
 const { youtube } = require('btch-downloader');
 const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
-const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const {
+    AWS_S3_REGION,
+    AWS_S3_BUCKET,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_S3_PUBLIC_URL,
+    YOUTUBE_API_KEY
+} = process.env;
+
+// AWS S3 client
+const s3 = new S3Client({
+    region: AWS_S3_REGION,
+    credentials: {
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+    }
+});
+
+async function uploadToS3(videoUrl, filename) {
+    try {
+        const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+
+        const command = new PutObjectCommand({
+            Bucket: AWS_S3_BUCKET,
+            Key: filename,
+            Body: buffer,
+            ContentType: 'video/mp4',
+            ACL: 'public-read',
+        });
+
+        await s3.send(command);
+        return `${AWS_S3_PUBLIC_URL}/${filename}`;
+    } catch (error) {
+        console.error('Error uploading to S3:', error);
+        throw error;
+    }
+}
 
 async function scrapeYouTubeShortsForSource(source) {
     const channelId = source.youtubeChannelId;
@@ -12,7 +50,6 @@ async function scrapeYouTubeShortsForSource(source) {
 
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=5&key=${YOUTUBE_API_KEY}`;
     const { data } = await axios.get(url);
-
     const upsertedReels = [];
 
     for (const item of data.items) {
@@ -25,37 +62,40 @@ async function scrapeYouTubeShortsForSource(source) {
         try {
             const result = await youtube(youtubeUrl);
 
-            // Handle both array and object formats
-            const videoUrl =
+            const rawUrl =
                 (Array.isArray(result) && result[0]?.url) ||
                 (typeof result === 'object' && result.mp4);
 
-            if (!videoUrl) {
-                console.warn(`❌ No video URL found in result for ${youtubeUrl}`);
-                console.dir(result, { depth: 5 });
+            if (!rawUrl || !rawUrl.startsWith('http')) {
+                console.warn(`❌ No video URL found for ${youtubeUrl}`);
                 continue;
             }
 
-            const exists = await Reel.findOne({ videoUrl });
-            if (exists) continue;
+            const exists = await Reel.findOne({ videoUrl: rawUrl });
+            if (exists) {
+                console.log(`⚠️ Skipping ${videoId} – duplicate videoUrl`);
+                continue;
+            }
+
+            const filename = `gulfio-${Date.now()}-${videoId}.mp4`;
+            const finalUrl = await uploadToS3(rawUrl, filename);
 
             const embedding = await getDeepSeekEmbedding(caption);
 
-            const reel = new Reel({
+            const reel = await Reel.create({
                 source: source._id,
-                reelId: videoId, // ✅ this is required by schema
-                videoUrl,
+                reelId: videoId,
+                videoUrl: finalUrl,
                 caption,
                 publishedAt,
                 scrapedAt: new Date(),
                 embedding
             });
 
-            await reel.save();
             upsertedReels.push(reel);
+            console.log(`✅ Inserted: ${videoId} – ${caption.substring(0, 50)}...`);
         } catch (err) {
-            console.error(`❌ Error calling btch-downloader for ${youtubeUrl}`);
-            console.error(err);
+            console.error(`❌ Failed for ${youtubeUrl}:`, err.message);
         }
     }
 
