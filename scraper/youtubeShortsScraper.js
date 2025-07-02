@@ -16,10 +16,10 @@ const {
 
 // AWS S3 client
 const s3 = new S3Client({
-    region: process.env.AWS_S3_REGION,
+    region: AWS_S3_REGION,
     credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
     },
 });
 
@@ -48,7 +48,7 @@ async function uploadToS3(videoUrl, filename) {
         });
 
         await s3.send(command);
-        return `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${filename}`;
+        return `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
     } catch (err) {
         console.error('❌ Error uploading to S3:', err.message);
         throw err;
