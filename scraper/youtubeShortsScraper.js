@@ -1,6 +1,5 @@
 // scraper/youtubeShortsScraper.js
 const axios = require('axios');
-const https = require('https');
 const { https } = require('follow-redirects');
 const { youtube } = require('btch-downloader');
 const Reel = require('../models/Reel');
