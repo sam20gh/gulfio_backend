@@ -5,14 +5,14 @@ const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
-// const {
-//     AWS_S3_REGION,
-//     AWS_S3_BUCKET,
-//     AWS_ACCESS_KEY_ID,
-//     AWS_SECRET_ACCESS_KEY,
-//     AWS_S3_PUBLIC_URL,
-//     YOUTUBE_API_KEY
-// } = process.env;
+const {
+    AWS_S3_REGION,
+    AWS_S3_BUCKET,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_S3_PUBLIC_URL,
+    YOUTUBE_API_KEY
+} = process.env;
 
 // AWS S3 client
 const s3 = new S3Client({
