@@ -5,29 +5,29 @@ const { scrapeYouTubeShortsViaRSS } = require('./scraper/youtubeRSSShortsScraper
 
 async function focusedTest() {
     console.log('🎯 Focused S3 upload test...\n');
-    
+
     try {
         // Connect to MongoDB
         console.log('📡 Connecting to MongoDB...');
         await mongoose.connect(process.env.MONGO_URI);
         console.log('✅ Connected to MongoDB');
-        
+
         // Test source - use a channel with short videos
         const testSource = {
             _id: new mongoose.Types.ObjectId(),
             name: 'Test Channel (Short Content)',
             youtubeChannelId: 'UCqwUrj10mAEsqezcItqvwEw',
         };
-        
+
         console.log('\n🎬 Testing RSS scraper with S3 upload fix...');
-        
+
         // Modified to test only 1 video for speed
         const originalLimit = 5;
         const results = await scrapeYouTubeShortsViaRSS(testSource);
-        
+
         console.log('\n🎉 Test completed!');
         console.log(`📊 Results: ${results.length} reels processed`);
-        
+
         if (results.length > 0) {
             console.log('\n✅ SUCCESS! RSS-based scraper is working!');
             const sample = results[0];
@@ -40,7 +40,7 @@ async function focusedTest() {
         } else {
             console.log('\n❌ No reels processed. Checking S3 logs above...');
         }
-        
+
     } catch (error) {
         console.error('\n❌ Test failed:', error.message);
     } finally {

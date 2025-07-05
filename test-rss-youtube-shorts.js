@@ -11,12 +11,12 @@ const testSource = {
 
 async function testRSSYouTubeShortsScraper() {
     console.log('🧪 Testing RSS-based YouTube Shorts Scraper...\n');
-    
+
     try {
         const results = await scrapeYouTubeShortsViaRSS(testSource);
         console.log('\n🎉 RSS test completed successfully!');
         console.log(`📊 Results: ${results.length} reels processed`);
-        
+
         if (results.length > 0) {
             console.log('\n📝 Sample result:', {
                 reelId: results[0].reelId,
@@ -31,7 +31,7 @@ async function testRSSYouTubeShortsScraper() {
             console.log('   - AWS S3 credentials are missing');
             console.log('   - All videos were duplicates');
         }
-        
+
     } catch (error) {
         console.error('❌ RSS test failed:', error);
     } finally {

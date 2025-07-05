@@ -127,8 +127,8 @@ async function scrapeAllSources(frequency = null) {
             // }
             if (source.youtubeChannelId) {
                 console.log(`Scraping YouTube Shorts (RSS-based) for ${source.name}`);
-                const ytReels = await scrapeYouTubeShortsViaRSS(source);
-                console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
+                // const ytReels = await scrapeYouTubeShortsViaRSS(source);
+                // console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
             }
             try {
                 console.log(`Scraping full YouTube videos for ${source.name}`);

@@ -150,19 +150,19 @@ async function scrapeYouTubeShortsForSource(source) {
     }
 
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&videoDuration=short&q=%23Shorts&maxResults=5&key=${YOUTUBE_API_KEY}`;
-    console.log(`🔍 YouTube API URL: ${url.replace(YOUTUBE_API_KEY, 'API_KEY_HIDDEN')}`);    try {
+    console.log(`🔍 YouTube API URL: ${url.replace(YOUTUBE_API_KEY, 'API_KEY_HIDDEN')}`); try {
         const { data } = await axios.get(url);
         console.log(`📊 YouTube API Response:`, {
             totalResults: data.pageInfo?.totalResults || 0,
             resultsPerPage: data.pageInfo?.resultsPerPage || 0,
             itemsFound: data.items?.length || 0
         });
-        
+
         if (!data.items || data.items.length === 0) {
             console.log(`⚠️ No YouTube Shorts found for channel: ${channelId}`);
             return [];
         }
-        
+
         console.log(`📋 Found ${data.items.length} YouTube Shorts to process`);
         const upsertedReels = [];
 
@@ -245,13 +245,13 @@ async function scrapeYouTubeShortsForSource(source) {
         console.error(`❌ Fatal error in YouTube Shorts scraping for ${source.name}:`);
         console.error(`❌ Error name: ${err.name}`);
         console.error(`❌ Error message: ${err.message}`);
-        
+
         // Handle specific YouTube API errors
         if (err.response) {
             console.error(`❌ HTTP Status: ${err.response.status}`);
             console.error(`❌ HTTP Status Text: ${err.response.statusText}`);
             console.error(`❌ Response Data:`, JSON.stringify(err.response.data, null, 2));
-            
+
             if (err.response.status === 403) {
                 console.error(`❌ YouTube API quota exceeded! Consider:`);
                 console.error(`   1. Wait for quota reset (daily limit)`);
