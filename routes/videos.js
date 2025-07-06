@@ -137,28 +137,29 @@ router.get('/reels', async (req, res) => {
 router.post('/reels/upload', async (req, res) => {
     try {
         const { reelUrl, caption, sourceId } = req.body;
-        console.log(`Received upload request: ${JSON.stringify({ reelUrl, caption, sourceId })}`);
+        console.log(`📥 Received upload request: ${JSON.stringify({ reelUrl, caption, sourceId })}`);
 
         if (!reelUrl || !caption || !sourceId) {
             return res.status(400).json({ message: 'Missing required fields.' });
         }
 
         // 1. Get direct video URL from Instagram
-        console.log('Starting Instagram video extraction...');
-        const videoUrl = await getInstagramVideoUrl(reelUrl);
-        console.log(`Extracted video URL: ${videoUrl}`);
+        console.log('🔍 Extracting direct video URL...');
+        const directVideoUrl = await getInstagramVideoUrl(reelUrl);
+        console.log(`🎯 Extracted video URL: ${directVideoUrl}`);
 
-        // 2. Upload to R2
+        // 2. Upload to S3 and get signed URL
         const filename = `gulfio-${Date.now()}.mp4`;
-        const r2Url = await uploadToR2(videoUrl, filename);
+        const { signedUrl, key } = await uploadToR2(directVideoUrl, filename);
 
-        // 3. Get embedding
+        // 3. Generate AI embedding
         const embedInput = `${caption}\n\n${reelUrl}`;
         const embedding = await getDeepSeekEmbedding(embedInput);
 
-        // 4. Save in MongoDB
+        // 4. Save to MongoDB
         const newReel = new Reel({
-            videoUrl: r2Url,
+            videoUrl: signedUrl,       // ✅ signed S3 URL string
+            originalKey: key,          // ✅ stored for refresh
             caption,
             source: sourceId,
             reelId: filename,
@@ -166,14 +167,17 @@ router.post('/reels/upload', async (req, res) => {
             updatedAt: new Date(),
             embedding
         });
+
         await newReel.save();
 
-        res.json({ message: 'Reel uploaded and saved!', reel: newReel });
+        res.json({ message: '✅ Reel uploaded and saved!', reel: newReel });
+
     } catch (err) {
-        console.error(err);
+        console.error('❌ Upload failed:', err);
         res.status(500).json({ message: 'Upload failed', error: err.message });
     }
 });
+
 
 // ============= Instagram refresh route remains unchanged =============
 router.post('/:id/instagram/refresh', async (req, res) => {
