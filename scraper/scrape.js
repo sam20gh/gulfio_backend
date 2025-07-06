@@ -70,6 +70,10 @@ async function scrapeAllSources(frequency = null) {
                         .get()
                         .filter(Boolean)
                         .map(src => {
+                            // 🔧 Fix low resolution by replacing width parameter
+                            src = src.replace(/w=\d+/g, 'w=800');
+
+                            // 🌐 Handle different URL types
                             if (src.startsWith('//')) return 'https:' + src;
                             if (src.startsWith('/')) return `${source.baseUrl.replace(/\/$/, '')}${src}`;
                             return src;
