@@ -11,11 +11,10 @@ const router = express.Router();
 
 // You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
 const {
-    R2_ENDPOINT,
-    R2_ACCESS_KEY,
-    R2_SECRET_KEY,
-    R2_PUBLIC_URL,
-    R2_BUCKET
+    AWS_S3_REGION,
+    AWS_S3_BUCKET,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
 } = process.env;
 function cosineSimilarity(vec1, vec2) {
     const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
@@ -44,12 +43,11 @@ async function getInstagramVideoUrl(reelUrl) {
 }
 // Helper: Upload to R2
 const s3 = new S3Client({
-    region: 'auto',
-    endpoint: R2_ENDPOINT,
+    region: AWS_S3_REGION,
     credentials: {
-        accessKeyId: R2_ACCESS_KEY,
-        secretAccessKey: R2_SECRET_KEY,
-    }
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+    },
 });
 
 async function uploadToR2(videoUrl, filename) {
@@ -62,14 +60,15 @@ async function uploadToR2(videoUrl, filename) {
 
         const buffer = Buffer.from(response.data);
         const command = new PutObjectCommand({
-            Bucket: R2_BUCKET,
+            Bucket: AWS_S3_BUCKET,
             Key: filename,
             Body: buffer,
-            ContentType: 'video/mp4'
+            ContentType: 'video/mp4',
         });
 
         await s3.send(command);
-        const r2Url = `${process.env.R2_PUBLIC_URL}/${filename}`;
+        console.log(`     ✅ S3 upload successful`);
+        const r2Url = `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
         console.log('Generated R2 Public URL:', r2Url);
 
         return r2Url;
