@@ -51,8 +51,30 @@ async function scrapeAllSources(frequency = null) {
 
                     let pageHtml;
                     if (source.name.toLowerCase().includes('gulfi news')) {
-                        ({ html: pageHtml } = await fetchWithPuppeteer(link));
-                    } else {
+                        const { browser, page } = await fetchWithPuppeteer(source.url, { returnPage: true });
+
+                        try {
+                            // 🛂 Try to click the consent button if present
+                            const consentSelector = 'button.fc-button.fc-cta-consent.fc-primary-button';
+                            const consentButton = await page.$(consentSelector);
+                            if (consentButton) {
+                                console.log('🛂 Clicking consent button...');
+                                await page.click(consentSelector);
+                                await page.waitForTimeout(800); // allow modal to disappear
+                            }
+
+                            const html = await page.content();
+                            await browser.close();
+                            // Attach html back to use as expected
+                            html && (globalThis.lastFetchedHtml = html); // temporary cache
+                        } catch (err) {
+                            console.warn('⚠️ Error handling consent popup:', err.message);
+                            await browser.close();
+                        }
+
+                        html = globalThis.lastFetchedHtml;
+                    }
+                    else {
                         pageHtml = (await axios.get(link)).data;
                     }
                     const $$ = cheerio.load(pageHtml);
