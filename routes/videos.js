@@ -5,6 +5,7 @@ const Source = require('../models/Source');
 const puppeteer = require('puppeteer');
 const axios = require('axios'); // Replace fetch with axios
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { igdl } = require('btch-downloader');// Adjust the path as needed
 const router = express.Router();
@@ -67,18 +68,24 @@ async function uploadToR2(videoUrl, filename) {
         });
 
         await s3.send(command);
-        console.log(`     ✅ S3 upload successful`);
-        const r2Url = `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
-        console.log('Generated R2 Public URL:', r2Url);
+        console.log(`✅ S3 upload successful: ${filename}`);
 
-        return r2Url;
+        // Generate signed URL (valid for 7 days)
+        const signedUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({
+                Bucket: AWS_S3_BUCKET,
+                Key: filename,
+            }),
+            { expiresIn: 60 * 60 * 24 * 7 } // 7 days
+        );
+
+        return { signedUrl, key: filename };
     } catch (error) {
-        console.error('Error in uploadToR2:', error);
+        console.error('❌ Error in uploadToR2:', error);
         throw new Error(`Failed to upload to R2: ${error.message}`);
     }
 }
-
-
 // ===================== EXISTING ROUTES =====================
 router.get('/', async (req, res) => {
     try {

@@ -21,6 +21,7 @@ const ReelSchema = new Schema({
         type: [Number],
         default: [],
     },
+    originalKey: { type: String }, // For R2 storage
 }, { timestamps: true });
 
 module.exports = mongoose.model('Reel', ReelSchema);
