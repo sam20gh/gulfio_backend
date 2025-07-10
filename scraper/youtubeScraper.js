@@ -1,6 +1,7 @@
 // scrape/youtubeScraper.js
 const axios = require('axios');
 const Video = require('../models/Video');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const API_KEY = process.env.YOUTUBE_API_KEY;
 
 async function fetchYouTubeVideos(channelId) {
@@ -21,9 +22,17 @@ async function scrapeYouTubeForSource(sourceId, channelId) {
     const results = [];
 
     for (const video of videos) {
+        const inputText = `${video.title}\n\n${video.description}`;
+        console.log(`   🤖 Generating embedding for: ${video.title}`);
+        const embedding = await getDeepSeekEmbedding(inputText);
+
         const storedVideo = await Video.findOneAndUpdate(
             { source: sourceId, videoId: video.videoId },
-            { ...video, scrapedAt: new Date() },
+            {
+                ...video,
+                scrapedAt: new Date(),
+                embedding // make sure the Video schema supports an 'embedding' field (Array of numbers)
+            },
             { upsert: true, new: true }
         );
         results.push(storedVideo);
