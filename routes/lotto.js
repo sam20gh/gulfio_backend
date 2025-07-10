@@ -14,6 +14,34 @@ router.get('/latest', async (req, res) => {
     res.json(result);
 });
 
+// GET all results with pagination
+router.get('/all', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+        
+        const results = await LottoResult.find()
+            .sort({ scrapedAt: -1 })
+            .skip(skip)
+            .limit(limit);
+        
+        const total = await LottoResult.countDocuments();
+        
+        res.json({
+            results,
+            pagination: {
+                page,
+                limit,
+                total,
+                pages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // GET by draw number
 router.get('/:drawNumber', async (req, res) => {
     const result = await LottoResult.findOne({ drawNumber: req.params.drawNumber });
