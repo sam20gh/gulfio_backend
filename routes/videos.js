@@ -130,13 +130,23 @@ router.get('/reels', async (req, res) => {
         const [reels, totalCount] = await Promise.all([
             Reel.find()
                 .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
-                .populate('source', 'name icon') // Populate source info efficiently
+                .populate('source', 'name icon favicon') // Populate source info efficiently with more fields
                 .sort({ scrapedAt: -1 })
                 .skip(actualSkip)
                 .limit(limit)
                 .lean(), // Use lean() for better performance
             Reel.countDocuments()
         ]);
+
+        // Debug log to check source population (remove in production)
+        if (reels.length > 0 && process.env.NODE_ENV === 'development') {
+            console.log('📊 Sample reel source data:', {
+                reelId: reels[0]?.reelId,
+                sourceType: typeof reels[0]?.source,
+                sourceData: reels[0]?.source,
+                hasSourceName: !!reels[0]?.source?.name
+            });
+        }
 
         const totalPages = Math.ceil(totalCount / limit);
 
@@ -235,14 +245,14 @@ router.get('/reels/trending', async (req, res) => {
     try {
         const cacheKey = 'trending-reels';
         const cached = reelCache.get(cacheKey);
-        
+
         if (cached) {
             return res.json(cached);
         }
 
         const trending = await Reel.find()
             .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt')
-            .populate('source', 'name icon')
+            .populate('source', 'name icon favicon') // Populate source info
             .sort({ viewCount: -1, likes: -1 })
             .limit(20)
             .lean();
@@ -259,17 +269,17 @@ router.get('/reels/trending', async (req, res) => {
 router.post('/reels/recommendations', async (req, res) => {
     try {
         const { embedding, limit = 10 } = req.body;
-        
+
         if (!embedding || !Array.isArray(embedding)) {
             return res.status(400).json({ error: 'Valid embedding array required' });
         }
 
-        const reels = await Reel.find({ 
-            embedding: { $exists: true, $type: 'array' } 
+        const reels = await Reel.find({
+            embedding: { $exists: true, $type: 'array' }
         })
-        .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
-        .populate('source', 'name icon')
-        .lean();
+            .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+            .populate('source', 'name icon favicon') // Populate source info
+            .lean();
 
         // Calculate similarity and sort
         const reelsWithSimilarity = reels.map(reel => {
@@ -281,6 +291,40 @@ router.post('/reels/recommendations', async (req, res) => {
     } catch (err) {
         console.error('Error fetching recommendations:', err.message);
         res.status(500).json({ error: 'Failed to fetch recommendations' });
+    }
+});
+
+// Add route to check for orphaned reels and fix source issues
+router.get('/reels/debug', async (req, res) => {
+    try {
+        // Check for reels with invalid source references
+        const [totalReels, reelsWithSource, reelsWithPopulatedSource] = await Promise.all([
+            Reel.countDocuments(),
+            Reel.countDocuments({ source: { $exists: true } }),
+            Reel.find().populate('source').lean()
+        ]);
+
+        const validSources = reelsWithPopulatedSource.filter(reel => reel.source !== null);
+        const invalidSources = reelsWithPopulatedSource.filter(reel => reel.source === null);
+
+        console.log('📊 Debug stats:', {
+            totalReels,
+            reelsWithSource,
+            validSources: validSources.length,
+            invalidSources: invalidSources.length
+        });
+
+        res.json({
+            totalReels,
+            reelsWithSource,
+            validSources: validSources.length,
+            invalidSources: invalidSources.length,
+            invalidSourceIds: invalidSources.map(r => r._id),
+            sampleValidSource: validSources[0]?.source || null
+        });
+    } catch (err) {
+        console.error('Debug error:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
