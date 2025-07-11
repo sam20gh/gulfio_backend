@@ -24,4 +24,12 @@ const ReelSchema = new Schema({
     originalKey: { type: String }, // For R2 storage
 }, { timestamps: true });
 
+// Performance indexes
+ReelSchema.index({ scrapedAt: -1 }); // For sorted pagination
+ReelSchema.index({ viewCount: -1 }); // For trending reels
+ReelSchema.index({ likes: -1 }); // For popular reels
+ReelSchema.index({ source: 1, scrapedAt: -1 }); // For source-specific queries
+ReelSchema.index({ reelId: 1 }); // For unique lookups
+ReelSchema.index({ embedding: 1 }); // For recommendation queries
+
 module.exports = mongoose.model('Reel', ReelSchema);
