@@ -8,6 +8,7 @@ const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/clien
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { igdl } = require('btch-downloader');// Adjust the path as needed
+const NodeCache = require('node-cache');
 const router = express.Router();
 
 // You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
@@ -119,17 +120,30 @@ router.post('/related', async (req, res) => {
 router.get('/reels', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
+        const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Cap at 50 to prevent abuse
         const skip = (page - 1) * limit;
 
-        // Get total count for pagination metadata
-        const totalCount = await Reel.countDocuments();
+        // Performance improvement: Use skip/limit parameter instead of page parameter
+        const actualSkip = parseInt(req.query.skip) || skip;
+
+        // Parallel execution for better performance
+        const [reels, totalCount] = await Promise.all([
+            Reel.find()
+                .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
+                .populate('source', 'name icon') // Populate source info efficiently
+                .sort({ scrapedAt: -1 })
+                .skip(actualSkip)
+                .limit(limit)
+                .lean(), // Use lean() for better performance
+            Reel.countDocuments()
+        ]);
+
         const totalPages = Math.ceil(totalCount / limit);
 
-        const reels = await Reel.find()
-            .sort({ scrapedAt: -1 })
-            .skip(skip)
-            .limit(limit);
+        // Return direct array if no pagination metadata needed (for mobile apps)
+        if (req.query.simple === 'true') {
+            return res.json(reels);
+        }
 
         res.json({
             reels,
@@ -145,7 +159,7 @@ router.get('/reels', async (req, res) => {
             }
         });
     } catch (err) {
-        console.error(err.message);
+        console.error('Error fetching reels:', err.message);
         res.status(500).json({ error: 'Failed to fetch reels' });
     }
 });
@@ -195,7 +209,6 @@ router.post('/reels/upload', async (req, res) => {
     }
 });
 
-
 // ============= Instagram refresh route remains unchanged =============
 router.post('/:id/instagram/refresh', async (req, res) => {
     try {
@@ -212,6 +225,62 @@ router.post('/:id/instagram/refresh', async (req, res) => {
     } catch (err) {
         console.error('❌ Error refreshing Instagram reels:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Add caching for frequently accessed data
+const reelCache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
+
+router.get('/reels/trending', async (req, res) => {
+    try {
+        const cacheKey = 'trending-reels';
+        const cached = reelCache.get(cacheKey);
+        
+        if (cached) {
+            return res.json(cached);
+        }
+
+        const trending = await Reel.find()
+            .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt')
+            .populate('source', 'name icon')
+            .sort({ viewCount: -1, likes: -1 })
+            .limit(20)
+            .lean();
+
+        reelCache.set(cacheKey, trending);
+        res.json(trending);
+    } catch (err) {
+        console.error('Error fetching trending reels:', err.message);
+        res.status(500).json({ error: 'Failed to fetch trending reels' });
+    }
+});
+
+// Add personalized recommendations endpoint
+router.post('/reels/recommendations', async (req, res) => {
+    try {
+        const { embedding, limit = 10 } = req.body;
+        
+        if (!embedding || !Array.isArray(embedding)) {
+            return res.status(400).json({ error: 'Valid embedding array required' });
+        }
+
+        const reels = await Reel.find({ 
+            embedding: { $exists: true, $type: 'array' } 
+        })
+        .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+        .populate('source', 'name icon')
+        .lean();
+
+        // Calculate similarity and sort
+        const reelsWithSimilarity = reels.map(reel => {
+            const similarity = cosineSimilarity(embedding, reel.embedding);
+            return { ...reel, similarity };
+        }).sort((a, b) => b.similarity - a.similarity);
+
+        res.json(reelsWithSimilarity.slice(0, limit));
+    } catch (err) {
+        console.error('Error fetching recommendations:', err.message);
+        res.status(500).json({ error: 'Failed to fetch recommendations' });
     }
 });
 
