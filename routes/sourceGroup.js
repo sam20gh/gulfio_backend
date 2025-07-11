@@ -10,14 +10,10 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 // Get source group info + top articles + recent articles
 router.get('/group/:groupName', async (req, res) => {
     const { groupName } = req.params;
-    const user = req.mongoUser;
 
     try {
         const sources = await Source.find({ groupName });
-
-        if (!sources.length) {
-            return res.status(404).json({ message: 'No sources found for this group' });
-        }
+        if (!sources.length) return res.status(404).json({ message: 'No sources found for this group' });
 
         const mainSource = sources[0];
         const sourceIds = sources.map(source => source._id);
@@ -32,13 +28,12 @@ router.get('/group/:groupName', async (req, res) => {
             .limit(10)
             .select('_id title publishedAt url image');
 
-        // ✅ Fetch reels for all sources in this group
         const reels = await Reel.find({ source: { $in: sourceIds } })
             .sort({ publishedAt: -1 })
             .limit(10)
             .select('_id description videoUrl thumbnail publishedAt');
 
-        const userFollowing = false
+        const userFollowing = false; // unauthenticated users can't follow
 
         res.json({
             sourceInfo: {
