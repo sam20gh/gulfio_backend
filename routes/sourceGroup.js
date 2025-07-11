@@ -8,7 +8,7 @@ const auth = require('../middleware/auth'); // Supabase auth
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 
 // Get source group info + top articles + recent articles
-router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
+router.get('/group/:groupName', async (req, res) => {
     const { groupName } = req.params;
     const user = req.mongoUser;
 
@@ -38,7 +38,7 @@ router.get('/group/:groupName', auth, ensureMongoUser, async (req, res) => {
             .limit(10)
             .select('_id description videoUrl thumbnail publishedAt');
 
-        const userFollowing = user.following_sources.includes(groupName);
+        const userFollowing = false
 
         res.json({
             sourceInfo: {
