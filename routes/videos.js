@@ -118,15 +118,32 @@ router.post('/related', async (req, res) => {
 
 router.get('/reels', async (req, res) => {
     try {
+        const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
-        const skip = parseInt(req.query.skip) || 0;
+        const skip = (page - 1) * limit;
+
+        // Get total count for pagination metadata
+        const totalCount = await Reel.countDocuments();
+        const totalPages = Math.ceil(totalCount / limit);
 
         const reels = await Reel.find()
             .sort({ scrapedAt: -1 })
             .skip(skip)
             .limit(limit);
 
-        res.json(reels);
+        res.json({
+            reels,
+            pagination: {
+                currentPage: page,
+                totalPages,
+                totalCount,
+                limit,
+                hasNextPage: page < totalPages,
+                hasPreviousPage: page > 1,
+                nextPage: page < totalPages ? page + 1 : null,
+                previousPage: page > 1 ? page - 1 : null
+            }
+        });
     } catch (err) {
         console.error(err.message);
         res.status(500).json({ error: 'Failed to fetch reels' });
