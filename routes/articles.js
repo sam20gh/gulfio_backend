@@ -18,7 +18,7 @@ async function clearArticlesCache() {
   }
 }
 
-articleRouter.get('/', auth, async (req, res) => {
+articleRouter.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
