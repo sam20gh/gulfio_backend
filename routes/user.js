@@ -527,7 +527,7 @@ router.put('/notification-settings', auth, async (req, res) => {
             ...user.notificationSettings,
             ...notificationSettings
         };
-        
+
         await user.save();
         res.json({ success: true, notificationSettings: user.notificationSettings });
     } catch (err) {
@@ -541,7 +541,7 @@ router.get('/notification-settings', auth, async (req, res) => {
     try {
         const supabase_id = req.user.sub;
         const user = await User.findOne({ supabase_id });
-        
+
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }

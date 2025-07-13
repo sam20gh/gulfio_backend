@@ -30,20 +30,20 @@ const testDeepLinkData = {
 
 async function testNotificationSettingsAPI() {
     console.log('\n🧪 Testing Notification Settings API...');
-    
+
     try {
         // Test GET endpoint (should return 401 without auth)
         console.log('Testing GET /api/users/notification-settings...');
         const getResponse = await axios.get(`${API_BASE_URL}/users/notification-settings`, {
             validateStatus: () => true // Don't throw on error status
         });
-        
+
         if (getResponse.status === 401 || getResponse.status === 500) {
             console.log('✅ GET endpoint accessible (auth required as expected)');
         } else {
             console.log('❌ Unexpected response:', getResponse.status, getResponse.data);
         }
-        
+
         // Test PUT endpoint (should return 401 without auth)
         console.log('Testing PUT /api/users/notification-settings...');
         const putResponse = await axios.put(
@@ -54,13 +54,13 @@ async function testNotificationSettingsAPI() {
                 validateStatus: () => true
             }
         );
-        
+
         if (putResponse.status === 401 || putResponse.status === 500) {
             console.log('✅ PUT endpoint accessible (auth required as expected)');
         } else {
             console.log('❌ Unexpected response:', putResponse.status, putResponse.data);
         }
-        
+
     } catch (error) {
         console.error('❌ API test failed:', error.message);
     }
@@ -68,7 +68,7 @@ async function testNotificationSettingsAPI() {
 
 async function testNotificationDataStructure() {
     console.log('\n🧪 Testing Notification Data Structure...');
-    
+
     // Test deep link extraction logic (simulated)
     const testData = [
         // Direct link in data
@@ -80,13 +80,13 @@ async function testNotificationDataStructure() {
         // No link
         { data: { title: 'No link here' } }
     ];
-    
+
     testData.forEach((testCase, index) => {
         console.log(`Testing case ${index + 1}:`, JSON.stringify(testCase));
-        
+
         let link = null;
         const data = testCase.data;
-        
+
         // Simulate the link extraction logic from the app
         if (data?.link) {
             link = data.link;
@@ -100,7 +100,7 @@ async function testNotificationDataStructure() {
                 // Silent fail
             }
         }
-        
+
         if (link && typeof link === 'string') {
             const match = link.match(/^gulfio:\/\/article\/(.+)$/);
             if (match) {
@@ -116,32 +116,32 @@ async function testNotificationDataStructure() {
 
 async function testBackendIntegration() {
     console.log('\n🧪 Testing Backend Integration...');
-    
+
     try {
         // Test if server is running
         const healthResponse = await axios.get(`${API_BASE_URL}/sources`, {
             validateStatus: () => true,
             timeout: 5000
         });
-        
+
         if (healthResponse.status === 200 || healthResponse.status === 401) {
             console.log('✅ Backend server is running');
         } else {
             console.log('❌ Backend server may not be running properly');
             return;
         }
-        
+
         // Test user routes existence
         const userRoutesResponse = await axios.get(`${API_BASE_URL}/users/notification-settings`, {
             validateStatus: () => true
         });
-        
+
         if (userRoutesResponse.status !== 404) {
             console.log('✅ User notification routes are registered');
         } else {
             console.log('❌ User notification routes not found');
         }
-        
+
     } catch (error) {
         console.error('❌ Backend integration test failed:', error.message);
     }
@@ -150,11 +150,11 @@ async function testBackendIntegration() {
 async function runAllTests() {
     console.log('🚀 Starting Notification System Tests...');
     console.log('==================================================');
-    
+
     await testBackendIntegration();
     await testNotificationSettingsAPI();
     await testNotificationDataStructure();
-    
+
     console.log('\n🏁 Tests completed!');
     console.log('==================================================');
     console.log('\n📋 Next Steps:');
