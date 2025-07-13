@@ -26,6 +26,19 @@ const userSchema = new mongoose.Schema({
         type: [Number],
         default: [],
     },
+    notificationSettings: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {
+            newsNotifications: true,
+            userNotifications: true,
+            breakingNews: true,
+            weeklyDigest: false,
+            followedSources: true,
+            articleLikes: true,
+            newFollowers: true,
+            mentions: true,
+        }
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

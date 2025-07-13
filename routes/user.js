@@ -220,6 +220,30 @@ router.post('/get-upload-url', auth, async (req, res) => {
     }
 });
 
+// Update notification settings
+router.put('/notification-settings', auth, ensureMongoUser, async (req, res) => {
+    try {
+        const user = req.mongoUser;
+        const { notificationSettings } = req.body;
+
+        // Validate notification settings structure
+        if (!notificationSettings || typeof notificationSettings !== 'object') {
+            return res.status(400).json({ message: 'Invalid notification settings' });
+        }
+
+        // Update user's notification settings
+        user.notificationSettings = {
+            ...user.notificationSettings,
+            ...notificationSettings
+        };
+
+        await user.save();
+        res.json({ message: 'Notification settings updated successfully', notificationSettings: user.notificationSettings });
+    } catch (err) {
+        console.error('Error updating notification settings:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 
 // LIKE or DISLIKE a Reel
 router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
