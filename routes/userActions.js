@@ -4,6 +4,7 @@ const sendExpoNotification = require('../utils/sendExpoNotification');
 const auth = require('../middleware/auth'); // Keep auth for other routes
 const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
+const Reel = require('../models/Reel'); // Import Reel model
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
@@ -111,6 +112,38 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
     }
 });
 
+// Save/Unsave Reel (Requires auth and ensureMongoUser)
+router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
+    const user = req.mongoUser;
+    const reelId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(reelId)) {
+        return res.status(400).json({ message: 'Invalid reel ID' });
+    }
+
+    const reelObjectId = new mongoose.Types.ObjectId(reelId);
+
+    try {
+        const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
+
+        if (isSaved) {
+            user.saved_reels.pull(reelObjectId);
+        } else {
+            if (!user.saved_reels) user.saved_reels = [];
+            user.saved_reels.addToSet(reelObjectId);
+        }
+
+        await user.save();
+        await updateUserProfileEmbedding(user._id);
+        res.json({
+            isSaved: !isSaved,
+            saved_reels: user.saved_reels,
+        });
+    } catch (err) {
+        console.error('Error saving/unsaving reel:', err);
+        res.status(500).json({ message: 'Error saving/unsaving reel' });
+    }
+});
 
 // Follow/Unfollow Source (Requires auth and ensureMongoUser)
 router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
