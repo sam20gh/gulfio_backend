@@ -172,8 +172,30 @@ async function scrapeAllSources(frequency = null) {
     }
 
     if (totalNew > 0 && sampleArticle) {
+        // Get users with push tokens and check their notification preferences
         const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-        const tokens = users.map(u => u.pushToken);
+        
+        // Filter users based on their notification settings
+        const eligibleUsers = users.filter(user => {
+            const settings = user.notificationSettings || {};
+            
+            // Check if user has news notifications enabled
+            if (!settings.newsNotifications) return false;
+            
+            // Check if this is breaking news and user has breaking news enabled
+            if (sampleArticle.category === 'headline' && !settings.breakingNews) return false;
+            
+            // For now, we'll send to all users with news notifications enabled
+            // In the future, we can add more granular filtering based on followed sources
+            return true;
+        });
+        
+        const tokens = eligibleUsers.map(u => u.pushToken);
+        
+        if (tokens.length === 0) {
+            console.log('No eligible users for notifications based on their preferences.');
+            return;
+        }
 
         // Truncate to, say, 140 chars so your notification body isn’t gigantic
         const snippet = sampleArticle.content.length > 140
@@ -198,7 +220,7 @@ async function scrapeAllSources(frequency = null) {
             ]
         );
 
-        console.log(`Summary notification sent for ${totalNew} new articles.`);
+        console.log(`Summary notification sent to ${tokens.length} eligible users for ${totalNew} new articles.`);
     }
 
     // --- Lotto scraping integration ---

@@ -512,5 +512,46 @@ router.post('/update-embedding', auth, async (req, res) => {
     }
 });
 
+// PUT notification settings
+router.put('/notification-settings', auth, async (req, res) => {
+    try {
+        const supabase_id = req.user.sub;
+        const { notificationSettings } = req.body;
+
+        const user = await User.findOne({ supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        user.notificationSettings = {
+            ...user.notificationSettings,
+            ...notificationSettings
+        };
+        
+        await user.save();
+        res.json({ success: true, notificationSettings: user.notificationSettings });
+    } catch (err) {
+        console.error('Error updating notification settings:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET notification settings
+router.get('/notification-settings', auth, async (req, res) => {
+    try {
+        const supabase_id = req.user.sub;
+        const user = await User.findOne({ supabase_id });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({ notificationSettings: user.notificationSettings || {} });
+    } catch (err) {
+        console.error('Error getting notification settings:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 
 module.exports = router;
