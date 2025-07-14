@@ -26,67 +26,72 @@ router.get('/:supabaseId', async (req, res) => {
         .map(id => new mongoose.Types.ObjectId(id))
     )];
 
-    let recommended = await Article.aggregate([
-      {
-        $match: {
-          _id: { $nin: allEngagedIds },
-          $or: [
-            { category: { $in: engagedCategories } },
-            { sourceId: { $in: engagedSources } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          score: {
-            $add: [
-              { $multiply: [{ $ifNull: ['$likes', 0] }, 2] },
-              { $ifNull: ['$viewCount', 0] }, // 👈 correct field
-              {
-                $cond: {
-                  if: {
-                    $gt: ['$publishedAt', new Date(Date.now() - 1000 * 60 * 60 * 24 * 7)]
-                  },
-                  then: 5,
-                  else: 0
-                }
-              }
+    let recommended = [];
+    
+    // Only run personalized recommendations if user has engaged with content
+    if (engagedCategories.length > 0 || engagedSources.length > 0) {
+      recommended = await Article.aggregate([
+        {
+          $match: {
+            _id: { $nin: allEngagedIds },
+            $or: [
+              { category: { $in: engagedCategories } },
+              { sourceId: { $in: engagedSources } }
             ]
           }
-        }
-      },
-      // Sort early by score
-      { $sort: { score: -1, publishedAt: -1 } },
-      // Group by title to eliminate duplicates
-      {
-        $group: {
-          _id: '$title',
-          article: { $first: '$$ROOT' }
-        }
-      },
-      { $replaceRoot: { newRoot: '$article' } },
-      // Limit max 2 per source
-      {
-        $group: {
-          _id: '$sourceId',
-          articles: { $push: '$$ROOT' }
-        }
-      },
-      {
-        $project: {
-          articles: { $slice: ['$articles', 2] } // max 2 per source
-        }
-      },
-      { $unwind: '$articles' },
-      { $replaceRoot: { newRoot: '$articles' } },
-      // Shuffle for randomness
-      { $sample: { size: 10 } }
-    ]);
+        },
+        {
+          $addFields: {
+            score: {
+              $add: [
+                { $multiply: [{ $ifNull: ['$likes', 0] }, 2] },
+                { $ifNull: ['$viewCount', 0] }, // 👈 correct field
+                {
+                  $cond: {
+                    if: {
+                      $gt: ['$publishedAt', new Date(Date.now() - 1000 * 60 * 60 * 24 * 7)]
+                    },
+                    then: 5,
+                    else: 0
+                  }
+                }
+              ]
+            }
+          }
+        },
+        // Sort early by score
+        { $sort: { score: -1, publishedAt: -1 } },
+        // Group by title to eliminate duplicates
+        {
+          $group: {
+            _id: '$title',
+            article: { $first: '$$ROOT' }
+          }
+        },
+        { $replaceRoot: { newRoot: '$article' } },
+        // Limit max 2 per source
+        {
+          $group: {
+            _id: '$sourceId',
+            articles: { $push: '$$ROOT' }
+          }
+        },
+        {
+          $project: {
+            articles: { $slice: ['$articles', 2] } // max 2 per source
+          }
+        },
+        { $unwind: '$articles' },
+        { $replaceRoot: { newRoot: '$articles' } },
+        // Shuffle for randomness
+        { $sample: { size: 10 } }
+      ]);
+    }
 
     // 🔁 Fallback logic if empty
     if (!recommended || recommended.length === 0) {
       recommended = await Article.find({})
-        .sort({ views: -1, likes: -1, publishedAt: -1 })
+        .sort({ viewCount: -1, likes: -1, publishedAt: -1 })
         .limit(10)
         .lean();
     }
