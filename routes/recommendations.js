@@ -27,7 +27,7 @@ router.get('/:supabaseId', async (req, res) => {
     )];
 
     let recommended = [];
-    
+
     // Only run personalized recommendations if user has engaged with content
     if (engagedCategories.length > 0 || engagedSources.length > 0) {
       recommended = await Article.aggregate([
