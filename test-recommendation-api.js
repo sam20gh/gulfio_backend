@@ -1,21 +1,21 @@
-
-const express = require('express');
-const router = express.Router();
-const User = require('../models/User');
-const Article = require('../models/Article');
 const mongoose = require('mongoose');
+const User = require('./models/User');
+const Article = require('./models/Article');
+require('dotenv').config();
 
-// GET /api/recommendations/:supabaseId
-router.get('/:supabaseId', async (req, res) => {
-  const { supabaseId } = req.params;
-
+async function testRecommendationAPI() {
   try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log('✅ Connected to MongoDB');
+
+    const supabaseId = '1d9861e0-db07-437b-8de9-8b8f1c8d8e6d';
+    
     console.log('🔍 Fetching recommendations for user:', supabaseId);
     
     const user = await User.findOne({ supabase_id: supabaseId }).lean();
     if (!user) {
       console.log('❌ User not found:', supabaseId);
-      return res.status(404).json({ message: 'User not found' });
+      return;
     }
 
     console.log('✅ User found:', user.email);
@@ -47,7 +47,7 @@ router.get('/:supabaseId', async (req, res) => {
       console.log('🎯 Running personalized recommendations');
       
       try {
-        // First, let's just get a simpler aggregation to avoid the memory issue
+        // Test the personalized aggregation
         recommended = await Article.aggregate([
           {
             $match: {
@@ -58,7 +58,6 @@ router.get('/:supabaseId', async (req, res) => {
               ]
             }
           },
-          // Limit early to avoid memory issues
           { $limit: 1000 },
           {
             $addFields: {
@@ -79,11 +78,8 @@ router.get('/:supabaseId', async (req, res) => {
               }
             }
           },
-          // Sort by score
           { $sort: { score: -1, publishedAt: -1 } },
-          // Take top 50
           { $limit: 50 },
-          // Group by title to eliminate duplicates
           {
             $group: {
               _id: '$title',
@@ -91,13 +87,12 @@ router.get('/:supabaseId', async (req, res) => {
             }
           },
           { $replaceRoot: { newRoot: '$article' } },
-          // Final selection
           { $limit: 10 }
         ]);
-        console.log('✅ Personalized recommendations aggregation completed');
+        
+        console.log('✅ Personalized recommendations found:', recommended.length);
       } catch (aggregationError) {
         console.error('❌ Personalized recommendations failed:', aggregationError.message);
-        console.error('Full error:', aggregationError);
         recommended = []; // Force fallback
       }
     } else {
@@ -106,29 +101,30 @@ router.get('/:supabaseId', async (req, res) => {
 
     console.log('🔍 Personalized recommendations found:', recommended.length);
 
-    // 🔁 Fallback logic if empty
+    // Fallback logic if empty
     if (!recommended || recommended.length === 0) {
       console.log('🔄 Running fallback recommendations');
-      try {
-        recommended = await Article.find({})
-          .sort({ viewCount: -1, likes: -1, publishedAt: -1 })
-          .limit(10)
-          .lean();
-        console.log('✅ Fallback recommendations found:', recommended.length);
-      } catch (fallbackError) {
-        console.error('❌ Fallback recommendations failed:', fallbackError.message);
-        console.error('Full fallback error:', fallbackError);
-        recommended = [];
-      }
+      recommended = await Article.find({})
+        .sort({ viewCount: -1, likes: -1, publishedAt: -1 })
+        .limit(10)
+        .lean();
+      console.log('✅ Fallback recommendations found:', recommended.length);
     }
 
-    console.log('📤 Returning recommendations:', recommended.length);
-    res.json({ recommended });
+    console.log('📤 Final recommendations:', recommended.length);
+    if (recommended.length > 0) {
+      console.log('First recommendation:', recommended[0].title);
+    }
+    
+    // Return the same format as the API
+    const result = { recommended };
+    console.log('📤 API Response:', JSON.stringify(result, null, 2));
+    
+    process.exit(0);
   } catch (err) {
-    console.error('❌ Recommendation error:', err.message);
-    console.error('Full error:', err);
-    res.status(500).json({ message: 'Error generating recommendations' });
+    console.error('❌ Recommendation error:', err);
+    process.exit(1);
   }
-});
+}
 
-module.exports = router;
+testRecommendationAPI();
