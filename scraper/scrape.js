@@ -249,7 +249,15 @@ async function scrapeAllSources(frequency = null) {
 
                 // Expo push (optional, only for new draw)
                 const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-                const tokens = users.map(u => u.pushToken);
+
+                // Filter users based on their notification settings
+                const eligibleUsers = users.filter(user => {
+                    const settings = user.notificationSettings || {};
+                    // Check if user has news notifications enabled
+                    return settings.newsNotifications === true;
+                });
+
+                const tokens = eligibleUsers.map(u => u.pushToken);
                 if (tokens.length) {
                     const title = `UAE Lotto Draw #${result.drawNumber} Results`;
                     const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers[0]?.prize || ''}`;
@@ -263,6 +271,7 @@ async function scrapeAllSources(frequency = null) {
                         totalWinners: result.totalWinners
                     };
                     await sendExpoNotification(title, body, tokens, data);
+                    console.log(`Lotto notification sent to ${tokens.length} eligible users for draw #${result.drawNumber}.`);
                 }
             } else {
                 console.warn('❌ Lotto result could not be scraped.');
