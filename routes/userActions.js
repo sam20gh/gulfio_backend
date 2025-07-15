@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const sendExpoNotification = require('../utils/sendExpoNotification');
+const NotificationService = require('../utils/notificationService');
 const auth = require('../middleware/auth'); // Keep auth for other routes
 const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
@@ -29,6 +30,9 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     const isLiked = user.liked_articles.some(id => id.equals(articleObjectId));
     const isDisliked = user.disliked_articles?.some(id => id.equals(articleObjectId));
 
+    // Check if this is a new like for notification purposes
+    const wasNotLiked = !isLiked;
+
     if (action === 'like') {
         if (!isLiked) user.liked_articles.push(articleObjectId);
         if (isDisliked) user.disliked_articles.pull(articleObjectId);
@@ -43,6 +47,26 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     }
 
     await user.save();
+
+    // Send notification if this is a new like
+    if (action === 'like' && wasNotLiked) {
+        try {
+            const article = await Article.findById(articleId);
+            if (article && article.userId && article.userId !== user.supabase_id) {
+                const likerName = user.name || user.email || 'Someone';
+                await NotificationService.sendArticleLikeNotification(
+                    article.userId,
+                    user.supabase_id,
+                    likerName,
+                    articleId,
+                    article.title
+                );
+            }
+        } catch (notificationError) {
+            console.error('Error sending article like notification:', notificationError);
+            // Don't fail the request if notification fails
+        }
+    }
 
     res.json({
         liked_articles: user.liked_articles,
@@ -234,13 +258,18 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
         });
 
         // 7) Send notification if needed
-        if (action === 'follow' && !wasFollowing && targetUser.pushToken) {
-            await sendExpoNotification(
-                `${user.name} started following you!`,
-                `Tap to view their profile.`,
-                [targetUser.pushToken],
-                { link: `gulfio://user/${user.supabase_id}` }
-            );
+        if (action === 'follow' && !wasFollowing) {
+            try {
+                const followerName = user.name || user.email || 'Someone';
+                await NotificationService.sendNewFollowerNotification(
+                    targetUser.supabase_id,
+                    user.supabase_id,
+                    followerName
+                );
+            } catch (notificationError) {
+                console.error('Error sending follow notification:', notificationError);
+                // Don't fail the request if notification fails
+            }
         }
 
     } catch (err) {

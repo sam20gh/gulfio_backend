@@ -2,7 +2,9 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Comment = require('../models/Comment'); // You'll need to create this model
+const User = require('../models/User');
 const auth = require('../middleware/auth');
+const NotificationService = require('../utils/notificationService');
 
 // GET comments for an article
 router.get('/:articleId', async (req, res) => {
@@ -46,6 +48,25 @@ router.post('/', auth, async (req, res) => {
         });
 
         await newComment.save();
+
+        // Check for mentions in the comment and send notifications
+        try {
+            const commenterUser = await User.findOne({ supabase_id: userId });
+            const commenterName = commenterUser ? (commenterUser.name || commenterUser.email) : username;
+
+            await NotificationService.sendMentionNotifications(
+                comment,
+                userId,
+                commenterName,
+                'comment',
+                newComment._id,
+                articleId
+            );
+        } catch (mentionError) {
+            console.error('Error sending mention notifications:', mentionError);
+            // Don't fail the request if mention notifications fail
+        }
+
         res.status(201).json({ message: 'Comment added' });
     } catch (error) {
         console.error('POST /comments error:', error);
@@ -83,10 +104,16 @@ router.delete('/:id', auth, async (req, res) => {
 
 router.post('/:id/react', auth, async (req, res) => {
     const { action } = req.body;
-    const userId = req.user.sub;        // ← derive from auth middleware (JWT “sub”)
+    const userId = req.user.sub;        // ← derive from auth middleware (JWT "sub")
     const commentId = req.params.id;
 
     try {
+        // Get the comment first to check the author
+        const comment = await Comment.findById(commentId);
+        if (!comment) {
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+
         // 1) remove any existing reaction
         await Comment.updateOne(
             { _id: commentId },
@@ -99,6 +126,25 @@ router.post('/:id/react', auth, async (req, res) => {
                 { _id: commentId },
                 { $addToSet: { likedBy: userId } }
             );
+
+            // Send notification to comment author (if not liking their own comment)
+            if (comment.userId !== userId) {
+                try {
+                    const likerUser = await User.findOne({ supabase_id: userId });
+                    const likerName = likerUser ? (likerUser.name || likerUser.email) : 'Someone';
+
+                    await NotificationService.sendCommentLikeNotification(
+                        comment.userId,
+                        userId,
+                        likerName,
+                        commentId,
+                        comment.articleId
+                    );
+                } catch (notificationError) {
+                    console.error('Error sending comment like notification:', notificationError);
+                    // Don't fail the request if notification fails
+                }
+            }
         } else if (action === 'dislike') {
             await Comment.updateOne(
                 { _id: commentId },
@@ -114,12 +160,10 @@ router.post('/:id/react', auth, async (req, res) => {
         if (updated.likedBy.includes(userId)) userReact = 'like';
         else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
 
-
         return res.json({ likes, dislikes, userReact });
 
     } catch (err) {
         console.error('POST /comments/:id/react error:', err);
-
         return res.status(500).json({ message: 'Failed to react to comment' });
     }
 });
@@ -128,7 +172,7 @@ router.post('/:id/react', auth, async (req, res) => {
 router.get('/:id/react', auth, async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user.id;
+        const userId = req.user.sub; // Use consistent property name
 
         const comment = await Comment.findById(id);
         if (!comment) {
@@ -194,24 +238,42 @@ router.post('/:id/reply', auth, async (req, res) => {
         return res.status(500).json({ message: 'Failed to add reply' });
     }
 
-    // Send notification to the original commenter
-    try {
-        const originalAuthor = await User.findById(parentComment.author);
-        if (originalAuthor && originalAuthor.pushToken) {
-            // Truncate reply for notification
-            const snippet = newReply.reply.length > 100
-                ? `${newReply.reply.slice(0, 100).trim()}…`
-                : newReply.reply;
-            await sendExpoNotification(
-                `${username} replied to your comment`,
-                snippet,
-                [originalAuthor.pushToken],
-                { link: `gulfio://article/${parentComment.article}?comment=${commentId}` }
+    // Send notification to the original commenter (if not replying to their own comment)
+    if (parentComment.userId !== userId) {
+        try {
+            const replierUser = await User.findOne({ supabase_id: userId });
+            const replierName = replierUser ? (replierUser.name || replierUser.email) : 'Someone';
+
+            await NotificationService.sendCommentReplyNotification(
+                parentComment.userId,
+                userId,
+                replierName,
+                newReply.reply,
+                commentId,
+                parentComment.articleId
             );
+        } catch (err) {
+            console.error('Error sending reply notification:', err);
+            // Don't block response on notification failure
         }
-    } catch (err) {
-        console.error('Error sending notification:', err);
-        // Don't block response on notification failure
+    }
+
+    // Check for mentions in the reply and send notifications
+    try {
+        const replierUser = await User.findOne({ supabase_id: userId });
+        const replierName = replierUser ? (replierUser.name || replierUser.email) : username;
+
+        await NotificationService.sendMentionNotifications(
+            newReply.reply,
+            userId,
+            replierName,
+            'reply',
+            commentId,
+            parentComment.articleId
+        );
+    } catch (mentionError) {
+        console.error('Error sending mention notifications for reply:', mentionError);
+        // Don't fail the request if mention notifications fail
     }
 
     return res.status(201).json(updatedComment);

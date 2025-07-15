@@ -6,6 +6,7 @@ const Article = require('../models/Article');
 const mongoose = require('mongoose');
 const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
+const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
 const axios = require('axios');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
@@ -221,26 +222,68 @@ router.post('/get-upload-url', auth, async (req, res) => {
 });
 
 // Update notification settings
-router.put('/notification-settings', auth, ensureMongoUser, async (req, res) => {
+router.patch('/notification-settings', auth, async (req, res) => {
     try {
-        const user = req.mongoUser;
+        const supabase_id = req.user.sub;
         const { notificationSettings } = req.body;
 
-        // Validate notification settings structure
         if (!notificationSettings || typeof notificationSettings !== 'object') {
             return res.status(400).json({ message: 'Invalid notification settings' });
         }
 
-        // Update user's notification settings
-        user.notificationSettings = {
-            ...user.notificationSettings,
-            ...notificationSettings
-        };
+        // Validate notification settings keys
+        const validKeys = [
+            'newsNotifications',
+            'userNotifications',
+            'breakingNews',
+            'weeklyDigest',
+            'followedSources',
+            'articleLikes',
+            'newFollowers',
+            'mentions'
+        ];
 
-        await user.save();
-        res.json({ message: 'Notification settings updated successfully', notificationSettings: user.notificationSettings });
+        const invalidKeys = Object.keys(notificationSettings).filter(key => !validKeys.includes(key));
+        if (invalidKeys.length > 0) {
+            return res.status(400).json({
+                message: `Invalid notification setting keys: ${invalidKeys.join(', ')}`
+            });
+        }
+
+        // Update user's notification settings
+        const user = await User.findOneAndUpdate(
+            { supabase_id },
+            { $set: { notificationSettings } },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({
+            message: 'Notification settings updated successfully',
+            notificationSettings: user.notificationSettings
+        });
     } catch (err) {
         console.error('Error updating notification settings:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Get notification settings
+router.get('/notification-settings', auth, async (req, res) => {
+    try {
+        const supabase_id = req.user.sub;
+        const user = await User.findOne({ supabase_id });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({ notificationSettings: user.notificationSettings });
+    } catch (err) {
+        console.error('Error fetching notification settings:', err);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
@@ -549,6 +592,116 @@ router.get('/notification-settings', auth, async (req, res) => {
         res.json({ notificationSettings: user.notificationSettings || {} });
     } catch (err) {
         console.error('Error getting notification settings:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Admin route to send breaking news notifications
+router.post('/admin/send-breaking-news', auth, async (req, res) => {
+    try {
+        // Note: You might want to add admin role verification here
+        const { title, body, articleId, targetUsers } = req.body;
+
+        if (!title || !body || !articleId) {
+            return res.status(400).json({ message: 'Title, body, and articleId are required' });
+        }
+
+        let userIds = [];
+        if (targetUsers && Array.isArray(targetUsers)) {
+            userIds = targetUsers;
+        } else {
+            // Send to all users if no target users specified
+            const allUsers = await User.find({}, 'supabase_id');
+            userIds = allUsers.map(user => user.supabase_id);
+        }
+
+        const result = await NotificationService.sendBulkNotification(
+            userIds,
+            'breakingNews',
+            title,
+            body,
+            { articleId, type: 'breaking_news' }
+        );
+
+        res.json({
+            message: 'Breaking news notifications sent',
+            successful: result.successful,
+            failed: result.failed
+        });
+    } catch (err) {
+        console.error('Error sending breaking news notifications:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Admin route to send followed source notifications
+router.post('/admin/send-followed-source-notification', auth, async (req, res) => {
+    try {
+        const { sourceName, title, articleId } = req.body;
+
+        if (!sourceName || !title || !articleId) {
+            return res.status(400).json({ message: 'Source name, title, and articleId are required' });
+        }
+
+        // Find users who follow this source
+        const followingUsers = await User.find({
+            following_sources: sourceName
+        }, 'supabase_id');
+
+        const userIds = followingUsers.map(user => user.supabase_id);
+
+        const result = await NotificationService.sendBulkNotification(
+            userIds,
+            'followedSources',
+            `New from ${sourceName}`,
+            title,
+            { articleId, sourceName, type: 'followed_source' }
+        );
+
+        res.json({
+            message: 'Followed source notifications sent',
+            successful: result.successful,
+            failed: result.failed
+        });
+    } catch (err) {
+        console.error('Error sending followed source notifications:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Admin route to send weekly digest
+router.post('/admin/send-weekly-digest', auth, async (req, res) => {
+    try {
+        const { title, body, data, targetUsers } = req.body;
+
+        if (!title || !body) {
+            return res.status(400).json({ message: 'Title and body are required' });
+        }
+
+        let userIds = [];
+        if (targetUsers && Array.isArray(targetUsers)) {
+            userIds = targetUsers;
+        } else {
+            // Send to all users if no target users specified
+            const allUsers = await User.find({}, 'supabase_id');
+            userIds = allUsers.map(user => user.supabase_id);
+        }
+
+        const result = await NotificationService.sendBulkNotification(
+            userIds,
+            'weeklyDigest',
+            title,
+            body,
+            { ...data, type: 'weekly_digest' }
+        );
+
+        res.json({
+            message: 'Weekly digest notifications sent',
+            successful: result.successful,
+            failed: result.failed
+        });
+    } catch (err) {
+        console.error('Error sending weekly digest notifications:', err);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
