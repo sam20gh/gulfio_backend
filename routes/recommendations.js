@@ -60,6 +60,12 @@ router.get('/:supabaseId', async (req, res) => {
           },
           // Limit early to avoid memory issues
           { $limit: 1000 },
+          // Exclude embedding field to save memory - do this early
+          {
+            $project: {
+              embedding: 0
+            }
+          },
           {
             $addFields: {
               score: {
@@ -111,6 +117,7 @@ router.get('/:supabaseId', async (req, res) => {
       console.log('🔄 Running fallback recommendations');
       try {
         recommended = await Article.find({})
+          .select('-embedding')
           .sort({ viewCount: -1, likes: -1, publishedAt: -1 })
           .limit(10)
           .lean();
