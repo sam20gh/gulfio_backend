@@ -20,7 +20,7 @@ async function testRecommendations() {
 
         // Test the recommendations endpoint
         const response = await fetch(`http://localhost:3000/api/recommendations/${testUser.supabase_id}`);
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             console.log('❌ API Error:', errorText);
@@ -29,7 +29,7 @@ async function testRecommendations() {
 
         const data = await response.json();
         console.log('✅ API Response:', data);
-        
+
     } catch (error) {
         console.error('❌ Test error:', error);
     } finally {

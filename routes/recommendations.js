@@ -11,11 +11,11 @@ router.get('/:supabaseId', async (req, res) => {
 
   try {
     console.log('🔍 Fetching recommendations for user:', supabaseId);
-    
+
     const user = await User.findOne({ supabase_id: supabaseId }).lean();
     if (!user) {
       console.log('❌ User not found, providing fallback recommendations:', supabaseId);
-      
+
       // Provide fallback recommendations for non-existent users
       try {
         const recommended = await Article.find({})
@@ -58,7 +58,7 @@ router.get('/:supabaseId', async (req, res) => {
     // Only run personalized recommendations if user has engaged with content
     if (engagedCategories.length > 0 || engagedSources.length > 0) {
       console.log('🎯 Running personalized recommendations');
-      
+
       try {
         // Exclude embeddings and get personalized recommendations
         recommended = await Article.aggregate([
