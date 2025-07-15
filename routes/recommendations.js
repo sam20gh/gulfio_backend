@@ -14,8 +14,21 @@ router.get('/:supabaseId', async (req, res) => {
     
     const user = await User.findOne({ supabase_id: supabaseId }).lean();
     if (!user) {
-      console.log('❌ User not found:', supabaseId);
-      return res.status(404).json({ message: 'User not found' });
+      console.log('❌ User not found, providing fallback recommendations:', supabaseId);
+      
+      // Provide fallback recommendations for non-existent users
+      try {
+        const recommended = await Article.find({})
+          .select('-embedding')
+          .sort({ viewCount: -1, likes: -1, publishedAt: -1 })
+          .limit(10)
+          .lean();
+        console.log('✅ Fallback recommendations found:', recommended.length);
+        return res.json({ recommended });
+      } catch (fallbackError) {
+        console.error('❌ Fallback recommendations failed:', fallbackError.message);
+        return res.status(500).json({ message: 'Error generating recommendations' });
+      }
     }
 
     console.log('✅ User found:', user.email);
@@ -47,7 +60,7 @@ router.get('/:supabaseId', async (req, res) => {
       console.log('🎯 Running personalized recommendations');
       
       try {
-        // First, let's just get a simpler aggregation to avoid the memory issue
+        // Exclude embeddings and get personalized recommendations
         recommended = await Article.aggregate([
           {
             $match: {
@@ -58,14 +71,14 @@ router.get('/:supabaseId', async (req, res) => {
               ]
             }
           },
-          // Limit early to avoid memory issues
-          { $limit: 1000 },
-          // Exclude embedding field to save memory - do this early
+          // Exclude embedding field early to avoid memory issues
           {
             $project: {
               embedding: 0
             }
           },
+          // Limit early to avoid memory issues
+          { $limit: 1000 },
           {
             $addFields: {
               score: {
