@@ -41,9 +41,15 @@ async function scrapeAllSources(frequency = null) {
                         ? href
                         : `${(source.baseUrl || source.url).replace(/\/$/, '')}${href.startsWith('/') ? href : '/' + href}`;
                     links.push(url);
-                    console.warn(`Skipped invalid href: ${href}`);
+                } else {
+                    console.warn(`Skipped invalid href: "${href}" for source: ${source.name}`);
                 }
             });
+
+            console.log(`Found ${links.length} links for ${source.name}`);
+            if (links.length > 0) {
+                console.log(`Sample links: ${links.slice(0, 3).join(', ')}`);
+            }
 
             for (const link of links) {
                 try {
