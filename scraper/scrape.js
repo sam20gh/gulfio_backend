@@ -36,11 +36,12 @@ async function scrapeAllSources(frequency = null) {
             const links = [];
             $(listSel).each((_, el) => {
                 const href = $(el).find(linkSel).attr('href');
-                if (href) {
+                if (href && href !== ':' && href !== '') {
                     const url = href.startsWith('http')
                         ? href
-                        : `${(source.baseUrl || source.url).replace(/\/$/, '')}${href}`;
+                        : `${(source.baseUrl || source.url).replace(/\/$/, '')}${href.startsWith('/') ? href : '/' + href}`;
                     links.push(url);
+                    console.warn(`Skipped invalid href: ${href}`);
                 }
             });
 
