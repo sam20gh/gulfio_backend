@@ -327,6 +327,56 @@ articleRouter.get('/headline', auth, async (req, res) => {
     res.status(500).json({ error: 'Error fetching headline articles', message: error.message });
   }
 });
+// GET: Fetch articles by category with pagination
+articleRouter.get('/category/:category', async (req, res) => {
+  try {
+    const { category } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const language = req.query.language || 'english';
+
+    const cacheKey = `articles_category_${category}_page_${page}_limit_${limit}_lang_${language}`;
+
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached category articles');
+      return res.json(JSON.parse(cached));
+    }
+
+    const skip = (page - 1) * limit;
+    const articles = await Article.find({
+      category: { $regex: new RegExp(category, 'i') }, // Case-insensitive category match
+      language
+    })
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    // Inject a unique fetchId to each article
+    const enhancedArticles = articles.map(article => ({
+      ...article.toObject(),
+      fetchId: new mongoose.Types.ObjectId().toString()
+    }));
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300);
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    res.json(enhancedArticles);
+  } catch (error) {
+    console.error('❌ Error fetching articles by category:', error);
+    res.status(500).json({ error: 'Error fetching articles by category', message: error.message });
+  }
+});
+
 articleRouter.get('/search', auth, async (req, res) => {
   try {
     const query = req.query.query?.trim();
