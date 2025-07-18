@@ -12,8 +12,19 @@ const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { scrapeYouTubeShortsViaRSS } = require('./youtubeRSSShortsScraper.js'); // Using RSS-based scraper
 const { scrapeYouTubeForSource } = require('./youtubeScraper');
+const mongoose = require('mongoose');
 
 async function scrapeAllSources(frequency = null) {
+    if (mongoose.connection.readyState !== 1) {
+        console.log('⚠️ MongoDB not connected inside scraper. Connecting now...');
+        await mongoose.connect(process.env.MONGO_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true
+        });
+        console.log('✅ MongoDB connected inside scraper.');
+    } else {
+        console.log('✅ MongoDB already connected inside scraper.');
+    }
     let sources = await Source.find();
     if (frequency) sources = sources.filter(s => s.frequency === frequency);
 
@@ -150,18 +161,18 @@ async function scrapeAllSources(frequency = null) {
                 }
             }
 
-            // if (source.instagramUsername) {
-            //     console.log(`Scraping Reels for ${source.instagramUsername}`);
-            //     const reels = await scrapeReelsForSource(
-            //         source._id,
-            //         source.instagramUsername
-            //     );
-            //     console.log(`  • ${reels.length} reels upserted`);
-            // }
+            if (source.instagramUsername) {
+                console.log(`Scraping Reels for ${source.instagramUsername}`);
+                const reels = await scrapeReelsForSource(
+                    source._id,
+                    source.instagramUsername
+                );
+                console.log(`  • ${reels.length} reels upserted`);
+            }
             if (source.youtubeChannelId) {
                 console.log(`Scraping YouTube Shorts (RSS-based) for ${source.name}`);
-                // const ytReels = await scrapeYouTubeShortsViaRSS(source);
-                // console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
+                const ytReels = await scrapeYouTubeShortsViaRSS(source);
+                console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
             }
             try {
                 console.log(`Scraping full YouTube videos for ${source.name}`);
