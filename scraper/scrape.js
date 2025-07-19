@@ -19,7 +19,7 @@ async function scrapeAllSources(frequency = null) {
     console.log(`🔗 MongoDB connection state: ${mongoose.connection.readyState} (0=disconnected, 1=connected, 2=connecting, 3=disconnecting)`);
     console.log(`🌐 MONGO_URI exists: ${!!process.env.MONGO_URI}`);
     console.log(`🌐 MONGO_URI (masked): ${process.env.MONGO_URI ? process.env.MONGO_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@') : 'undefined'}`);
-    
+
     if (mongoose.connection.readyState !== 1) {
         console.log('⚠️ MongoDB not connected inside scraper. Connecting now...');
         try {
@@ -36,7 +36,7 @@ async function scrapeAllSources(frequency = null) {
     } else {
         console.log('✅ MongoDB already connected inside scraper.');
     }
-    
+
     console.log('📋 Fetching sources from database...');
     let sources = await Source.find();
     console.log(`📊 Found ${sources.length} total sources`);
@@ -120,14 +120,14 @@ async function scrapeAllSources(frequency = null) {
                     const $$ = cheerio.load(pageHtml);
 
                     console.log(`📝 Extracting content using selectors - Title: "${source.titleSelector || '.ORiM7'}", Content: "${source.contentSelector || '.story-element.story-element-text p'}"`);
-                    
+
                     // Extract title and content
                     const title = $$(source.titleSelector || '.ORiM7').first().text().trim();
                     const content = $$(source.contentSelector || '.story-element.story-element-text p')
                         .map((_, p) => $$(p).text().trim())
                         .get()
                         .join('\n\n');
-                    
+
                     console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
 
                     // Extract images
@@ -167,7 +167,7 @@ async function scrapeAllSources(frequency = null) {
                         console.log(`📋 Article details - URL: ${link}, Category: ${source.category}, Language: ${source.language || "english"}`);
                         console.log(`🖼️ Images found: ${images.length}`);
                         console.log(`🔗 Embedding length: ${embedding.length}`);
-                        
+
                         try {
                             const newArticle = new Article({
                                 title,
@@ -181,7 +181,7 @@ async function scrapeAllSources(frequency = null) {
                             });
 
                             if (images.length > 0) newArticle.image = images;
-                            
+
                             console.log(`💾 About to save article to database...`);
                             const savedArticle = await newArticle.save();
                             console.log(`✅ Successfully saved article with ID: ${savedArticle._id}`);
@@ -348,7 +348,7 @@ async function scrapeAllSources(frequency = null) {
             console.error('❌ Lotto scraping error:', e);
         }
     }
-    
+
     console.log(`🏁 scrapeAllSources completed`);
     console.log(`📊 Final Summary:`);
     console.log(`   - Total new articles saved: ${totalNew}`);
