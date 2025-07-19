@@ -14,6 +14,11 @@ const { scrapeYouTubeShortsViaRSS } = require('./youtubeRSSShortsScraper.js'); /
 const { scrapeYouTubeForSource } = require('./youtubeScraper');
 const mongoose = require('mongoose');
 
+function cleanText(text) {
+    if (!text) return '';
+    return text.replace(/[\u0000-\u001F]+/g, '').trim();
+}
+
 async function scrapeAllSources(frequency = null) {
     console.log(`🚀 Starting scrapeAllSources with frequency: ${frequency}`);
     console.log(`🔗 MongoDB connection state: ${mongoose.connection.readyState} (0=disconnected, 1=connected, 2=connecting, 3=disconnecting)`);
@@ -122,11 +127,13 @@ async function scrapeAllSources(frequency = null) {
                     console.log(`📝 Extracting content using selectors - Title: "${source.titleSelector || '.ORiM7'}", Content: "${source.contentSelector || '.story-element.story-element-text p'}"`);
 
                     // Extract title and content
-                    const title = $$(source.titleSelector || '.ORiM7').first().text().trim();
-                    const content = $$(source.contentSelector || '.story-element.story-element-text p')
-                        .map((_, p) => $$(p).text().trim())
-                        .get()
-                        .join('\n\n');
+                    const title = cleanText($$(source.titleSelector || '.ORiM7').first().text());
+                    const content = cleanText(
+                        $$(source.contentSelector || '.story-element.story-element-text p')
+                            .map((_, p) => $$(p).text().trim())
+                            .get()
+                            .join('\n\n')
+                    );
 
                     console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
 
