@@ -15,18 +15,35 @@ const { scrapeYouTubeForSource } = require('./youtubeScraper');
 const mongoose = require('mongoose');
 
 async function scrapeAllSources(frequency = null) {
+    console.log(`🚀 Starting scrapeAllSources with frequency: ${frequency}`);
+    console.log(`🔗 MongoDB connection state: ${mongoose.connection.readyState} (0=disconnected, 1=connected, 2=connecting, 3=disconnecting)`);
+    console.log(`🌐 MONGO_URI exists: ${!!process.env.MONGO_URI}`);
+    console.log(`🌐 MONGO_URI (masked): ${process.env.MONGO_URI ? process.env.MONGO_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@') : 'undefined'}`);
+    
     if (mongoose.connection.readyState !== 1) {
         console.log('⚠️ MongoDB not connected inside scraper. Connecting now...');
-        await mongoose.connect(process.env.MONGO_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true
-        });
-        console.log('✅ MongoDB connected inside scraper.');
+        try {
+            await mongoose.connect(process.env.MONGO_URI, {
+                useNewUrlParser: true,
+                useUnifiedTopology: true
+            });
+            console.log('✅ MongoDB connected inside scraper.');
+            console.log(`📊 New connection state: ${mongoose.connection.readyState}`);
+        } catch (connectError) {
+            console.error('❌ MongoDB connection failed:', connectError);
+            throw connectError;
+        }
     } else {
         console.log('✅ MongoDB already connected inside scraper.');
     }
+    
+    console.log('📋 Fetching sources from database...');
     let sources = await Source.find();
-    if (frequency) sources = sources.filter(s => s.frequency === frequency);
+    console.log(`📊 Found ${sources.length} total sources`);
+    if (frequency) {
+        sources = sources.filter(s => s.frequency === frequency);
+        console.log(`📊 Filtered to ${sources.length} sources with frequency: ${frequency}`);
+    }
 
     let totalNew = 0;
     let sampleArticle = null;
@@ -64,8 +81,13 @@ async function scrapeAllSources(frequency = null) {
 
             for (const link of links) {
                 try {
+                    console.log(`🔍 Checking if article exists: ${link}`);
                     const exists = await Article.findOne({ url: link });
-                    if (exists) continue;
+                    if (exists) {
+                        console.log(`⏭️ Article already exists, skipping: ${link}`);
+                        continue;
+                    }
+                    console.log(`🆕 New article found, processing: ${link}`);
 
                     let pageHtml;
                     if (source.name.toLowerCase().includes('gulfi news')) {
@@ -97,12 +119,16 @@ async function scrapeAllSources(frequency = null) {
                     }
                     const $$ = cheerio.load(pageHtml);
 
+                    console.log(`📝 Extracting content using selectors - Title: "${source.titleSelector || '.ORiM7'}", Content: "${source.contentSelector || '.story-element.story-element-text p'}"`);
+                    
                     // Extract title and content
                     const title = $$(source.titleSelector || '.ORiM7').first().text().trim();
                     const content = $$(source.contentSelector || '.story-element.story-element-text p')
                         .map((_, p) => $$(p).text().trim())
                         .get()
                         .join('\n\n');
+                    
+                    console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
 
                     // Extract images
                     let images = $$(source.imageSelector || 'img')
@@ -137,24 +163,44 @@ async function scrapeAllSources(frequency = null) {
 
                     // Save article if valid
                     if (title && content) {
-                        const newArticle = new Article({
-                            title,
-                            content,
-                            url: link,
-                            sourceId: source._id,
-                            category: source.category,
-                            publishedAt: new Date(),
-                            language: source.language || "english",
-                            embedding
-                        });
+                        console.log(`📝 Attempting to save article: "${title.slice(0, 50)}..." for source: ${source.name}`);
+                        console.log(`📋 Article details - URL: ${link}, Category: ${source.category}, Language: ${source.language || "english"}`);
+                        console.log(`🖼️ Images found: ${images.length}`);
+                        console.log(`🔗 Embedding length: ${embedding.length}`);
+                        
+                        try {
+                            const newArticle = new Article({
+                                title,
+                                content,
+                                url: link,
+                                sourceId: source._id,
+                                category: source.category,
+                                publishedAt: new Date(),
+                                language: source.language || "english",
+                                embedding
+                            });
 
-                        if (images.length > 0) newArticle.image = images;
-                        await newArticle.save();
+                            if (images.length > 0) newArticle.image = images;
+                            
+                            console.log(`💾 About to save article to database...`);
+                            const savedArticle = await newArticle.save();
+                            console.log(`✅ Successfully saved article with ID: ${savedArticle._id}`);
 
-                        totalNew++;
-                        if (!sampleArticle) {
-                            sampleArticle = newArticle;
+                            totalNew++;
+                            if (!sampleArticle) {
+                                sampleArticle = newArticle;
+                            }
+                        } catch (saveError) {
+                            console.error(`❌ Failed to save article "${title.slice(0, 50)}...":`, saveError);
+                            console.error(`📊 Save error details:`, {
+                                message: saveError.message,
+                                code: saveError.code,
+                                name: saveError.name,
+                                stack: saveError.stack?.split('\n').slice(0, 3).join('\n')
+                            });
                         }
+                    } else {
+                        console.warn(`⚠️ Skipping article due to missing data - Title: ${!!title}, Content: ${!!content}, URL: ${link}`);
                     }
                 } catch (err) {
                     console.error(`Error on article ${link}:`, err.message);
@@ -182,12 +228,22 @@ async function scrapeAllSources(frequency = null) {
                 console.warn(`⚠️ Failed to scrape YouTube videos for ${source.name}:`, err.message);
             }
 
+            console.log(`🔄 Updating lastScraped timestamp for source: ${source.name}`);
             source.lastScraped = new Date();
             await source.save();
+            console.log(`✅ Source ${source.name} completed successfully`);
         } catch (err) {
-            console.error(`Failed to scrape ${source.url}:`, err.message);
+            console.error(`❌ Failed to scrape ${source.url}:`, err.message);
+            console.error(`📊 Source error details:`, {
+                name: err.name,
+                message: err.message,
+                stack: err.stack?.split('\n').slice(0, 3).join('\n')
+            });
         }
     }
+
+    console.log(`📊 Scraping completed. Total new articles: ${totalNew}`);
+    console.log(`📊 Sample article for notifications: ${sampleArticle ? 'Yes' : 'No'}`);
 
     if (totalNew > 0 && sampleArticle) {
         // Get users with push tokens and check their notification preferences
@@ -292,6 +348,12 @@ async function scrapeAllSources(frequency = null) {
             console.error('❌ Lotto scraping error:', e);
         }
     }
+    
+    console.log(`🏁 scrapeAllSources completed`);
+    console.log(`📊 Final Summary:`);
+    console.log(`   - Total new articles saved: ${totalNew}`);
+    console.log(`   - MongoDB connection state: ${mongoose.connection.readyState}`);
+    console.log(`   - Sample article for notifications: ${sampleArticle ? `"${sampleArticle.title.slice(0, 30)}..."` : 'None'}`);
 }
 
 module.exports = scrapeAllSources;
