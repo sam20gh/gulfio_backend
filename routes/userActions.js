@@ -6,6 +6,7 @@ const auth = require('../middleware/auth'); // Keep auth for other routes
 const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
 const Reel = require('../models/Reel'); // Import Reel model
+const Source = require('../models/Source'); // Import Source model
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');

@@ -23,22 +23,47 @@ router.get('/group/:groupName', async (req, res) => {
         // Check if user is authenticated and following
         if (authHeader) {
             try {
+                // Use the auth middleware approach for consistency
                 const jwt = require('jsonwebtoken');
-                const decoded = jwt.decode(authHeader);
+                const supabaseJWT = require('supabase-jwt');
+                
+                // Verify and decode the token properly
+                let decoded;
+                try {
+                    // First try to decode with supabase-jwt if available
+                    decoded = jwt.decode(authHeader);
+                } catch (jwtError) {
+                    console.log('JWT decode error:', jwtError);
+                    decoded = null;
+                }
+                
                 if (decoded && decoded.sub) {
-                    const User = require('../models/User');
+                    console.log('Checking follow status for user:', decoded.sub);
                     const user = await User.findOne({ supabase_id: decoded.sub });
                     if (user) {
                         userFollowing = user.following_sources.includes(groupName);
+                        console.log('User following status:', userFollowing, 'for group:', groupName);
+                        console.log('User following_sources:', user.following_sources);
+                    } else {
+                        console.log('No user found with supabase_id:', decoded.sub);
                     }
                 }
             } catch (authError) {
-                console.log('Auth check failed, proceeding as unauthenticated user');
+                console.log('Auth check failed, proceeding as unauthenticated user:', authError);
             }
         }
 
         // Get total count of articles for this group
+        console.log('Querying articles for sourceIds:', sourceIds);
         const totalArticleCount = await Article.countDocuments({ sourceId: { $in: sourceIds } });
+        console.log('Total article count for group', groupName, ':', totalArticleCount);
+
+        // Debug: Let's also check if there are any articles at all for debugging
+        const sampleArticles = await Article.find({ sourceId: { $in: sourceIds } }).limit(3);
+        console.log('Sample articles found:', sampleArticles.length);
+        if (sampleArticles.length > 0) {
+            console.log('First article sourceId:', sampleArticles[0].sourceId);
+        }
 
         const topArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ likeCount: -1 })
@@ -55,7 +80,7 @@ router.get('/group/:groupName', async (req, res) => {
             .limit(10)
             .select('_id description videoUrl thumbnail publishedAt');
 
-        res.json({
+        const responseData = {
             sourceInfo: {
                 name: mainSource.name,
                 icon: mainSource.icon,
@@ -63,13 +88,23 @@ router.get('/group/:groupName', async (req, res) => {
                 _id: mainSource._id,
                 bioSection: mainSource.bioSection,
                 bioLink: mainSource.bioLink,
-                totalArticleCount, // ✅ NEW: Real post count
+                totalArticleCount, // ✅ Real post count
             },
             topArticles,
             recentArticles,
             reels,
-            isFollowing: userFollowing, // ✅ FIXED: Real following status
+            isFollowing: userFollowing, // ✅ Real following status
+        };
+
+        console.log('Sending response for group', groupName, ':', {
+            totalArticleCount,
+            isFollowing: userFollowing,
+            topArticlesCount: topArticles.length,
+            recentArticlesCount: recentArticles.length,
+            reelsCount: reels.length
         });
+
+        res.json(responseData);
 
     } catch (error) {
         console.error('Error fetching source group:', error);
