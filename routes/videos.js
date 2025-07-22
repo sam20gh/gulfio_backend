@@ -122,21 +122,108 @@ router.get('/reels', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Cap at 50 to prevent abuse
         const skip = (page - 1) * limit;
+        const sort = req.query.sort || 'recent'; // recent, random, mixed
+        const seed = req.query.seed || Date.now(); // For consistent random ordering
 
         // Performance improvement: Use skip/limit parameter instead of page parameter
         const actualSkip = parseInt(req.query.skip) || skip;
 
-        // Parallel execution for better performance
-        const [reels, totalCount] = await Promise.all([
-            Reel.find()
-                .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
-                .populate('source', 'name icon favicon') // Populate source info efficiently with more fields
-                .sort({ scrapedAt: -1 })
-                .skip(actualSkip)
-                .limit(limit)
-                .lean(), // Use lean() for better performance
-            Reel.countDocuments()
-        ]);
+        // Determine sorting strategy
+        let sortQuery = { scrapedAt: -1 }; // Default: most recent first
+        let aggregationPipeline = [];
+
+        if (sort === 'random') {
+            // Random sampling for variety
+            aggregationPipeline = [
+                { $sample: { size: Math.min(limit * 5, 200) } }, // Sample more than needed
+                { $sort: { scrapedAt: -1 } },
+                { $skip: actualSkip },
+                { $limit: limit }
+            ];
+        } else if (sort === 'mixed') {
+            // Mixed content: recent + popular + random
+            const recentLimit = Math.ceil(limit * 0.4);
+            const popularLimit = Math.ceil(limit * 0.3);
+            const randomLimit = limit - recentLimit - popularLimit;
+
+            // Get different types of content
+            const [recent, popular, random] = await Promise.all([
+                Reel.find()
+                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ scrapedAt: -1 })
+                    .limit(recentLimit)
+                    .lean(),
+                Reel.find()
+                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ viewCount: -1, likes: -1 })
+                    .limit(popularLimit)
+                    .lean(),
+                Reel.aggregate([
+                    { $sample: { size: randomLimit } },
+                    {
+                        $lookup: {
+                            from: 'sources',
+                            localField: 'source',
+                            foreignField: '_id',
+                            as: 'source'
+                        }
+                    },
+                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
+                ])
+            ]);
+
+            // Shuffle the mixed content
+            const mixedReels = [...recent, ...popular, ...random]
+                .sort(() => 0.5 - Math.random())
+                .slice(0, limit);
+
+            return res.json(req.query.simple === 'true' ? mixedReels : {
+                reels: mixedReels,
+                pagination: {
+                    currentPage: page,
+                    totalPages: Math.ceil(200 / limit), // Approximate
+                    totalCount: mixedReels.length,
+                    limit,
+                    hasNextPage: true,
+                    hasPreviousPage: page > 1,
+                    nextPage: page + 1,
+                    previousPage: page > 1 ? page - 1 : null
+                }
+            });
+        }
+
+        // Default case or when using aggregation
+        let reels, totalCount;
+
+        if (aggregationPipeline.length > 0) {
+            // Use aggregation for random sampling
+            aggregationPipeline.unshift({
+                $lookup: {
+                    from: 'sources',
+                    localField: 'source',
+                    foreignField: '_id',
+                    as: 'source'
+                }
+            });
+            aggregationPipeline.unshift({ $unwind: { path: '$source', preserveNullAndEmptyArrays: true } });
+            
+            reels = await Reel.aggregate(aggregationPipeline);
+            totalCount = await Reel.countDocuments();
+        } else {
+            // Parallel execution for better performance
+            [reels, totalCount] = await Promise.all([
+                Reel.find()
+                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
+                    .populate('source', 'name icon favicon') // Populate source info efficiently with more fields
+                    .sort(sortQuery)
+                    .skip(actualSkip)
+                    .limit(limit)
+                    .lean(), // Use lean() for better performance
+                Reel.countDocuments()
+            ]);
+        }
 
         // Debug log to check source population (remove in production)
         if (reels.length > 0 && process.env.NODE_ENV === 'development') {
