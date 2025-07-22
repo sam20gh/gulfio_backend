@@ -27,26 +27,37 @@ router.get('/group/:groupName', async (req, res) => {
                 const JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
                 const SUPABASE_ISSUER = process.env.SUPABASE_JWT_ISSUER;
                 
-                // Verify and decode the JWT token properly
+                // Try to verify and decode the JWT token
                 let decoded;
-                try {
-                    decoded = jwt.verify(authHeader, JWT_SECRET, {
-                        algorithms: ['HS256'],
-                        issuer: SUPABASE_ISSUER,
-                    });
-                    console.log('✅ JWT verified successfully for user:', decoded?.sub);
-                } catch (jwtError) {
-                    console.log('❌ JWT verification failed:', jwtError.message);
-                    // Fallback to decode without verification for debugging
+                let tokenVerified = false;
+                
+                // First try with verification
+                if (JWT_SECRET && SUPABASE_ISSUER) {
+                    try {
+                        decoded = jwt.verify(authHeader, JWT_SECRET, {
+                            algorithms: ['HS256'],
+                            issuer: SUPABASE_ISSUER,
+                        });
+                        tokenVerified = true;
+                        console.log('✅ JWT verified successfully for user:', decoded?.sub);
+                    } catch (verifyError) {
+                        console.log('⚠️ JWT verification failed, trying decode only:', verifyError.message);
+                    }
+                }
+                
+                // Fallback to decode without verification (for compatibility)
+                if (!decoded) {
                     try {
                         decoded = jwt.decode(authHeader);
-                        console.log('⚠️ Using unverified JWT decode. Token payload:', {
+                        console.log('ℹ️ Using unverified JWT decode for user:', decoded?.sub);
+                        console.log('🔍 Token details:', {
                             sub: decoded?.sub,
                             iss: decoded?.iss,
-                            exp: decoded?.exp
+                            exp: decoded?.exp,
+                            expectedIssuer: SUPABASE_ISSUER
                         });
                     } catch (decodeError) {
-                        console.log('❌ JWT decode also failed:', decodeError.message);
+                        console.log('❌ JWT decode failed:', decodeError.message);
                         decoded = null;
                     }
                 }
@@ -57,7 +68,7 @@ router.get('/group/:groupName', async (req, res) => {
                     if (user) {
                         userFollowing = user.following_sources.includes(groupName);
                         console.log('✅ User following status:', userFollowing, 'for group:', groupName);
-                        console.log('📋 User following_sources:', user.following_sources.slice(0, 5), '...(truncated)');
+                        console.log('📋 User following_sources count:', user.following_sources.length);
                     } else {
                         console.log('❌ No user found with supabase_id:', decoded.sub);
                     }
@@ -66,6 +77,7 @@ router.get('/group/:groupName', async (req, res) => {
                 }
             } catch (authError) {
                 console.log('❌ Auth check failed, proceeding as unauthenticated user:', authError.message);
+                // Don't throw the error, just proceed as unauthenticated
             }
         } else {
             console.log('ℹ️ No auth header provided, treating as anonymous request');

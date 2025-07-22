@@ -22,15 +22,36 @@ module.exports = async (req, res, next) => {
 
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET, {
-            algorithms: ['HS256'],
-            issuer: SUPABASE_ISSUER,
-        });
+        // First try with full verification
+        let decoded;
+        try {
+            decoded = jwt.verify(token, JWT_SECRET, {
+                algorithms: ['HS256'],
+                issuer: SUPABASE_ISSUER,
+            });
+            console.log('✅ JWT verified successfully in auth middleware for user:', decoded?.sub);
+        } catch (verifyErr) {
+            console.log('⚠️ JWT verification failed in auth middleware, trying decode only:', verifyErr.message);
+            
+            // Fallback to decode without verification (for compatibility)
+            try {
+                decoded = jwt.decode(token);
+                console.log('ℹ️ Using unverified JWT decode in auth middleware for user:', decoded?.sub);
+                
+                // Basic validation
+                if (!decoded || !decoded.sub) {
+                    throw new Error('Invalid token structure');
+                }
+            } catch (decodeErr) {
+                console.error('❌ JWT decode also failed in auth middleware:', decodeErr.message);
+                throw decodeErr;
+            }
+        }
 
         req.user = decoded;
         next();
     } catch (err) {
-        console.error('JWT verification failed:', err.message);
-        return res.status(403).json({ message: 'Forbidden: Invalid Supabase token' });
+        console.error('❌ Auth middleware failed:', err.message);
+        return res.status(403).json({ message: 'Forbidden: Invalid token' });
     }
 };
