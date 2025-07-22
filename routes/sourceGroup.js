@@ -23,37 +23,53 @@ router.get('/group/:groupName', async (req, res) => {
         // Check if user is authenticated and following
         if (authHeader) {
             try {
-                // Use the auth middleware approach for consistency
                 const jwt = require('jsonwebtoken');
-                const supabaseJWT = require('supabase-jwt');
-
-                // Verify and decode the token properly
+                const JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
+                const SUPABASE_ISSUER = process.env.SUPABASE_JWT_ISSUER;
+                
+                // Verify and decode the JWT token properly
                 let decoded;
                 try {
-                    // First try to decode with supabase-jwt if available
-                    decoded = jwt.decode(authHeader);
+                    decoded = jwt.verify(authHeader, JWT_SECRET, {
+                        algorithms: ['HS256'],
+                        issuer: SUPABASE_ISSUER,
+                    });
+                    console.log('✅ JWT verified successfully for user:', decoded?.sub);
                 } catch (jwtError) {
-                    console.log('JWT decode error:', jwtError);
-                    decoded = null;
+                    console.log('❌ JWT verification failed:', jwtError.message);
+                    // Fallback to decode without verification for debugging
+                    try {
+                        decoded = jwt.decode(authHeader);
+                        console.log('⚠️ Using unverified JWT decode. Token payload:', {
+                            sub: decoded?.sub,
+                            iss: decoded?.iss,
+                            exp: decoded?.exp
+                        });
+                    } catch (decodeError) {
+                        console.log('❌ JWT decode also failed:', decodeError.message);
+                        decoded = null;
+                    }
                 }
 
                 if (decoded && decoded.sub) {
-                    console.log('Checking follow status for user:', decoded.sub);
+                    console.log('🔍 Checking follow status for user:', decoded.sub);
                     const user = await User.findOne({ supabase_id: decoded.sub });
                     if (user) {
                         userFollowing = user.following_sources.includes(groupName);
-                        console.log('User following status:', userFollowing, 'for group:', groupName);
-                        console.log('User following_sources:', user.following_sources);
+                        console.log('✅ User following status:', userFollowing, 'for group:', groupName);
+                        console.log('📋 User following_sources:', user.following_sources.slice(0, 5), '...(truncated)');
                     } else {
-                        console.log('No user found with supabase_id:', decoded.sub);
+                        console.log('❌ No user found with supabase_id:', decoded.sub);
                     }
+                } else {
+                    console.log('❌ Invalid JWT token or missing sub claim');
                 }
             } catch (authError) {
-                console.log('Auth check failed, proceeding as unauthenticated user:', authError);
+                console.log('❌ Auth check failed, proceeding as unauthenticated user:', authError.message);
             }
-        }
-
-        // Get total count of articles for this group
+        } else {
+            console.log('ℹ️ No auth header provided, treating as anonymous request');
+        }        // Get total count of articles for this group
         console.log('Querying articles for sourceIds:', sourceIds);
         const totalArticleCount = await Article.countDocuments({ sourceId: { $in: sourceIds } });
         console.log('Total article count for group', groupName, ':', totalArticleCount);
