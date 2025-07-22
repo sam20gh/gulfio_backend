@@ -32,12 +32,12 @@ module.exports = async (req, res, next) => {
             console.log('✅ JWT verified successfully in auth middleware for user:', decoded?.sub);
         } catch (verifyErr) {
             console.log('⚠️ JWT verification failed in auth middleware, trying decode only:', verifyErr.message);
-            
+
             // Fallback to decode without verification (for compatibility)
             try {
                 decoded = jwt.decode(token);
                 console.log('ℹ️ Using unverified JWT decode in auth middleware for user:', decoded?.sub);
-                
+
                 // Basic validation
                 if (!decoded || !decoded.sub) {
                     throw new Error('Invalid token structure');

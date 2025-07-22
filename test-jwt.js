@@ -27,7 +27,7 @@ try {
     console.log('Email:', verified.email);
 } catch (verifyError) {
     console.log('❌ JWT verification failed:', verifyError.message);
-    
+
     // Try decode without verification
     try {
         const decoded = jwt.decode(sampleToken);

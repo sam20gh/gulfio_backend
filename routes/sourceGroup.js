@@ -26,11 +26,11 @@ router.get('/group/:groupName', async (req, res) => {
                 const jwt = require('jsonwebtoken');
                 const JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
                 const SUPABASE_ISSUER = process.env.SUPABASE_JWT_ISSUER;
-                
+
                 // Try to verify and decode the JWT token
                 let decoded;
                 let tokenVerified = false;
-                
+
                 // First try with verification
                 if (JWT_SECRET && SUPABASE_ISSUER) {
                     try {
@@ -44,7 +44,7 @@ router.get('/group/:groupName', async (req, res) => {
                         console.log('⚠️ JWT verification failed, trying decode only:', verifyError.message);
                     }
                 }
-                
+
                 // Fallback to decode without verification (for compatibility)
                 if (!decoded) {
                     try {
