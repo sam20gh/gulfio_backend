@@ -10,7 +10,7 @@ async function debugSourceGroup(groupName) {
         console.log('✅ Connected to MongoDB');
 
         console.log('\n🔍 Debugging source group:', groupName);
-        console.log('=' .repeat(50));
+        console.log('='.repeat(50));
 
         // 1. Find sources for this group
         const sources = await Source.find({ groupName });
@@ -36,7 +36,7 @@ async function debugSourceGroup(groupName) {
         const sampleArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .limit(3)
             .select('title sourceId publishedAt');
-        
+
         console.log('\n📋 Sample articles:');
         sampleArticles.forEach(article => {
             console.log(`  - "${article.title}" (Source: ${article.sourceId})`);

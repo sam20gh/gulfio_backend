@@ -26,7 +26,7 @@ router.get('/group/:groupName', async (req, res) => {
                 // Use the auth middleware approach for consistency
                 const jwt = require('jsonwebtoken');
                 const supabaseJWT = require('supabase-jwt');
-                
+
                 // Verify and decode the token properly
                 let decoded;
                 try {
@@ -36,7 +36,7 @@ router.get('/group/:groupName', async (req, res) => {
                     console.log('JWT decode error:', jwtError);
                     decoded = null;
                 }
-                
+
                 if (decoded && decoded.sub) {
                     console.log('Checking follow status for user:', decoded.sub);
                     const user = await User.findOne({ supabase_id: decoded.sub });
