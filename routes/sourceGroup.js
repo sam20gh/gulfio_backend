@@ -10,6 +10,8 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 // Get source group info + top articles + recent articles
 router.get('/group/:groupName', async (req, res) => {
     const { groupName } = req.params;
+    const authHeader = req.headers['x-access-token'];
+    let userFollowing = false;
 
     try {
         const sources = await Source.find({ groupName });
@@ -17,6 +19,26 @@ router.get('/group/:groupName', async (req, res) => {
 
         const mainSource = sources[0];
         const sourceIds = sources.map(source => source._id);
+
+        // Check if user is authenticated and following
+        if (authHeader) {
+            try {
+                const jwt = require('jsonwebtoken');
+                const decoded = jwt.decode(authHeader);
+                if (decoded && decoded.sub) {
+                    const User = require('../models/User');
+                    const user = await User.findOne({ supabase_id: decoded.sub });
+                    if (user) {
+                        userFollowing = user.following_sources.includes(groupName);
+                    }
+                }
+            } catch (authError) {
+                console.log('Auth check failed, proceeding as unauthenticated user');
+            }
+        }
+
+        // Get total count of articles for this group
+        const totalArticleCount = await Article.countDocuments({ sourceId: { $in: sourceIds } });
 
         const topArticles = await Article.find({ sourceId: { $in: sourceIds } })
             .sort({ likeCount: -1 })
@@ -33,19 +55,20 @@ router.get('/group/:groupName', async (req, res) => {
             .limit(10)
             .select('_id description videoUrl thumbnail publishedAt');
 
-        const userFollowing = false; // unauthenticated users can't follow
-
         res.json({
             sourceInfo: {
                 name: mainSource.name,
                 icon: mainSource.icon,
                 followers: sources.reduce((acc, s) => acc + (s.followers || 0), 0),
                 _id: mainSource._id,
+                bioSection: mainSource.bioSection,
+                bioLink: mainSource.bioLink,
+                totalArticleCount, // ✅ NEW: Real post count
             },
             topArticles,
             recentArticles,
             reels,
-            userFollowing,
+            isFollowing: userFollowing, // ✅ FIXED: Real following status
         });
 
     } catch (error) {

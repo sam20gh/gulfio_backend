@@ -18,6 +18,8 @@ const SourceSchema = new mongoose.Schema({
     instagramUsername: { type: String, default: null },
     youtubeChannelId: { type: String, default: null },// e.g., .story-element.story-element-text p
     language: { type: String, default: "english" },
+    bioSection: { type: String, default: null },
+    bioLink: { type: String, default: null },
 });
 
 module.exports = mongoose.model('Source', SourceSchema);
