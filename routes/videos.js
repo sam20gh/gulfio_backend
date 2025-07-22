@@ -208,7 +208,7 @@ router.get('/reels', async (req, res) => {
                 }
             });
             aggregationPipeline.unshift({ $unwind: { path: '$source', preserveNullAndEmptyArrays: true } });
-            
+
             reels = await Reel.aggregate(aggregationPipeline);
             totalCount = await Reel.countDocuments();
         } else {
