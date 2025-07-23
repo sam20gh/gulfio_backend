@@ -19,6 +19,33 @@ function cleanText(text) {
     return text.replace(/[\u0000-\u001F]+/g, '').trim();
 }
 
+function isElementVisible($, element) {
+    const $el = $(element);
+
+    // Check inline styles for display: none or visibility: hidden
+    const style = $el.attr('style') || '';
+    if (style.includes('display:none') || style.includes('display: none') ||
+        style.includes('visibility:hidden') || style.includes('visibility: hidden')) {
+        return false;
+    }
+
+    // Check for common hidden classes
+    const className = $el.attr('class') || '';
+    const hiddenClasses = ['hidden', 'hide', 'invisible', 'sr-only', 'screen-reader-only', 'visually-hidden'];
+    if (hiddenClasses.some(cls => className.includes(cls))) {
+        return false;
+    }
+
+    // Check for common garbage element patterns
+    const id = $el.attr('id') || '';
+    const garbagePatterns = ['ad-', 'advertisement', 'banner', 'popup', 'modal', 'overlay', 'sidebar'];
+    if (garbagePatterns.some(pattern => className.toLowerCase().includes(pattern) || id.toLowerCase().includes(pattern))) {
+        return false;
+    }
+
+    return true;
+}
+
 async function scrapeAllSources(frequency = null) {
     console.log(`🚀 Starting scrapeAllSources with frequency: ${frequency}`);
     console.log(`🔗 MongoDB connection state: ${mongoose.connection.readyState} (0=disconnected, 1=connected, 2=connecting, 3=disconnecting)`);
@@ -126,22 +153,37 @@ async function scrapeAllSources(frequency = null) {
 
                     console.log(`📝 Extracting content using selectors - Title: "${source.titleSelector || '.ORiM7'}", Content: "${source.contentSelector || '.story-element.story-element-text p'}"`);
 
-                    // Extract title and content
-                    const title = cleanText($$(source.titleSelector || '.ORiM7').first().text());
+                    // Extract title and content - filter out hidden elements
+                    const title = cleanText($$(source.titleSelector || '.ORiM7')
+                        .filter((_, el) => isElementVisible($$, el))
+                        .first()
+                        .text());
+
                     const content = cleanText(
                         $$(source.contentSelector || '.story-element.story-element-text p')
+                            .filter((_, p) => isElementVisible($$, p))
                             .map((_, p) => $$(p).text().trim())
                             .get()
+                            .filter(text => text.length > 10) // Filter out very short text fragments
                             .join('\n\n')
                     );
 
                     console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
 
-                    // Extract images
+                    // Extract images - filter out hidden images
                     let images = $$(source.imageSelector || 'img')
+                        .filter((_, img) => isElementVisible($$, img))
                         .map((_, img) => $$(img).attr('src'))
                         .get()
                         .filter(Boolean)
+                        .filter(src => {
+                            // Filter out tracking pixels and very small images
+                            const url = src.toLowerCase();
+                            return !url.includes('1x1') &&
+                                !url.includes('pixel') &&
+                                !url.includes('tracker') &&
+                                !url.includes('analytics');
+                        })
                         .map(src => {
                             // 🔧 Fix low resolution by replacing width parameter
                             src = src.replace(/w=\d+/g, 'w=800');
@@ -168,8 +210,8 @@ async function scrapeAllSources(frequency = null) {
                         console.warn('❌ Embedding error for article:', title, err.message);
                     }
 
-                    // Save article if valid
-                    if (title && content) {
+                    // Save article if valid - more strict validation
+                    if (title && content && title.length > 5 && content.length > 50) {
                         console.log(`📝 Attempting to save article: "${title.slice(0, 50)}..." for source: ${source.name}`);
                         console.log(`📋 Article details - URL: ${link}, Category: ${source.category}, Language: ${source.language || "english"}`);
                         console.log(`🖼️ Images found: ${images.length}`);
@@ -207,7 +249,9 @@ async function scrapeAllSources(frequency = null) {
                             });
                         }
                     } else {
-                        console.warn(`⚠️ Skipping article due to missing data - Title: ${!!title}, Content: ${!!content}, URL: ${link}`);
+                        console.warn(`⚠️ Skipping article due to insufficient content - Title: ${!!title} (${title?.length || 0} chars), Content: ${!!content} (${content?.length || 0} chars), URL: ${link}`);
+                        if (title && title.length <= 5) console.warn(`  - Title too short: "${title}"`);
+                        if (content && content.length <= 50) console.warn(`  - Content too short: "${content.slice(0, 50)}..."`);
                     }
                 } catch (err) {
                     console.error(`Error on article ${link}:`, err.message);
