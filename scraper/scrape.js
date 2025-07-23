@@ -222,11 +222,11 @@ async function scrapeAllSources(frequency = null) {
                 );
                 console.log(`  • ${reels.length} reels upserted`);
             }
-            if (source.youtubeChannelId) {
-                console.log(`Scraping YouTube Shorts (RSS-based) for ${source.name}`);
-                const ytReels = await scrapeYouTubeShortsViaRSS(source);
-                console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
-            }
+            // if (source.youtubeChannelId) {
+            //     console.log(`Scraping YouTube Shorts (RSS-based) for ${source.name}`);
+            //     const ytReels = await scrapeYouTubeShortsViaRSS(source);
+            //     console.log(`  • ${ytReels.length} YouTube Shorts upserted via RSS`);
+            // }
             try {
                 console.log(`Scraping full YouTube videos for ${source.name}`);
                 const savedVideos = await scrapeYouTubeForSource(source._id, source.youtubeChannelId);
