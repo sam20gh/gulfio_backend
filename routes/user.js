@@ -706,5 +706,29 @@ router.post('/admin/send-weekly-digest', auth, async (req, res) => {
     }
 });
 
+// Search users endpoint
+router.get('/search', auth, async (req, res) => {
+    try {
+        const query = req.query.query?.trim();
+
+        if (!query) return res.status(400).json({ message: 'Missing search query' });
+
+        const regex = new RegExp(query, 'i'); // case-insensitive
+        const results = await User.find({
+            $or: [
+                { name: { $regex: regex } },
+                { email: { $regex: regex } }
+            ]
+        })
+            .select('supabase_id name email profile_image following_sources following_users') // Only return necessary fields
+            .sort({ createdAt: -1 }) // Sort by creation date
+            .limit(20); // Limit results
+
+        res.json(results);
+    } catch (error) {
+        console.error('Error in users search:', error);
+        res.status(500).json({ message: 'Error searching users', error: error.message });
+    }
+});
 
 module.exports = router;

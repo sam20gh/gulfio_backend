@@ -385,10 +385,27 @@ articleRouter.get('/search', auth, async (req, res) => {
     if (!query) return res.status(400).json({ message: 'Missing search query' });
 
     const regex = new RegExp(query, 'i'); // case-insensitive
+    
+    // First, get source IDs that match the search query
+    const matchingSources = await require('../models/Source').find({
+      $or: [
+        { name: { $regex: regex } },
+        { groupName: { $regex: regex } }
+      ]
+    }).select('_id');
+    
+    const matchingSourceIds = matchingSources.map(source => source._id);
+
+    // Search in articles with enhanced fields and source matching
     const results = await Article.find({
-      title: { $regex: regex },
+      $or: [
+        { title: { $regex: regex } },
+        { content: { $regex: regex } },
+        { sourceId: { $in: matchingSourceIds } } // Include articles from matching sources
+      ],
       language // Add language filter 
     })
+      .populate('sourceId', 'name icon') // Populate source info
       .sort({ publishedAt: -1 })
       .limit(50);
 

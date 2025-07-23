@@ -94,4 +94,32 @@ router.get('/:id/youtube/videos', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// Search sources endpoint
+router.get('/search', auth, async (req, res) => {
+    try {
+        const query = req.query.query?.trim();
+        const language = req.query.language || 'english';
+
+        if (!query) return res.status(400).json({ message: 'Missing search query' });
+
+        const regex = new RegExp(query, 'i'); // case-insensitive
+        const results = await Source.find({
+            $or: [
+                { name: { $regex: regex } },
+                { category: { $regex: regex } },
+                { groupName: { $regex: regex } }
+            ],
+            language // Add language filter
+        })
+            .sort({ followers: -1 }) // Sort by popularity
+            .limit(20); // Limit results
+
+        res.json(results);
+    } catch (error) {
+        console.error('Error in sources search:', error);
+        res.status(500).json({ message: 'Error searching sources', error: error.message });
+    }
+});
+
 module.exports = router;
