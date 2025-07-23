@@ -414,5 +414,50 @@ router.get('/reels/debug', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// Refresh signed S3 URLs for all Reels — for Google Cloud Scheduler
+router.post('/reels/refresh-urls', async (req, res) => {
+    try {
+        const secret = req.headers['x-api-key'];
+        if (secret !== process.env.ADMIN_API_KEY) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        const reels = await Reel.find({}, '_id originalKey');
+
+        let updatedCount = 0;
+        for (const reel of reels) {
+            try {
+                const command = new GetObjectCommand({
+                    Bucket: AWS_S3_BUCKET,
+                    Key: reel.originalKey
+                });
+
+                const newSignedUrl = await getSignedUrl(s3, command, {
+                    expiresIn: 60 * 60 * 24 * 7 // 7 days
+                });
+
+                await Reel.updateOne({ _id: reel._id }, {
+                    $set: {
+                        videoUrl: newSignedUrl,
+                        updatedAt: new Date()
+                    }
+                });
+
+                updatedCount++;
+            } catch (err) {
+                console.warn(`⚠️ Failed to refresh ${reel.originalKey}: ${err.message}`);
+            }
+        }
+
+        res.json({
+            message: `✅ Refreshed ${updatedCount} reel video URLs`,
+            count: updatedCount
+        });
+    } catch (err) {
+        console.error('❌ Failed to refresh reel URLs:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 
 module.exports = router;
