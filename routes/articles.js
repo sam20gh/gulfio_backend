@@ -385,7 +385,7 @@ articleRouter.get('/search', auth, async (req, res) => {
     if (!query) return res.status(400).json({ message: 'Missing search query' });
 
     const regex = new RegExp(query, 'i'); // case-insensitive
-    
+
     // First, get source IDs that match the search query
     const matchingSources = await require('../models/Source').find({
       $or: [
@@ -393,7 +393,7 @@ articleRouter.get('/search', auth, async (req, res) => {
         { groupName: { $regex: regex } }
       ]
     }).select('_id');
-    
+
     const matchingSourceIds = matchingSources.map(source => source._id);
 
     // Search in articles with enhanced fields and source matching
