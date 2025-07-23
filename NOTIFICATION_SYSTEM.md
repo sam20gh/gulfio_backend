@@ -103,12 +103,12 @@ The system automatically sends notifications for the following events:
 ### 1. New Follower
 - **Triggered**: When someone follows a user
 - **Setting**: `newFollowers`
-- **Endpoint**: `POST /api/userActions/{targetSupabaseId}/action` with `action: "follow"`
+- **Endpoint**: `POST /api/user/{targetSupabaseId}/action` with `action: "follow"`
 
 ### 2. Article Like
 - **Triggered**: When someone likes a user's article
 - **Setting**: `articleLikes`
-- **Endpoint**: `POST /api/userActions/article/{id}/like` with `action: "like"`
+- **Endpoint**: `POST /api/user/article/{id}/like` with `action: "like"`
 
 ### 3. Comment Like
 - **Triggered**: When someone likes a user's comment
