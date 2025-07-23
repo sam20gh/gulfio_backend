@@ -55,15 +55,23 @@ router.post('/scrape', async (req, res) => {
         return res.status(401).json({ error: 'Unauthorized' });
     }
     try {
+        console.log('[Lotto Scrape] Starting scrape process...');
         const result = await scrapeUaeLottoResults();
-        if (!result) return res.status(500).json({ error: 'Scraping failed' });
+        if (!result) {
+            console.error('[Lotto Scrape] Scraping returned null result');
+            return res.status(500).json({ error: 'Scraping failed - no data returned' });
+        }
+
+        console.log('[Lotto Scrape] Successfully scraped data for draw:', result.drawNumber);
 
         // Upsert logic here (as in lotto-cron.js)...
         const existing = await LottoResult.findOne({ drawNumber: result.drawNumber });
         if (existing) {
             await LottoResult.updateOne({ drawNumber: result.drawNumber }, result);
+            console.log('[Lotto Scrape] Updated existing result for draw:', result.drawNumber);
         } else {
             await LottoResult.create(result);
+            console.log('[Lotto Scrape] Created new result for draw:', result.drawNumber);
         }
 
         // Push notification logic (as before)...
@@ -82,12 +90,24 @@ router.post('/scrape', async (req, res) => {
                 totalWinners: result.totalWinners
             };
             await sendExpoNotification(title, body, tokens, data);
+            console.log('[Lotto Scrape] Sent notifications to', tokens.length, 'users');
         }
 
         return res.json({ success: true, result });
     } catch (err) {
-        console.error(err);
-        return res.status(500).json({ error: err.message });
+        console.error('[Lotto Scrape] ❌ Error:', err.message);
+        console.error('[Lotto Scrape] Stack trace:', err.stack);
+
+        // Return specific error information
+        let errorMessage = err.message;
+        if (errorMessage.includes('Could not find Chrome')) {
+            errorMessage = 'Chrome browser not available in deployment environment. Please check Docker configuration.';
+        }
+
+        return res.status(500).json({
+            error: errorMessage,
+            details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
     }
 });
 
