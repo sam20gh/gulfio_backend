@@ -5,6 +5,7 @@ const Comment = require('../models/Comment'); // You'll need to create this mode
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const NotificationService = require('../utils/notificationService');
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 
 // GET comments for an article
 router.get('/:articleId', async (req, res) => {
@@ -49,6 +50,17 @@ router.post('/', auth, async (req, res) => {
 
         await newComment.save();
 
+        // Update user embedding after posting comment
+        try {
+            const commenterUser = await User.findOne({ supabase_id: userId });
+            if (commenterUser) {
+                await updateUserProfileEmbedding(commenterUser._id);
+            }
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
+
         // Check for mentions in the comment and send notifications
         try {
             const commenterUser = await User.findOne({ supabase_id: userId });
@@ -76,21 +88,53 @@ router.post('/', auth, async (req, res) => {
 
 // PATCH /comments/:id — Edit a comment
 router.patch('/:id', auth, async (req, res) => {
-    const { comment } = req.body;
-    if (!comment) return res.status(400).json({ message: 'No comment provided' });
+    try {
+        const { comment } = req.body;
+        if (!comment) return res.status(400).json({ message: 'No comment provided' });
 
-    const updated = await Comment.findByIdAndUpdate(req.params.id, { comment }, { new: true });
-    if (!updated) return res.status(404).json({ message: 'Comment not found' });
+        const updated = await Comment.findByIdAndUpdate(req.params.id, { comment }, { new: true });
+        if (!updated) return res.status(404).json({ message: 'Comment not found' });
 
-    res.json(updated);
+        // Update user embedding after editing comment
+        try {
+            const user = await User.findOne({ supabase_id: updated.userId });
+            if (user) {
+                await updateUserProfileEmbedding(user._id);
+            }
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
+
+        res.json(updated);
+    } catch (error) {
+        console.error('PATCH /comments/:id error:', error);
+        res.status(500).json({ message: 'Failed to update comment' });
+    }
 });
 
 // DELETE /comments/:id — Delete a comment
 router.delete('/:id', auth, async (req, res) => {
-    const deleted = await Comment.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ message: 'Comment not found' });
+    try {
+        const deleted = await Comment.findByIdAndDelete(req.params.id);
+        if (!deleted) return res.status(404).json({ message: 'Comment not found' });
 
-    res.json({ message: 'Comment deleted' });
+        // Update user embedding after deleting comment
+        try {
+            const user = await User.findOne({ supabase_id: deleted.userId });
+            if (user) {
+                await updateUserProfileEmbedding(user._id);
+            }
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
+
+        res.json({ message: 'Comment deleted' });
+    } catch (error) {
+        console.error('DELETE /comments/:id error:', error);
+        res.status(500).json({ message: 'Failed to delete comment' });
+    }
 });
 
 
@@ -159,6 +203,17 @@ router.post('/:id/react', auth, async (req, res) => {
         let userReact = null;
         if (updated.likedBy.includes(userId)) userReact = 'like';
         else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
+
+        // Update user embedding after comment reaction
+        try {
+            const reactingUser = await User.findOne({ supabase_id: userId });
+            if (reactingUser) {
+                await updateUserProfileEmbedding(reactingUser._id);
+            }
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
 
         return res.json({ likes, dislikes, userReact });
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const UserActivity = require('../models/UserActivity');
+const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 
 router.post('/log', async (req, res) => {
     const { userId, eventType, articleId, duration, timestamp } = req.body;
@@ -19,6 +20,14 @@ router.post('/log', async (req, res) => {
         });
 
         await newLog.save();
+
+        // Update user embedding after logging activity
+        try {
+            await updateUserProfileEmbedding(userId);
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
 
         res.status(201).json({ message: 'Activity logged' });
     } catch (error) {

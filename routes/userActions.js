@@ -49,6 +49,14 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
 
     await user.save();
 
+    // Update user embedding after like/dislike action
+    try {
+        await updateUserProfileEmbedding(user._id);
+    } catch (embeddingError) {
+        console.error('Error updating user embedding:', embeddingError);
+        // Don't fail the request if embedding update fails
+    }
+
     // Send notification if this is a new like
     if (action === 'like' && wasNotLiked) {
         try {
@@ -188,6 +196,15 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
+
+        // Update user embedding after following/unfollowing source
+        try {
+            await updateUserProfileEmbedding(user._id);
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
+
         res.json({ following_sources: user.following_sources });
     } catch (err) {
         console.error('Error following source:', err); // Log the error
@@ -249,6 +266,15 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
 
         // 6) Persist and respond
         await user.save();
+
+        // Update user embedding after follow/block action
+        try {
+            await updateUserProfileEmbedding(user._id);
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
+
         res.json({
             isFollowing: action === 'follow' ? true
                 : action === 'unfollow' ? false
@@ -306,6 +332,14 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
+
+        // Update user embedding after following/unfollowing source group
+        try {
+            await updateUserProfileEmbedding(user._id);
+        } catch (embeddingError) {
+            console.error('Error updating user embedding:', embeddingError);
+            // Don't fail the request if embedding update fails
+        }
 
         res.json({
             following_sources: user.following_sources,
