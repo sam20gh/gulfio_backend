@@ -26,6 +26,11 @@ const userSchema = new mongoose.Schema({
         type: [Number],
         default: [],
     },
+    embedding_pca: {
+        type: [Number],
+        default: [],
+    },
+    disliked_categories: [{ type: String }],
     notificationSettings: {
         type: mongoose.Schema.Types.Mixed,
         default: {

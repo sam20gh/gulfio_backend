@@ -21,6 +21,12 @@ const ReelSchema = new Schema({
         type: [Number],
         default: [],
     },
+    embedding_pca: {
+        type: [Number],
+        default: [],
+    },
+    engagement_score: { type: Number, default: 0 },
+    categories: [{ type: String }],
     originalKey: { type: String }, // For R2 storage
 }, { timestamps: true });
 
@@ -28,8 +34,12 @@ const ReelSchema = new Schema({
 ReelSchema.index({ scrapedAt: -1 }); // For sorted pagination
 ReelSchema.index({ viewCount: -1 }); // For trending reels
 ReelSchema.index({ likes: -1 }); // For popular reels
+ReelSchema.index({ engagement_score: -1 }); // For engagement-based recommendations
+ReelSchema.index({ publishedAt: -1 }); // For recency-based sorting
+ReelSchema.index({ categories: 1 }); // For category-based filtering
 ReelSchema.index({ source: 1, scrapedAt: -1 }); // For source-specific queries
 ReelSchema.index({ reelId: 1 }); // For unique lookups
 ReelSchema.index({ embedding: 1 }); // For recommendation queries
+ReelSchema.index({ embedding_pca: 1 }); // For fast PCA-based recommendations
 
 module.exports = mongoose.model('Reel', ReelSchema);

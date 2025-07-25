@@ -15,6 +15,8 @@ const commentsRouter = require('./routes/comments');
 const videoRoutes = require('./routes/videos');
 const youtubeRoutes = require('./routes/youtube');
 const lottoRoutes = require('./routes/lotto');
+const recommendationRoutes = require('./routes/recommend');
+const { recommendationIndex } = require('./recommendation/fastIndex');
 require('dotenv').config();
 const app = express();
 
@@ -49,6 +51,17 @@ mongoose.connect(process.env.MONGO_URI)
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
         await createIndexes(); // 👈 Run after DB connection
+        
+        // Initialize recommendation system in background
+        setTimeout(async () => {
+            try {
+                console.log('🤖 Initializing recommendation system...');
+                await recommendationIndex.buildIndex();
+                console.log('✅ Recommendation system ready');
+            } catch (error) {
+                console.error('⚠️ Failed to initialize recommendation system:', error);
+            }
+        }, 5000); // Wait 5 seconds after startup
     })
     .catch(err => console.error('❌ Failed to connect to MongoDB Atlas:', err));
 
@@ -66,4 +79,5 @@ app.use('/api/comments', commentsRouter);
 app.use('/api/videos', videoRoutes);
 app.use('/api/youtube', youtubeRoutes);
 app.use('/api/lotto', lottoRoutes);
+app.use('/api', recommendationRoutes);
 module.exports = app;
