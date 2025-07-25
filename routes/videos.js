@@ -261,6 +261,57 @@ router.get('/reels', async (req, res) => {
     }
 });
 
+// ===================== NEW: VIEW TRACKING ROUTE =====================
+router.post('/reels/:reelId/view', async (req, res) => {
+    try {
+        const { reelId } = req.params;
+        
+        if (!reelId) {
+            return res.status(400).json({ error: 'Missing reelId' });
+        }
+
+        // Find and update the reel's view count
+        const reel = await Reel.findByIdAndUpdate(
+            reelId,
+            { 
+                $inc: { viewCount: 1 }
+            },
+            { 
+                new: true,
+                select: 'viewCount likes dislikes saves'
+            }
+        );
+
+        if (!reel) {
+            return res.status(404).json({ error: 'Reel not found' });
+        }
+
+        // Optionally track user viewing history if user is authenticated
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        if (authToken) {
+            try {
+                // You can add user tracking logic here if needed
+                // For now, just acknowledge the authenticated view
+                console.log(`👀 Authenticated view tracked for reel ${reelId}`);
+            } catch (err) {
+                // Don't fail the request if user tracking fails
+                console.warn('Warning: Could not track user view:', err.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            viewCount: reel.viewCount,
+            likes: reel.likes,
+            dislikes: reel.dislikes,
+            saves: reel.saves
+        });
+    } catch (err) {
+        console.error('Error tracking view:', err.message);
+        res.status(500).json({ error: 'Failed to track view' });
+    }
+});
+
 // ===================== NEW: UPLOAD REEL ROUTE =====================
 router.post('/reels/upload', async (req, res) => {
     try {
