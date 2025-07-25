@@ -22,8 +22,8 @@ router.get('/recommend', async (req, res) => {
         const { userId, limit = 20, refresh = 'false' } = req.query;
 
         if (!userId) {
-            return res.status(400).json({ 
-                error: 'userId is required' 
+            return res.status(400).json({
+                error: 'userId is required'
             });
         }
 
@@ -75,7 +75,7 @@ router.get('/recommend', async (req, res) => {
         // Strategy 1: Use user embedding for personalized recommendations
         if (userEmbedding && userEmbedding.length > 0) {
             console.log('🎯 Using PCA user embedding for personalized recommendations');
-            
+
             const similarVideos = await recommendationIndex.findSimilar(
                 userEmbedding,
                 {
@@ -86,7 +86,7 @@ router.get('/recommend', async (req, res) => {
             );
 
             recommendations.push(...similarVideos);
-            
+
         } else if (user && user.embedding && user.embedding.length > 0) {
             console.log('⚠️ User has original embedding but no PCA - using fallback');
             // Fallback to trending if no PCA embedding available
@@ -139,9 +139,9 @@ router.get('/recommend', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error generating recommendations:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to generate recommendations',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -156,8 +156,8 @@ router.post('/recommend/feedback', auth, async (req, res) => {
         const userId = req.user.supabase_id;
 
         if (!videoId || !feedback) {
-            return res.status(400).json({ 
-                error: 'videoId and feedback are required' 
+            return res.status(400).json({
+                error: 'videoId and feedback are required'
             });
         }
 
@@ -165,8 +165,8 @@ router.post('/recommend/feedback', auth, async (req, res) => {
         const updateData = {};
 
         if (feedback === 'not_interested') {
-            updateData.$addToSet = { 
-                disliked_reels: videoId 
+            updateData.$addToSet = {
+                disliked_reels: videoId
             };
 
             // If categories provided, add them to disliked categories
@@ -194,9 +194,9 @@ router.post('/recommend/feedback', auth, async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error recording feedback:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to record feedback',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -208,9 +208,9 @@ router.post('/recommend/feedback', auth, async (req, res) => {
 router.post('/recommend/rebuild-index', async (req, res) => {
     try {
         console.log('🔄 Manual index rebuild requested');
-        
+
         const success = await recommendationIndex.forceRebuild();
-        
+
         if (success) {
             res.json({
                 success: true,
@@ -226,9 +226,9 @@ router.post('/recommend/rebuild-index', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error rebuilding index:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to rebuild index',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -240,13 +240,13 @@ router.post('/recommend/rebuild-index', async (req, res) => {
 router.get('/recommend/stats', async (req, res) => {
     try {
         const stats = recommendationIndex.getStats();
-        
+
         // Add database stats
         const totalReels = await Reel.countDocuments();
-        const reelsWithEmbeddings = await Reel.countDocuments({ 
+        const reelsWithEmbeddings = await Reel.countDocuments({
             embedding: { $exists: true, $not: { $size: 0 } }
         });
-        const reelsWithPcaEmbeddings = await Reel.countDocuments({ 
+        const reelsWithPcaEmbeddings = await Reel.countDocuments({
             embedding_pca: { $exists: true, $not: { $size: 0 } }
         });
 
@@ -264,9 +264,9 @@ router.get('/recommend/stats', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error getting stats:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to get stats',
-            details: error.message 
+            details: error.message
         });
     }
 });

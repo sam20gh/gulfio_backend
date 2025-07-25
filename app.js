@@ -51,7 +51,7 @@ mongoose.connect(process.env.MONGO_URI)
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
         await createIndexes(); // 👈 Run after DB connection
-        
+
         // Initialize recommendation system in background
         setTimeout(async () => {
             try {

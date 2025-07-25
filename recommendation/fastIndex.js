@@ -45,14 +45,14 @@ class FastRecommendationIndex {
     async buildIndex() {
         try {
             console.log('🔨 Building video recommendation index...');
-            
+
             // Fetch all reels with PCA embeddings
-            const reels = await Reel.find({ 
+            const reels = await Reel.find({
                 embedding_pca: { $exists: true, $not: { $size: 0 } }
             })
-            .select('_id reelId videoUrl caption likes dislikes viewCount publishedAt source embedding_pca')
-            .populate('source', 'name')
-            .lean();
+                .select('_id reelId videoUrl caption likes dislikes viewCount publishedAt source embedding_pca')
+                .populate('source', 'name')
+                .lean();
 
             console.log(`📊 Found ${reels.length} reels with PCA embeddings`);
 
@@ -80,7 +80,7 @@ class FastRecommendationIndex {
 
             this.isIndexBuilt = true;
             this.lastIndexUpdate = new Date();
-            
+
             console.log(`✅ Index built with ${this.index.size} videos`);
             return true;
 
@@ -97,12 +97,12 @@ class FastRecommendationIndex {
         const likes = reel.likes || 0;
         const dislikes = reel.dislikes || 0;
         const views = reel.viewCount || 0;
-        
+
         // Simple engagement formula
         const likeRatio = views > 0 ? likes / views : 0;
         const dislikeRatio = views > 0 ? dislikes / views : 0;
         const recency = this.getRecencyScore(reel.publishedAt);
-        
+
         return (likes * 2 + views * 0.1 - dislikes * 0.5) * recency * (1 + likeRatio - dislikeRatio);
     }
 
@@ -111,10 +111,10 @@ class FastRecommendationIndex {
      */
     getRecencyScore(publishedAt) {
         if (!publishedAt) return 0.5;
-        
+
         const now = new Date();
         const daysDiff = (now - new Date(publishedAt)) / (1000 * 60 * 60 * 24);
-        
+
         // Exponential decay over 30 days
         return Math.exp(-daysDiff / 30);
     }
@@ -141,7 +141,7 @@ class FastRecommendationIndex {
             if (excludeIds.includes(videoId)) continue;
 
             const similarity = this.cosineSimilarity(queryEmbedding, data.embedding_pca);
-            
+
             if (similarity >= minSimilarity) {
                 similarities.push({
                     similarity,
@@ -178,7 +178,7 @@ class FastRecommendationIndex {
 
         for (const [videoId, data] of this.index.entries()) {
             if (excludeIds.includes(videoId)) continue;
-            
+
             const publishedAt = new Date(data.metadata.publishedAt);
             if (publishedAt < cutoffDate) continue;
 
@@ -220,7 +220,7 @@ class FastRecommendationIndex {
                 .filter(data => !excludeIds.includes(data.metadata._id.toString()))
                 .sort(() => Math.random() - 0.5)
                 .slice(0, limit - diverse.length);
-            
+
             diverse.push(...remaining.map(data => data.metadata));
         }
 

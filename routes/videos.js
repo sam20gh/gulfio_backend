@@ -265,7 +265,7 @@ router.get('/reels', async (req, res) => {
 router.post('/reels/:reelId/view', async (req, res) => {
     try {
         const { reelId } = req.params;
-        
+
         if (!reelId) {
             return res.status(400).json({ error: 'Missing reelId' });
         }
@@ -273,10 +273,10 @@ router.post('/reels/:reelId/view', async (req, res) => {
         // Find and update the reel's view count
         const reel = await Reel.findByIdAndUpdate(
             reelId,
-            { 
+            {
                 $inc: { viewCount: 1 }
             },
-            { 
+            {
                 new: true,
                 select: 'viewCount likes dislikes saves'
             }
