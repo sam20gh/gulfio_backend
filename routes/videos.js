@@ -149,13 +149,13 @@ router.get('/reels', async (req, res) => {
             // Get different types of content
             const [recent, popular, random] = await Promise.all([
                 Reel.find()
-                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
                     .populate('source', 'name icon favicon')
                     .sort({ scrapedAt: -1 })
                     .limit(recentLimit)
                     .lean(),
                 Reel.find()
-                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
                     .populate('source', 'name icon favicon')
                     .sort({ viewCount: -1, likes: -1 })
                     .limit(popularLimit)
@@ -215,7 +215,7 @@ router.get('/reels', async (req, res) => {
             // Parallel execution for better performance
             [reels, totalCount] = await Promise.all([
                 Reel.find()
-                    .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
                     .populate('source', 'name icon favicon') // Populate source info efficiently with more fields
                     .sort(sortQuery)
                     .skip(actualSkip)
@@ -389,7 +389,7 @@ router.get('/reels/trending', async (req, res) => {
         }
 
         const trending = await Reel.find()
-            .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt')
+            .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt')
             .populate('source', 'name icon favicon') // Populate source info
             .sort({ viewCount: -1, likes: -1 })
             .limit(20)
@@ -415,7 +415,7 @@ router.post('/reels/recommendations', async (req, res) => {
         const reels = await Reel.find({
             embedding: { $exists: true, $type: 'array' }
         })
-            .select('source reelId videoUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+            .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
             .populate('source', 'name icon favicon') // Populate source info
             .lean();
 
