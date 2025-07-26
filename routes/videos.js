@@ -347,9 +347,31 @@ router.post('/reels/upload', async (req, res) => {
             embedding
         });
 
-        await newReel.save();
+        const savedReel = await newReel.save();
 
-        res.json({ message: '✅ Reel uploaded and saved!', reel: newReel });
+        // 5. Generate thumbnail in background (don't wait for it)
+        try {
+            const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
+            console.log('🎬 Generating thumbnail for new reel...');
+            
+            // Generate thumbnail asynchronously
+            thumbnailGenerator.generateForNewVideo(signedUrl, savedReel._id)
+                .then(thumbnailUrl => {
+                    if (thumbnailUrl) {
+                        // Update the reel with thumbnail URL
+                        Reel.findByIdAndUpdate(savedReel._id, { thumbnailUrl })
+                            .then(() => console.log(`✅ Thumbnail generated for ${savedReel._id}: ${thumbnailUrl}`))
+                            .catch(err => console.error(`❌ Failed to update reel with thumbnail: ${err.message}`));
+                    }
+                })
+                .catch(err => {
+                    console.warn(`⚠️ Thumbnail generation failed for ${savedReel._id}: ${err.message}`);
+                });
+        } catch (thumbnailError) {
+            console.warn(`⚠️ Thumbnail service not available: ${thumbnailError.message}`);
+        }
+
+        res.json({ message: '✅ Reel uploaded and saved!', reel: savedReel });
 
     } catch (err) {
         console.error('❌ Upload failed:', err);

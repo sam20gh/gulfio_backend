@@ -175,6 +175,28 @@ async function scrapeReelsForSource(sourceId, username) {
                     scrapedAt: new Date(),
                 });
 
+                // Generate thumbnail in background for scraped reel
+                try {
+                    const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
+                    console.log(`🎬 Generating thumbnail for scraped reel: ${reelId}`);
+                    
+                    // Generate thumbnail asynchronously without blocking
+                    thumbnailGenerator.generateForNewVideo(finalUrl, reel._id)
+                        .then(thumbnailUrl => {
+                            if (thumbnailUrl) {
+                                // Update the reel with thumbnail URL
+                                Reel.findByIdAndUpdate(reel._id, { thumbnailUrl })
+                                    .then(() => console.log(`✅ Thumbnail generated for scraped reel ${reel._id}: ${thumbnailUrl}`))
+                                    .catch(err => console.error(`❌ Failed to update scraped reel with thumbnail: ${err.message}`));
+                            }
+                        })
+                        .catch(err => {
+                            console.warn(`⚠️ Thumbnail generation failed for scraped reel ${reel._id}: ${err.message}`);
+                        });
+                } catch (thumbnailError) {
+                    console.warn(`⚠️ Thumbnail service not available for scraped reel: ${thumbnailError.message}`);
+                }
+
                 inserted.push(reel);
                 console.log(`✅ Inserted: ${reelId} with caption: ${finalCaption.substring(0, 50)}...`);
 
