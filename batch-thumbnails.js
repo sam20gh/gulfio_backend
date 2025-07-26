@@ -7,7 +7,7 @@ const Reel = require('./models/Reel');
 async function generateThumbnailsBatch(batchSize = 5) {
     try {
         console.log('🎬 Starting Batch Thumbnail Generation...');
-        
+
         // Connect to MongoDB
         await mongoose.connect(process.env.MONGO_URI);
         console.log('✅ Connected to MongoDB');
@@ -53,21 +53,21 @@ async function generateThumbnailsBatch(batchSize = 5) {
             try {
                 console.log(`\n📹 Video ${i + 1}/${videosToProcess.length}: ${video._id}`);
                 console.log(`   URL: ${video.videoUrl}`);
-                
+
                 const thumbnailUrl = await thumbnailGenerator.generateThumbnail(video.videoUrl, video._id);
-                
+
                 // Update database
                 await Reel.findByIdAndUpdate(video._id, { thumbnailUrl });
-                
+
                 successful++;
                 console.log(`✅ Success: ${thumbnailUrl}`);
-                
+
                 // Delay between videos
                 if (i < videosToProcess.length - 1) {
                     console.log('⏳ Waiting 3 seconds...');
                     await new Promise(resolve => setTimeout(resolve, 3000));
                 }
-                
+
             } catch (error) {
                 failed++;
                 console.error(`❌ Failed for ${video._id}: ${error.message}`);

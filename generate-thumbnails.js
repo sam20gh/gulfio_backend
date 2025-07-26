@@ -37,7 +37,7 @@ async function main() {
         // Check system health first
         console.log('🏥 Checking system health...');
         const health = await thumbnailGenerator.healthCheck();
-        
+
         if (health.status !== 'healthy') {
             console.error('❌ System health check failed:', health);
             console.error('Please ensure FFmpeg is installed and AWS credentials are configured.');
@@ -69,7 +69,7 @@ async function main() {
         // Start batch processing
         console.log('🚀 Starting batch thumbnail generation...\n');
         const startTime = Date.now();
-        
+
         let totalProcessed = 0;
         let totalSuccessful = 0;
         let totalFailed = 0;
@@ -78,9 +78,9 @@ async function main() {
         while (true) {
             console.log(`\n📦 Processing Batch ${batchNumber}...`);
             console.log(`⏰ ${new Date().toLocaleTimeString()}`);
-            
+
             const results = await thumbnailGenerator.processExistingVideos(batchSize);
-            
+
             totalProcessed += results.processed;
             totalSuccessful += results.successful;
             totalFailed += results.failed;
@@ -97,7 +97,7 @@ async function main() {
             }
 
             batchNumber++;
-            
+
             // Add a longer delay between batches to be gentle on resources
             console.log('⏳ Waiting 10 seconds before next batch...');
             await new Promise(resolve => setTimeout(resolve, 10000));

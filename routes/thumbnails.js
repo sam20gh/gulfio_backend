@@ -26,7 +26,7 @@ router.get('/health', async (req, res) => {
 router.post('/generate/:reelId', requireAdmin, async (req, res) => {
     try {
         const { reelId } = req.params;
-        
+
         // Find the video
         const reel = await Reel.findById(reelId);
         if (!reel) {
@@ -34,15 +34,15 @@ router.post('/generate/:reelId', requireAdmin, async (req, res) => {
         }
 
         if (reel.thumbnailUrl) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Thumbnail already exists',
-                thumbnailUrl: reel.thumbnailUrl 
+                thumbnailUrl: reel.thumbnailUrl
             });
         }
 
         console.log(`🔄 Generating thumbnail for reel: ${reelId}`);
         const thumbnailUrl = await thumbnailGenerator.generateThumbnail(reel.videoUrl, reelId);
-        
+
         // Update the reel with thumbnail URL
         await Reel.findByIdAndUpdate(reelId, { thumbnailUrl });
 
@@ -55,9 +55,9 @@ router.post('/generate/:reelId', requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error(`❌ Error generating thumbnail for ${req.params.reelId}:`, error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to generate thumbnail',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -66,10 +66,10 @@ router.post('/generate/:reelId', requireAdmin, async (req, res) => {
 router.post('/batch-generate', requireAdmin, async (req, res) => {
     try {
         const { batchSize = 10 } = req.body;
-        
+
         console.log(`🚀 Starting batch thumbnail generation (batch size: ${batchSize})`);
         const results = await thumbnailGenerator.processExistingVideos(batchSize);
-        
+
         res.json({
             success: true,
             results,
@@ -78,9 +78,9 @@ router.post('/batch-generate', requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error in batch thumbnail generation:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Batch generation failed',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -100,7 +100,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
             })
         ]);
 
-        const coveragePercentage = totalVideos > 0 ? 
+        const coveragePercentage = totalVideos > 0 ?
             ((videosWithThumbnails / totalVideos) * 100).toFixed(2) : 0;
 
         res.json({
@@ -113,9 +113,9 @@ router.get('/stats', requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error getting thumbnail stats:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to get stats',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -124,7 +124,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
 router.get('/missing', requireAdmin, async (req, res) => {
     try {
         const { limit = 20, skip = 0 } = req.query;
-        
+
         const videosWithoutThumbnails = await Reel.find({
             $or: [
                 { thumbnailUrl: { $exists: false } },
@@ -132,10 +132,10 @@ router.get('/missing', requireAdmin, async (req, res) => {
                 { thumbnailUrl: '' }
             ]
         })
-        .select('_id videoUrl caption scrapedAt')
-        .sort({ scrapedAt: -1 })
-        .limit(parseInt(limit))
-        .skip(parseInt(skip));
+            .select('_id videoUrl caption scrapedAt')
+            .sort({ scrapedAt: -1 })
+            .limit(parseInt(limit))
+            .skip(parseInt(skip));
 
         res.json({
             videos: videosWithoutThumbnails,
@@ -144,9 +144,9 @@ router.get('/missing', requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error getting videos without thumbnails:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to get missing thumbnails',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -155,7 +155,7 @@ router.get('/missing', requireAdmin, async (req, res) => {
 router.post('/regenerate/:reelId', requireAdmin, async (req, res) => {
     try {
         const { reelId } = req.params;
-        
+
         // Find the video
         const reel = await Reel.findById(reelId);
         if (!reel) {
@@ -164,7 +164,7 @@ router.post('/regenerate/:reelId', requireAdmin, async (req, res) => {
 
         console.log(`🔄 Regenerating thumbnail for reel: ${reelId}`);
         const thumbnailUrl = await thumbnailGenerator.generateThumbnail(reel.videoUrl, reelId);
-        
+
         // Update the reel with new thumbnail URL
         await Reel.findByIdAndUpdate(reelId, { thumbnailUrl });
 
@@ -177,9 +177,9 @@ router.post('/regenerate/:reelId', requireAdmin, async (req, res) => {
 
     } catch (error) {
         console.error(`❌ Error regenerating thumbnail for ${req.params.reelId}:`, error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to regenerate thumbnail',
-            details: error.message 
+            details: error.message
         });
     }
 });

@@ -43,7 +43,7 @@ async function testThumbnailGeneration() {
         // Generate thumbnail
         console.log('🎯 Generating thumbnail...');
         const thumbnailUrl = await thumbnailGenerator.generateThumbnail(testVideo.videoUrl, testVideo._id);
-        
+
         // Update the video record
         await Reel.findByIdAndUpdate(testVideo._id, { thumbnailUrl });
 

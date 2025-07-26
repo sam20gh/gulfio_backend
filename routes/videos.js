@@ -353,7 +353,7 @@ router.post('/reels/upload', async (req, res) => {
         try {
             const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
             console.log('🎬 Generating thumbnail for new reel...');
-            
+
             // Generate thumbnail asynchronously
             thumbnailGenerator.generateForNewVideo(signedUrl, savedReel._id)
                 .then(thumbnailUrl => {

@@ -179,7 +179,7 @@ async function scrapeReelsForSource(sourceId, username) {
                 try {
                     const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
                     console.log(`🎬 Generating thumbnail for scraped reel: ${reelId}`);
-                    
+
                     // Generate thumbnail asynchronously without blocking
                     thumbnailGenerator.generateForNewVideo(finalUrl, reel._id)
                         .then(thumbnailUrl => {
