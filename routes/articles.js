@@ -21,11 +21,11 @@ async function calculateEngagementScore(article) {
   const likesWeight = 0.4;
   const dislikesWeight = -0.2;
   const recencyWeight = 0.2;
-  
+
   const now = new Date();
   const hoursSincePublished = (now - new Date(article.publishedAt)) / (1000 * 60 * 60);
   const recencyScore = Math.max(0, 1 - hoursSincePublished / (24 * 7)); // Decay over 7 days
-  
+
   return (
     (article.viewCount || 0) * viewsWeight +
     (article.likes || 0) * likesWeight +
@@ -45,7 +45,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     console.log(`🎯 Fetching personalized articles for user ${userId}, page ${page}, limit ${limit}, language ${language}`);
 
     const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}`;
-    
+
     // Check cache
     let cached;
     try {
@@ -71,9 +71,9 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     if (!userEmbedding || !Array.isArray(userEmbedding) || !faissStatus.isInitialized) {
       console.warn('⚠️ Falling back to engagement-based sorting');
       console.warn(`User embedding: ${userEmbedding ? 'exists' : 'missing'}, Faiss initialized: ${faissStatus.isInitialized}`);
-      
+
       const skip = (page - 1) * limit;
-      const articles = await Article.find({ 
+      const articles = await Article.find({
         language,
         _id: { $nin: user?.disliked_articles || [] } // Exclude disliked articles
       })
@@ -81,30 +81,30 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         .skip(skip)
         .limit(limit)
         .lean();
-      
+
       const response = articles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFallback: true
       }));
-      
+
       // Cache fallback results for shorter time
       try {
         await redis.set(cacheKey, JSON.stringify(response), 'EX', 1800); // 30 minutes
       } catch (err) {
         console.error('⚠️ Redis set error (safe to ignore):', err.message);
       }
-      
+
       return res.json(response);
     }
 
     // Use Faiss for personalized recommendations
     console.log('🔍 Using Faiss for personalized recommendations');
-    
+
     // Get more results than needed for filtering and mixing
     const searchLimit = limit * 2;
     const { ids, distances } = await searchFaissIndex(userEmbedding, searchLimit);
-    
+
     // Fetch article details
     let articles = await Article.find({
       _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
@@ -120,7 +120,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       const similarity = index !== -1 ? Math.max(0, 1 - distances[index]) : 0; // Convert distance to similarity
       const engagementScore = calculateEngagementScore(article);
       const finalScore = (similarity * 0.6) + (engagementScore * 0.4);
-      
+
       return {
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
@@ -139,7 +139,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     const trendingLimit = Math.ceil(limit * 0.1);
     if (trendingLimit > 0) {
       console.log(`📈 Adding ${trendingLimit} trending articles for diversity`);
-      
+
       const trendingArticles = await Article.find({
         language,
         viewCount: { $exists: true, $gt: 0 },
@@ -178,33 +178,33 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }
 
     res.json(finalArticles);
-    
+
   } catch (error) {
     console.error('❌ Error fetching personalized articles:', error);
-    
+
     // Fallback to basic articles on error
     try {
       const skip = ((parseInt(req.query.page) || 1) - 1) * (parseInt(req.query.limit) || 20);
-      const fallbackArticles = await Article.find({ 
-        language: req.query.language || 'english' 
+      const fallbackArticles = await Article.find({
+        language: req.query.language || 'english'
       })
         .sort({ publishedAt: -1 })
         .skip(skip)
         .limit(parseInt(req.query.limit) || 20)
         .lean();
-      
+
       const response = fallbackArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isErrorFallback: true
       }));
-      
+
       res.json(response);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
-      res.status(500).json({ 
-        error: 'Error fetching personalized articles', 
-        message: error.message 
+      res.status(500).json({
+        error: 'Error fetching personalized articles',
+        message: error.message
       });
     }
   }
@@ -792,7 +792,7 @@ articleRouter.get('/faiss-status', auth, async (req, res) => {
     const status = getFaissIndexStatus();
     const articleCount = await Article.countDocuments({ embedding_pca: { $exists: true, $ne: null, $not: { $size: 0 } } });
     const userCount = await User.countDocuments({ embedding_pca: { $exists: true, $ne: null, $not: { $size: 0 } } });
-    
+
     res.json({
       faiss: status,
       database: {

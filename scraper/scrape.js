@@ -10,6 +10,7 @@ const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
 const { scrapeYouTubeShortsViaRSS } = require('./youtubeRSSShortsScraper.js'); // Using RSS-based scraper
 const { scrapeYouTubeForSource } = require('./youtubeScraper');
 const mongoose = require('mongoose');
@@ -202,10 +203,21 @@ async function scrapeAllSources(frequency = null) {
                         }
                     }
                     let embedding = [];
+                    let embedding_pca = null;
                     try {
                         const embedInput = `${title}\n\n${content?.slice(0, 512) || ''}`;
                         embedding = await getDeepSeekEmbedding(embedInput);
                         console.log('✅ Got embedding for:', title);
+
+                        // Generate PCA embedding for new article
+                        if (embedding && embedding.length === 1536) {
+                            embedding_pca = await convertToPCAEmbedding(embedding);
+                            if (embedding_pca) {
+                                console.log('✅ Generated PCA embedding (128D) for:', title);
+                            } else {
+                                console.warn('⚠️ Failed to generate PCA embedding for:', title);
+                            }
+                        }
                     } catch (err) {
                         console.warn('❌ Embedding error for article:', title, err.message);
                     }
@@ -216,9 +228,10 @@ async function scrapeAllSources(frequency = null) {
                         console.log(`📋 Article details - URL: ${link}, Category: ${source.category}, Language: ${source.language || "english"}`);
                         console.log(`🖼️ Images found: ${images.length}`);
                         console.log(`🔗 Embedding length: ${embedding.length}`);
+                        console.log(`🔗 PCA embedding length: ${embedding_pca ? embedding_pca.length : 'N/A'}`);
 
                         try {
-                            const newArticle = new Article({
+                            const articleData = {
                                 title,
                                 content,
                                 url: link,
@@ -227,7 +240,14 @@ async function scrapeAllSources(frequency = null) {
                                 publishedAt: new Date(),
                                 language: source.language || "english",
                                 embedding
-                            });
+                            };
+
+                            // Add PCA embedding if available
+                            if (embedding_pca && embedding_pca.length === 128) {
+                                articleData.embedding_pca = embedding_pca;
+                            }
+
+                            const newArticle = new Article(articleData);
 
                             if (images.length > 0) newArticle.image = images;
 
