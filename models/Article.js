@@ -21,6 +21,10 @@ const ArticleSchema = new mongoose.Schema({
         type: [Number],
         default: [],
     },
+    embedding_pca: {
+        type: [Number],
+        default: [],
+    },
     relatedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
 });
 

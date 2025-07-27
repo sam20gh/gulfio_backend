@@ -9,6 +9,206 @@ const mongoose = require('mongoose');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding'); // Add this import
+const { initializeFaissIndex, searchFaissIndex, getFaissIndexStatus } = require('../recommendation/faissIndex');
+
+/**
+ * Calculate engagement score for an article
+ * @param {Object} article - Article object
+ * @returns {number} Engagement score
+ */
+async function calculateEngagementScore(article) {
+  const viewsWeight = 0.4;
+  const likesWeight = 0.4;
+  const dislikesWeight = -0.2;
+  const recencyWeight = 0.2;
+  
+  const now = new Date();
+  const hoursSincePublished = (now - new Date(article.publishedAt)) / (1000 * 60 * 60);
+  const recencyScore = Math.max(0, 1 - hoursSincePublished / (24 * 7)); // Decay over 7 days
+  
+  return (
+    (article.viewCount || 0) * viewsWeight +
+    (article.likes || 0) * likesWeight +
+    (article.dislikes || 0) * dislikesWeight +
+    recencyScore * recencyWeight
+  );
+}
+
+// GET: Personalized article recommendations
+articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const language = req.query.language || 'english';
+    const userId = req.mongoUser.supabase_id;
+
+    console.log(`🎯 Fetching personalized articles for user ${userId}, page ${page}, limit ${limit}, language ${language}`);
+
+    const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}`;
+    
+    // Check cache
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached personalized articles');
+      return res.json(JSON.parse(cached));
+    }
+
+    // Get user data
+    const user = await User.findOne({ supabase_id: userId }).lean();
+    let userEmbedding = user?.embedding_pca || user?.embedding;
+
+    // Check Faiss index status
+    const faissStatus = getFaissIndexStatus();
+    console.log('📊 Faiss status:', faissStatus);
+
+    // Fallback if no user embedding or Faiss not initialized
+    if (!userEmbedding || !Array.isArray(userEmbedding) || !faissStatus.isInitialized) {
+      console.warn('⚠️ Falling back to engagement-based sorting');
+      console.warn(`User embedding: ${userEmbedding ? 'exists' : 'missing'}, Faiss initialized: ${faissStatus.isInitialized}`);
+      
+      const skip = (page - 1) * limit;
+      const articles = await Article.find({ 
+        language,
+        _id: { $nin: user?.disliked_articles || [] } // Exclude disliked articles
+      })
+        .sort({ viewCount: -1, publishedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+      
+      const response = articles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFallback: true
+      }));
+      
+      // Cache fallback results for shorter time
+      try {
+        await redis.set(cacheKey, JSON.stringify(response), 'EX', 1800); // 30 minutes
+      } catch (err) {
+        console.error('⚠️ Redis set error (safe to ignore):', err.message);
+      }
+      
+      return res.json(response);
+    }
+
+    // Use Faiss for personalized recommendations
+    console.log('🔍 Using Faiss for personalized recommendations');
+    
+    // Get more results than needed for filtering and mixing
+    const searchLimit = limit * 2;
+    const { ids, distances } = await searchFaissIndex(userEmbedding, searchLimit);
+    
+    // Fetch article details
+    let articles = await Article.find({
+      _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
+      language,
+      _id: { $nin: user?.disliked_articles || [] } // Exclude disliked articles
+    }).lean();
+
+    console.log(`📄 Found ${articles.length} articles from Faiss search`);
+
+    // Calculate combined scores (similarity + engagement)
+    const scoredArticles = articles.map(article => {
+      const index = ids.indexOf(article._id.toString());
+      const similarity = index !== -1 ? Math.max(0, 1 - distances[index]) : 0; // Convert distance to similarity
+      const engagementScore = calculateEngagementScore(article);
+      const finalScore = (similarity * 0.6) + (engagementScore * 0.4);
+      
+      return {
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        similarity,
+        engagementScore,
+        finalScore,
+      };
+    });
+
+    // Sort by final score and take the requested limit
+    let finalArticles = scoredArticles
+      .sort((a, b) => b.finalScore - a.finalScore)
+      .slice(0, limit);
+
+    // Add trending articles for diversity (10% of results)
+    const trendingLimit = Math.ceil(limit * 0.1);
+    if (trendingLimit > 0) {
+      console.log(`📈 Adding ${trendingLimit} trending articles for diversity`);
+      
+      const trendingArticles = await Article.find({
+        language,
+        viewCount: { $exists: true, $gt: 0 },
+        _id: { $nin: finalArticles.map(a => a._id) },
+        _id: { $nin: user?.disliked_articles || [] },
+      })
+        .sort({ viewCount: -1, publishedAt: -1 })
+        .limit(trendingLimit)
+        .lean();
+
+      const trendingEnhanced = trendingArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isTrending: true,
+        engagementScore: calculateEngagementScore(article)
+      }));
+
+      // Randomly insert trending articles
+      for (let i = 0; i < trendingEnhanced.length; i++) {
+        const insertIndex = Math.floor(Math.random() * (finalArticles.length + 1));
+        finalArticles.splice(insertIndex, 0, trendingEnhanced[i]);
+      }
+    }
+
+    // Ensure we don't exceed the requested limit
+    finalArticles = finalArticles.slice(0, limit);
+
+    console.log(`✅ Returning ${finalArticles.length} personalized articles`);
+    console.log(`📊 Composition: ${finalArticles.filter(a => a.isTrending).length} trending, ${finalArticles.filter(a => !a.isTrending).length} personalized`);
+
+    // Cache results for 6 hours
+    try {
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 6 * 3600);
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    res.json(finalArticles);
+    
+  } catch (error) {
+    console.error('❌ Error fetching personalized articles:', error);
+    
+    // Fallback to basic articles on error
+    try {
+      const skip = ((parseInt(req.query.page) || 1) - 1) * (parseInt(req.query.limit) || 20);
+      const fallbackArticles = await Article.find({ 
+        language: req.query.language || 'english' 
+      })
+        .sort({ publishedAt: -1 })
+        .skip(skip)
+        .limit(parseInt(req.query.limit) || 20)
+        .lean();
+      
+      const response = fallbackArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isErrorFallback: true
+      }));
+      
+      res.json(response);
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+      res.status(500).json({ 
+        error: 'Error fetching personalized articles', 
+        message: error.message 
+      });
+    }
+  }
+});
 
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -586,5 +786,32 @@ articleRouter.post('/:id/update-embedding', auth, async (req, res) => {
   }
 });
 
+// GET: Faiss index status (for debugging and monitoring)
+articleRouter.get('/faiss-status', auth, async (req, res) => {
+  try {
+    const status = getFaissIndexStatus();
+    const articleCount = await Article.countDocuments({ embedding_pca: { $exists: true, $ne: null, $not: { $size: 0 } } });
+    const userCount = await User.countDocuments({ embedding_pca: { $exists: true, $ne: null, $not: { $size: 0 } } });
+    
+    res.json({
+      faiss: status,
+      database: {
+        articlesWithPCA: articleCount,
+        usersWithPCA: userCount
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error getting Faiss status:', error);
+    res.status(500).json({ error: 'Error getting Faiss status', message: error.message });
+  }
+});
+
+// Initialize Faiss index when the module loads
+console.log('🚀 Initializing Faiss index for article recommendations...');
+initializeFaissIndex().catch(err => {
+  console.error('❌ Failed to initialize Faiss index:', err);
+  console.log('⚠️ Personalized recommendations will fallback to engagement-based sorting');
+});
 
 module.exports = articleRouter;
