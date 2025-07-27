@@ -111,29 +111,18 @@ router.get('/:id/saved-articles', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-router.post('/push-token', auth, async (req, res) => {
-    const supabase_id = req.user.sub;
+const ensureMongoUser = require('../middleware/ensureMongoUser');
+
+router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
     const { token } = req.body;
 
     if (!token) return res.status(400).json({ message: 'Push token is required' });
 
     try {
-        let user = await User.findOne({ supabase_id });
-
-        if (!user) {
-            // Optional: auto-create user if not found
-            const { email, name, picture } = req.user;
-            user = await User.create({
-                supabase_id,
-                email: email || '',
-                name: name || '',
-                avatar_url: picture || '',
-                pushToken: token,
-            });
-        } else {
-            user.pushToken = token;
-            await user.save();
-        }
+        // Use the user from ensureMongoUser middleware
+        const user = req.mongoUser;
+        user.pushToken = token;
+        await user.save();
 
         res.json({ success: true, message: 'Push token saved' });
     } catch (err) {
@@ -144,10 +133,9 @@ router.post('/push-token', auth, async (req, res) => {
 
 // routes/user.js
 
-router.post('/test-notify', auth, async (req, res) => {
+router.post('/test-notify', auth, ensureMongoUser, async (req, res) => {
     try {
-        const supabase_id = req.user.sub;
-        const user = await User.findOne({ supabase_id });
+        const user = req.mongoUser;
         if (!user?.pushToken) {
             return res.status(404).json({ message: 'No push token for this user' });
         }
