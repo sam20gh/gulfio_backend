@@ -41,8 +41,11 @@ module.exports = async (req, res, next) => {
                 console.log('ℹ️ Decoded JWT structure:', JSON.stringify(decoded, null, 2));
 
                 // Basic validation
-                if (!decoded || !decoded.sub) {
-                    throw new Error('Invalid token structure');
+                if (!decoded) {
+                    throw new Error('Invalid token structure - decode returned null');
+                }
+                if (!decoded.sub && !decoded.user_id && !decoded.id) {
+                    throw new Error('Invalid token structure - no user ID found');
                 }
             } catch (decodeErr) {
                 console.error('❌ JWT decode also failed in auth middleware:', decodeErr.message);
@@ -50,10 +53,15 @@ module.exports = async (req, res, next) => {
             }
         }
 
+        console.log('🎯 Auth middleware: Setting req.user with decoded token');
         req.user = decoded;
+        console.log('🎯 Auth middleware: req.user set successfully, calling next()');
         next();
     } catch (err) {
         console.error('❌ Auth middleware failed:', err.message);
-        return res.status(403).json({ message: 'Forbidden: Invalid token' });
+        return res.status(403).json({ 
+            message: 'Forbidden: Invalid token',
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 };
