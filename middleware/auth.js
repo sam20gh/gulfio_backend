@@ -59,7 +59,7 @@ module.exports = async (req, res, next) => {
         next();
     } catch (err) {
         console.error('❌ Auth middleware failed:', err.message);
-        return res.status(403).json({ 
+        return res.status(403).json({
             message: 'Forbidden: Invalid token',
             error: process.env.NODE_ENV === 'development' ? err.message : undefined
         });
