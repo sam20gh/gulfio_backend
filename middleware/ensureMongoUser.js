@@ -4,21 +4,23 @@ module.exports = async (req, res, next) => {
     try {
         console.log('🔍 ensureMongoUser: Processing request');
         console.log('🔍 ensureMongoUser: Full req.user object:', JSON.stringify(req.user, null, 2));
-        console.log('🔍 ensureMongoUser: req.user.sub:', req.user?.sub);
-        console.log('🔍 ensureMongoUser: req.user keys:', req.user ? Object.keys(req.user) : 'no req.user');
         
         if (!req.user) {
             console.error('❌ ensureMongoUser: No req.user found');
             return res.status(400).json({ message: 'Invalid user data in token - no user object' });
         }
         
-        if (!req.user.sub) {
-            console.error('❌ ensureMongoUser: No user.sub in request');
+        // Try different possible user ID fields from Supabase JWT
+        const supabase_id = req.user.sub || req.user.user_id || req.user.id;
+        console.log('🔍 ensureMongoUser: Extracted supabase_id:', supabase_id);
+        console.log('🔍 ensureMongoUser: Available user fields:', Object.keys(req.user));
+        
+        if (!supabase_id) {
+            console.error('❌ ensureMongoUser: No user ID found in any expected field (sub, user_id, id)');
             console.error('❌ ensureMongoUser: Available user fields:', Object.keys(req.user));
-            return res.status(400).json({ message: 'Invalid user data in token - no sub field' });
+            return res.status(400).json({ message: 'Invalid user data in token - no user ID found' });
         }
 
-        const supabase_id = req.user.sub;
         console.log('👤 ensureMongoUser: Looking up user with Supabase ID:', supabase_id);
         
         let user = await User.findOne({ supabase_id });
