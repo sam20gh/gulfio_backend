@@ -29,14 +29,16 @@ module.exports = async (req, res, next) => {
                 algorithms: ['HS256'],
                 issuer: SUPABASE_ISSUER,
             });
-            console.log('✅ JWT verified successfully in auth middleware for user:', decoded?.sub);
+            console.log('✅ JWT verified successfully in auth middleware');
+            console.log('✅ Decoded JWT structure:', JSON.stringify(decoded, null, 2));
         } catch (verifyErr) {
             console.log('⚠️ JWT verification failed in auth middleware, trying decode only:', verifyErr.message);
 
             // Fallback to decode without verification (for compatibility)
             try {
                 decoded = jwt.decode(token);
-                console.log('ℹ️ Using unverified JWT decode in auth middleware for user:', decoded?.sub);
+                console.log('ℹ️ Using unverified JWT decode in auth middleware');
+                console.log('ℹ️ Decoded JWT structure:', JSON.stringify(decoded, null, 2));
 
                 // Basic validation
                 if (!decoded || !decoded.sub) {

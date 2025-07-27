@@ -2,11 +2,20 @@ const User = require('../models/User')
 
 module.exports = async (req, res, next) => {
     try {
-        console.log('🔍 ensureMongoUser: Processing request for user:', req.user?.sub);
+        console.log('🔍 ensureMongoUser: Processing request');
+        console.log('🔍 ensureMongoUser: Full req.user object:', JSON.stringify(req.user, null, 2));
+        console.log('🔍 ensureMongoUser: req.user.sub:', req.user?.sub);
+        console.log('🔍 ensureMongoUser: req.user keys:', req.user ? Object.keys(req.user) : 'no req.user');
         
-        if (!req.user || !req.user.sub) {
-            console.error('❌ ensureMongoUser: No user or user.sub in request');
-            return res.status(400).json({ message: 'Invalid user data in token' });
+        if (!req.user) {
+            console.error('❌ ensureMongoUser: No req.user found');
+            return res.status(400).json({ message: 'Invalid user data in token - no user object' });
+        }
+        
+        if (!req.user.sub) {
+            console.error('❌ ensureMongoUser: No user.sub in request');
+            console.error('❌ ensureMongoUser: Available user fields:', Object.keys(req.user));
+            return res.status(400).json({ message: 'Invalid user data in token - no sub field' });
         }
 
         const supabase_id = req.user.sub;
