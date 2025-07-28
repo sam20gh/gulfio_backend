@@ -37,7 +37,7 @@
     "reduce-embeddings": "node scripts/reduceArticleEmbeddings.js",
     "add-indexes": "node scripts/addMongoIndexes.js",
     "precompute-recommendations": "node scripts/precomputeRecommendations.js",
-    "start": "node app.js",
+    "start": "node server.js",
     "postinstall": "npx puppeteer browsers install chrome"
   }
 }

@@ -4,8 +4,9 @@ const cron = require('node-cron');
 
 // Start the server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+    console.log(`🚀 Server is running on ${HOST}:${PORT}`);
 });
 
 cron.schedule('0 * * * *', () => {

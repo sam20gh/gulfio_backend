@@ -111,7 +111,6 @@ router.get('/:id/saved-articles', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-const ensureMongoUser = require('../middleware/ensureMongoUser');
 
 router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
     const { token } = req.body;

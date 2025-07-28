@@ -45,11 +45,6 @@ app.use((req, res, next) => {
     next();
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
-});
-
 mongoose.connect(process.env.MONGO_URI)
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
@@ -69,6 +64,12 @@ mongoose.connect(process.env.MONGO_URI)
     .catch(err => console.error('❌ Failed to connect to MongoDB Atlas:', err));
 
 app.use(express.json());
+
+// Health check endpoint for Google Cloud Run
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
 app.use('/api/sources', sources);
 app.use('/api/articles', articles);
 app.use('/api/scrape', scrapeRoute);
