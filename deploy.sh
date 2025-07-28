@@ -19,7 +19,7 @@ if ! command -v gcloud &> /dev/null; then
 fi
 
 # Set project details
-PROJECT_ID="gulfio-backend"
+PROJECT_ID="grub24-217509"
 SERVICE_NAME="gulfio-backend"
 REGION="me-central1"
 
