@@ -155,7 +155,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       console.log(`📅 Searching for articles newer than: ${twentyFourHoursAgo.toISOString()}`);
-      
+
       const freshArticles = await Article.find({
         language,
         publishedAt: { $gte: twentyFourHoursAgo },
