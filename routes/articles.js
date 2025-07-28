@@ -148,17 +148,26 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       .sort((a, b) => b.finalScore - a.finalScore)
       .slice(0, limit);
 
-    // Add fresh articles from last 24 hours for priority (50% of results, minimum 5)
-    const freshLimit = Math.max(5, Math.ceil(limit * 0.5)); // Increased from 15% to 50%
-    if (freshLimit > 0) {
-      console.log(`🆕 Adding ${freshLimit} fresh articles (last 24h) for MAXIMUM priority`);
+    // Add fresh articles from recent days for priority (first 40% slots)
+    const freshLimit = Math.max(3, Math.ceil(limit * 0.4)); // 40% fresh articles
+    console.log(`🆕 Adding ${freshLimit} fresh articles for MAXIMUM priority`);
 
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      console.log(`📅 Searching for articles newer than: ${twentyFourHoursAgo.toISOString()}`);
+    // Try progressively older time ranges until we find enough articles
+    let freshArticles = [];
+    const timeRanges = [
+      { hours: 24, label: 'last 24h' },
+      { hours: 48, label: 'last 48h' }, 
+      { hours: 72, label: 'last 3 days' },
+      { hours: 168, label: 'last week' }
+    ];
 
-      const freshArticles = await Article.find({
+    for (const timeRange of timeRanges) {
+      const timeAgo = new Date(Date.now() - timeRange.hours * 60 * 60 * 1000);
+      console.log(`📅 Searching for articles newer than: ${timeAgo.toISOString()} (${timeRange.label})`);
+
+      freshArticles = await Article.find({
         language,
-        publishedAt: { $gte: twentyFourHoursAgo },
+        publishedAt: { $gte: timeAgo },
         _id: { $nin: finalArticles.map(a => a._id) },
         _id: { $nin: user?.disliked_articles || [] },
       })
@@ -166,24 +175,36 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         .limit(freshLimit)
         .lean();
 
-      console.log(`✅ Found ${freshArticles.length} fresh articles from last 24h`);
-      if (freshArticles.length > 0) {
-        console.log(`📰 Fresh articles: ${freshArticles.map(a => `"${a.title.substring(0, 30)}..." (${a.publishedAt})`).join(', ')}`);
+      console.log(`✅ Found ${freshArticles.length} articles from ${timeRange.label}`);
+      
+      if (freshArticles.length >= Math.ceil(freshLimit * 0.6)) {
+        // We have enough articles from this time range
+        console.log(`🎯 Using articles from ${timeRange.label} (sufficient quantity)`);
+        break;
       }
+    }
 
+    if (freshArticles.length > 0) {
+      console.log(`📰 Fresh articles: ${freshArticles.map(a => `"${a.title.substring(0, 30)}..." (${new Date(a.publishedAt).toLocaleDateString()})`).join(', ')}`);
+      
       const freshEnhanced = freshArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFresh: true,
         engagementScore: calculateEngagementScore(article),
-        finalScore: 1000 // Give fresh articles maximum score to ensure they appear first
+        finalScore: 1000 + Math.random() * 100 // Maximum score with slight randomization
       }));
 
-      // Insert fresh articles at the beginning and remove excess from end
-      finalArticles = [...freshEnhanced, ...finalArticles].slice(0, limit);
-    }
-
-    // Add trending articles for diversity (10% of results)
+      // Replace the lowest scoring personalized articles with fresh ones
+      finalArticles.sort((a, b) => b.finalScore - a.finalScore);
+      const personalizedToKeep = finalArticles.slice(0, limit - freshArticles.length);
+      
+      // Combine: fresh articles first, then best personalized articles
+      finalArticles = [...freshEnhanced, ...personalizedToKeep];
+      console.log(`🔄 Final composition: ${freshArticles.length} fresh + ${personalizedToKeep.length} personalized`);
+    } else {
+      console.log('⚠️ No fresh articles found, using only personalized results');
+    }    // Add trending articles for diversity (10% of results)
     const trendingLimit = Math.ceil(limit * 0.1);
     if (trendingLimit > 0) {
       console.log(`📈 Adding ${trendingLimit} trending articles for diversity`);
