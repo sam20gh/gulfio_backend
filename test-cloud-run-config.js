@@ -6,8 +6,8 @@ const PORT = process.env.PORT || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
 
 app.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'healthy', 
+    res.status(200).json({
+        status: 'healthy',
         timestamp: new Date().toISOString(),
         port: PORT,
         host: HOST
@@ -21,7 +21,7 @@ app.get('/', (req, res) => {
 const server = app.listen(PORT, HOST, () => {
     console.log(`🚀 Test server running on ${HOST}:${PORT}`);
     console.log(`✅ Cloud Run configuration test successful`);
-    
+
     // Test the health endpoint
     setTimeout(() => {
         server.close(() => {

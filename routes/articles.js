@@ -24,7 +24,7 @@ async function calculateEngagementScore(article) {
 
   const now = new Date();
   const hoursSincePublished = (now - new Date(article.publishedAt)) / (1000 * 60 * 60);
-  
+
   // More aggressive recency scoring - newer articles get much higher scores
   let recencyScore;
   if (hoursSincePublished <= 24) {
@@ -130,7 +130,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       const index = ids.indexOf(article._id.toString());
       const similarity = index !== -1 ? Math.max(0, 1 - distances[index]) : 0; // Convert distance to similarity
       const engagementScore = calculateEngagementScore(article);
-      
+
       // Give more weight to engagement (which includes recency) for newer articles
       const finalScore = (similarity * 0.4) + (engagementScore * 0.6); // Changed from 0.6/0.4 to 0.4/0.6
 

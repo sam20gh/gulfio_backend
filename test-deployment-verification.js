@@ -3,12 +3,12 @@ const axios = require('axios');
 
 async function testDeployedAuthenticationFix() {
     console.log('🎯 Testing Deployed Backend - Authentication Fix Verification\n');
-    
+
     const DEPLOYED_URL = 'https://gulfio-backend-180255041979.me-central1.run.app/api';
     const ADMIN_KEY = process.env.ADMIN_API_KEY;
-    
+
     console.log('🔧 Testing deployed backend with our authentication fixes...\n');
-    
+
     // Test 1: Push token endpoint that was failing with 500 error
     console.log('1️⃣ Testing PUSH TOKEN endpoint (was causing 500 error)...');
     try {
@@ -21,10 +21,10 @@ async function testDeployedAuthenticationFix() {
             },
             validateStatus: () => true
         });
-        
+
         console.log(`   Status: ${response.status}`);
         console.log(`   Response: ${response.data.message || JSON.stringify(response.data)}`);
-        
+
         if (response.status === 200) {
             console.log('   ✅ FIXED! Push token endpoint now working');
         } else if (response.status === 500) {
@@ -35,9 +35,9 @@ async function testDeployedAuthenticationFix() {
     } catch (error) {
         console.log(`   ❌ ERROR: ${error.message}`);
     }
-    
+
     console.log('');
-    
+
     // Test 2: Debug endpoint to verify environment variables
     console.log('2️⃣ Testing DEBUG endpoint (verifies dotenv fix)...');
     try {
@@ -47,7 +47,7 @@ async function testDeployedAuthenticationFix() {
             },
             validateStatus: () => true
         });
-        
+
         console.log(`   Status: ${response.status}`);
         if (response.status === 200) {
             console.log('   ✅ Debug endpoint working - environment variables loaded');
@@ -57,9 +57,9 @@ async function testDeployedAuthenticationFix() {
     } catch (error) {
         console.log(`   ❌ ERROR: ${error.message}`);
     }
-    
+
     console.log('');
-    
+
     // Test 3: Personalized articles
     console.log('3️⃣ Testing PERSONALIZED ARTICLES (was failing with auth)...');
     try {
@@ -70,7 +70,7 @@ async function testDeployedAuthenticationFix() {
             },
             validateStatus: () => true
         });
-        
+
         console.log(`   Status: ${response.status}`);
         if (response.status === 200) {
             console.log('   ✅ FIXED! Personalized articles working');
@@ -80,13 +80,13 @@ async function testDeployedAuthenticationFix() {
     } catch (error) {
         console.log(`   ❌ ERROR: ${error.message}`);
     }
-    
+
     console.log('\n🏁 Deployment Verification Summary:');
     console.log('   - Push token endpoint should be fixed (was 500 error)');
     console.log('   - Authentication middleware should work properly');
     console.log('   - Environment variables should be loaded');
     console.log('   - Mobile app errors should be resolved!');
-    
+
     console.log('\n📱 Next Steps:');
     console.log('   1. If tests pass: Mobile app should work perfectly');
     console.log('   2. If tests fail: Check deployment completion');
@@ -105,7 +105,7 @@ function createTestJWT() {
         "user_metadata": { "email": "sam20gh@gmail.com" },
         "role": "authenticated"
     };
-    
+
     const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
     const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
     return `${encodedHeader}.${encodedPayload}.fake-signature`;

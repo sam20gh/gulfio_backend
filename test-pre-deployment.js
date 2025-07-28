@@ -3,10 +3,10 @@ const axios = require('axios');
 
 async function testLocalBackendComplete() {
     console.log('🔧 Complete Local Backend Test (Pre-Deployment)\n');
-    
+
     const BASE_URL = 'http://localhost:3000/api';
     const ADMIN_KEY = process.env.ADMIN_API_KEY;
-    
+
     // Create a test JWT with proper structure
     const createTestJWT = () => {
         const header = { "alg": "HS256", "typ": "JWT" };
@@ -20,14 +20,14 @@ async function testLocalBackendComplete() {
             "user_metadata": { "email": "sam20gh@gmail.com" },
             "role": "authenticated"
         };
-        
+
         const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
         const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
         return `${encodedHeader}.${encodedPayload}.fake-signature`;
     };
-    
+
     const testJWT = createTestJWT();
-    
+
     const tests = [
         {
             name: 'Push Token Endpoint (Fixed)',
@@ -39,7 +39,7 @@ async function testLocalBackendComplete() {
         },
         {
             name: 'Personalized Articles',
-            method: 'GET', 
+            method: 'GET',
             url: `${BASE_URL}/articles/personalized`,
             headers: { 'Authorization': `Bearer ${testJWT}` },
             expect: 200
@@ -59,9 +59,9 @@ async function testLocalBackendComplete() {
             expect: 200
         }
     ];
-    
+
     console.log('🎯 Testing Critical Endpoints with JWT:\n');
-    
+
     for (const test of tests) {
         console.log(`${test.name}:`);
         try {
@@ -71,15 +71,15 @@ async function testLocalBackendComplete() {
                 headers: test.headers,
                 validateStatus: () => true
             };
-            
+
             if (test.data) {
                 config.data = test.data;
             }
-            
+
             const response = await axios(config);
-            
+
             console.log(`   Status: ${response.status} (expected: ${test.expect})`);
-            
+
             if (response.status === test.expect) {
                 console.log(`   ✅ SUCCESS`);
                 if (test.name.includes('Articles') && response.data.articles) {
@@ -93,7 +93,7 @@ async function testLocalBackendComplete() {
         }
         console.log('');
     }
-    
+
     console.log('🏁 Pre-Deployment Summary:');
     console.log('   If all tests pass, the backend is ready for deployment');
     console.log('   The main fixes:');

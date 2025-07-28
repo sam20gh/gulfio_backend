@@ -3,14 +3,14 @@ const axios = require('axios');
 
 async function testDeployedBackend() {
     console.log('🔧 Testing Deployed Backend Authentication\n');
-    
+
     const DEPLOYED_URL = 'https://gulfio-backend-180255041979.me-central1.run.app/api';
     const ADMIN_KEY = process.env.ADMIN_API_KEY;
-    
+
     console.log('🎯 Testing deployed backend:', DEPLOYED_URL);
     console.log('🔑 Using admin key:', ADMIN_KEY ? 'YES' : 'NO');
     console.log('');
-    
+
     // Test 1: Basic health check
     console.log('1️⃣ Testing basic health check...');
     try {
@@ -26,9 +26,9 @@ async function testDeployedBackend() {
     } catch (error) {
         console.log('   ❌ ERROR:', error.message);
     }
-    
+
     console.log('');
-    
+
     // Test 2: Push token endpoint with admin key
     console.log('2️⃣ Testing push token endpoint with admin key...');
     try {
@@ -40,19 +40,19 @@ async function testDeployedBackend() {
             },
             validateStatus: () => true
         });
-        
+
         console.log(`   Status: ${response.status}`);
         console.log(`   Response:`, response.data);
-        
+
         if (response.status === 500) {
             console.log('   ❌ This is the error causing mobile app failures!');
         }
     } catch (error) {
         console.log('   ❌ ERROR:', error.message);
     }
-    
+
     console.log('');
-    
+
     // Test 3: Check if debug endpoint exists
     console.log('3️⃣ Testing debug endpoint...');
     try {
@@ -71,7 +71,7 @@ async function testDeployedBackend() {
     } catch (error) {
         console.log('   ❌ ERROR:', error.message);
     }
-    
+
     console.log('\n📋 Summary:');
     console.log('   - The deployed backend likely has the old authentication code');
     console.log('   - Need to redeploy with our fixes');
