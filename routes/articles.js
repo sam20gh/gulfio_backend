@@ -80,24 +80,79 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     // Fallback if no user embedding or Faiss not initialized
     if (!userEmbedding || !Array.isArray(userEmbedding) || !faissStatus.isInitialized) {
-      console.warn('⚠️ Falling back to engagement-based sorting');
+      console.warn('⚠️ Falling back to engagement-based sorting WITH fresh articles injection');
       console.warn(`User embedding: ${userEmbedding ? 'exists' : 'missing'}, Faiss initialized: ${faissStatus.isInitialized}`);
 
-      const skip = (page - 1) * limit;
-      const articles = await Article.find({
+      // FALLBACK: Include fresh articles logic even without Faiss
+      const freshLimit = Math.max(3, Math.ceil(limit * 0.4)); // 40% fresh articles
+      console.log(`🆕 FALLBACK: Adding ${freshLimit} fresh articles for MAXIMUM priority`);
+
+      let freshArticles = [];
+      const timeRanges = [
+        { name: '24h', hours: 24 },
+        { name: '48h', hours: 48 },
+        { name: '72h', hours: 72 },
+        { name: '1week', hours: 168 }
+      ];
+
+      // Progressive time range search for fresh articles
+      for (const range of timeRanges) {
+        const cutoffTime = new Date(Date.now() - range.hours * 60 * 60 * 1000);
+        console.log(`📅 FALLBACK: Searching for articles newer than: ${cutoffTime.toISOString()} (last ${range.name})`);
+
+        freshArticles = await Article.find({
+          language,
+          publishedAt: { $gte: cutoffTime },
+          _id: { $nin: user?.disliked_articles || [] }
+        })
+          .sort({ publishedAt: -1, viewCount: -1 })
+          .limit(freshLimit)
+          .lean();
+
+        console.log(`✅ FALLBACK: Found ${freshArticles.length} articles from last ${range.name}`);
+        if (freshArticles.length >= Math.min(3, freshLimit)) {
+          console.log(`🎯 FALLBACK: Using articles from last ${range.name} (sufficient quantity)`);
+          break;
+        }
+      }
+
+      // Get remaining articles for personalization
+      const remainingLimit = limit - freshArticles.length;
+      const personalizedArticles = await Article.find({
         language,
-        _id: { $nin: user?.disliked_articles || [] } // Exclude disliked articles
+        _id: {
+          $nin: [
+            ...freshArticles.map(a => a._id),
+            ...(user?.disliked_articles || [])
+          ]
+        }
       })
         .sort({ viewCount: -1, publishedAt: -1 })
-        .skip(skip)
-        .limit(limit)
+        .limit(remainingLimit)
         .lean();
 
-      const response = articles.map(article => ({
+      // Enhance fresh articles
+      const freshEnhanced = freshArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
-        isFallback: true
+        isFresh: true,
+        isFallback: true,
+        finalScore: 1000 + (article.viewCount || 0) // High priority for fresh
       }));
+
+      // Enhance personalized articles
+      const personalizedEnhanced = personalizedArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFallback: true,
+        engagementScore: calculateEngagementScore(article)
+      }));
+
+      // Combine: fresh articles first, then personalized
+      const response = [...freshEnhanced, ...personalizedEnhanced].slice(0, limit);
+
+      console.log(`✅ FALLBACK: Returning ${response.length} articles`);
+      console.log(`📊 FALLBACK: Composition: ${freshEnhanced.length} fresh + ${personalizedEnhanced.length} personalized`);
 
       // Cache fallback results for shorter time
       try {
@@ -156,7 +211,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     let freshArticles = [];
     const timeRanges = [
       { hours: 24, label: 'last 24h' },
-      { hours: 48, label: 'last 48h' }, 
+      { hours: 48, label: 'last 48h' },
       { hours: 72, label: 'last 3 days' },
       { hours: 168, label: 'last week' }
     ];
@@ -176,7 +231,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         .lean();
 
       console.log(`✅ Found ${freshArticles.length} articles from ${timeRange.label}`);
-      
+
       if (freshArticles.length >= Math.ceil(freshLimit * 0.6)) {
         // We have enough articles from this time range
         console.log(`🎯 Using articles from ${timeRange.label} (sufficient quantity)`);
@@ -186,7 +241,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     if (freshArticles.length > 0) {
       console.log(`📰 Fresh articles: ${freshArticles.map(a => `"${a.title.substring(0, 30)}..." (${new Date(a.publishedAt).toLocaleDateString()})`).join(', ')}`);
-      
+
       const freshEnhanced = freshArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
@@ -198,7 +253,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       // Replace the lowest scoring personalized articles with fresh ones
       finalArticles.sort((a, b) => b.finalScore - a.finalScore);
       const personalizedToKeep = finalArticles.slice(0, limit - freshArticles.length);
-      
+
       // Combine: fresh articles first, then best personalized articles
       finalArticles = [...freshEnhanced, ...personalizedToKeep];
       console.log(`🔄 Final composition: ${freshArticles.length} fresh + ${personalizedToKeep.length} personalized`);
