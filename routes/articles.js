@@ -17,14 +17,25 @@ const { initializeFaissIndex, searchFaissIndex, getFaissIndexStatus } = require(
  * @returns {number} Engagement score
  */
 async function calculateEngagementScore(article) {
-  const viewsWeight = 0.4;
-  const likesWeight = 0.4;
-  const dislikesWeight = -0.2;
-  const recencyWeight = 0.2;
+  const viewsWeight = 0.3;
+  const likesWeight = 0.3;
+  const dislikesWeight = -0.1;
+  const recencyWeight = 0.5; // Increased recency weight significantly
 
   const now = new Date();
   const hoursSincePublished = (now - new Date(article.publishedAt)) / (1000 * 60 * 60);
-  const recencyScore = Math.max(0, 1 - hoursSincePublished / (24 * 7)); // Decay over 7 days
+  
+  // More aggressive recency scoring - newer articles get much higher scores
+  let recencyScore;
+  if (hoursSincePublished <= 24) {
+    recencyScore = 1.0; // Articles from last 24 hours get full score
+  } else if (hoursSincePublished <= 48) {
+    recencyScore = 0.8; // Articles from last 48 hours
+  } else if (hoursSincePublished <= 72) {
+    recencyScore = 0.6; // Articles from last 3 days
+  } else {
+    recencyScore = Math.max(0, 1 - hoursSincePublished / (24 * 7)); // Older articles decay over 7 days
+  }
 
   return (
     (article.viewCount || 0) * viewsWeight +
@@ -114,12 +125,14 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     console.log(`📄 Found ${articles.length} articles from Faiss search`);
 
-    // Calculate combined scores (similarity + engagement)
+    // Calculate combined scores (similarity + engagement with more weight to recent articles)
     const scoredArticles = articles.map(article => {
       const index = ids.indexOf(article._id.toString());
       const similarity = index !== -1 ? Math.max(0, 1 - distances[index]) : 0; // Convert distance to similarity
       const engagementScore = calculateEngagementScore(article);
-      const finalScore = (similarity * 0.6) + (engagementScore * 0.4);
+      
+      // Give more weight to engagement (which includes recency) for newer articles
+      const finalScore = (similarity * 0.4) + (engagementScore * 0.6); // Changed from 0.6/0.4 to 0.4/0.6
 
       return {
         ...article,
@@ -134,6 +147,33 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     let finalArticles = scoredArticles
       .sort((a, b) => b.finalScore - a.finalScore)
       .slice(0, limit);
+
+    // Add fresh articles from last 24 hours for priority (15% of results, minimum 2)
+    const freshLimit = Math.max(2, Math.ceil(limit * 0.15));
+    if (freshLimit > 0) {
+      console.log(`🆕 Adding ${freshLimit} fresh articles (last 24h) for priority`);
+
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const freshArticles = await Article.find({
+        language,
+        publishedAt: { $gte: twentyFourHoursAgo },
+        _id: { $nin: finalArticles.map(a => a._id) },
+        _id: { $nin: user?.disliked_articles || [] },
+      })
+        .sort({ publishedAt: -1 })
+        .limit(freshLimit)
+        .lean();
+
+      const freshEnhanced = freshArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFresh: true,
+        engagementScore: calculateEngagementScore(article)
+      }));
+
+      // Insert fresh articles at the beginning (higher priority)
+      finalArticles = [...freshEnhanced, ...finalArticles];
+    }
 
     // Add trending articles for diversity (10% of results)
     const trendingLimit = Math.ceil(limit * 0.1);
@@ -168,11 +208,11 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     finalArticles = finalArticles.slice(0, limit);
 
     console.log(`✅ Returning ${finalArticles.length} personalized articles`);
-    console.log(`📊 Composition: ${finalArticles.filter(a => a.isTrending).length} trending, ${finalArticles.filter(a => !a.isTrending).length} personalized`);
+    console.log(`📊 Composition: ${finalArticles.filter(a => a.isFresh).length} fresh (24h), ${finalArticles.filter(a => a.isTrending).length} trending, ${finalArticles.filter(a => !a.isTrending && !a.isFresh).length} personalized`);
 
-    // Cache results for 6 hours
+    // Cache results for 1 hour (reduced from 6 hours for fresher content)
     try {
-      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 6 * 3600);
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 3600);
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
