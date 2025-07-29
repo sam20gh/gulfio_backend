@@ -96,10 +96,10 @@ app.use(express.json());
 // Middleware to check MongoDB connection for API routes
 app.use('/api', (req, res, next) => {
     if (mongoose.connection.readyState !== 1) {
-        return res.status(503).json({ 
-            error: 'Database not ready', 
+        return res.status(503).json({
+            error: 'Database not ready',
             message: 'MongoDB connection not established yet. Please try again in a moment.',
-            readyState: mongoose.connection.readyState 
+            readyState: mongoose.connection.readyState
         });
     }
     next();
@@ -114,29 +114,29 @@ app.get('/health', (req, res) => {
 app.get('/db-test', async (req, res) => {
     try {
         if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ 
-                status: 'db-not-ready', 
+            return res.status(503).json({
+                status: 'db-not-ready',
                 readyState: mongoose.connection.readyState,
                 message: 'MongoDB connection not established yet',
-                timestamp: new Date().toISOString() 
+                timestamp: new Date().toISOString()
             });
         }
-        
+
         const Article = require('./models/Article');
         const count = await Article.countDocuments().maxTimeMS(5000);
-        res.status(200).json({ 
-            status: 'db-connected', 
+        res.status(200).json({
+            status: 'db-connected',
             articleCount: count,
             readyState: mongoose.connection.readyState,
-            timestamp: new Date().toISOString() 
+            timestamp: new Date().toISOString()
         });
     } catch (error) {
         console.error('DB Test Error:', error);
-        res.status(500).json({ 
-            status: 'db-error', 
+        res.status(500).json({
+            status: 'db-error',
             error: error.message,
             readyState: mongoose.connection.readyState,
-            timestamp: new Date().toISOString() 
+            timestamp: new Date().toISOString()
         });
     }
 });
