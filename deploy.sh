@@ -27,9 +27,29 @@ echo "📋 Project: $PROJECT_ID"
 echo "📋 Service: $SERVICE_NAME"
 echo "📋 Region: $REGION"
 
+# Check if environment variables are set
+if [ -z "$MONGO_URI" ] || [ -z "$OPENAI_API_KEY" ]; then
+    echo "⚠️  Warning: Some environment variables are not set."
+    echo "💡 To set them for this deployment, run:"
+    echo "   export MONGO_URI='your-mongodb-connection-string'"
+    echo "   export OPENAI_API_KEY='your-openai-api-key'"
+    echo "   export ADMIN_API_KEY='your-admin-api-key'"
+    echo "   # ... and other required variables"
+    echo ""
+    echo "📄 See .env.example for all required variables"
+    echo ""
+    read -p "Continue with deployment? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "❌ Deployment cancelled"
+        exit 1
+    fi
+fi
+
 # Build and deploy
 echo "🔨 Building and deploying to Cloud Run..."
 
+# Deploy with environment variables (secrets should be set externally)
 gcloud run deploy $SERVICE_NAME \
     --source . \
     --platform managed \
@@ -40,9 +60,18 @@ gcloud run deploy $SERVICE_NAME \
     --cpu 1 \
     --min-instances 0 \
     --max-instances 10 \
-    --port 8080
-
-if [ $? -eq 0 ]; then
+    --port 8080 \
+    --set-env-vars MONGO_URI="${MONGO_URI}" \
+    --set-env-vars ADMIN_API_KEY="${ADMIN_API_KEY}" \
+    --set-env-vars SUPABASE_JWT_ISSUER="${SUPABASE_JWT_ISSUER}" \
+    --set-env-vars SUPABASE_JWT_SECRET="${SUPABASE_JWT_SECRET}" \
+    --set-env-vars YOUTUBE_API_KEY="${YOUTUBE_API_KEY}" \
+    --set-env-vars OPENAI_API_KEY="${OPENAI_API_KEY}" \
+    --set-env-vars R2_ENDPOINT="${R2_ENDPOINT}" \
+    --set-env-vars R2_PUBLIC_URL="${R2_PUBLIC_URL}" \
+    --set-env-vars R2_ACCESS_KEY="${R2_ACCESS_KEY}" \
+    --set-env-vars R2_SECRET_KEY="${R2_SECRET_KEY}" \
+    --set-env-vars R2_BUCKET="${R2_BUCKET}"if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
     echo "🌐 Service URL: https://$SERVICE_NAME-180255041979.$REGION.run.app"
 else

@@ -45,9 +45,17 @@ app.use((req, res, next) => {
     next();
 });
 
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for Cloud Run
+    socketTimeoutMS: 0, // No socket timeout for Cloud Run
+    connectTimeoutMS: 30000, // 30 seconds to establish connection
+    bufferCommands: false, // Disable buffering to fail fast
+    maxPoolSize: 10, // Maintain up to 10 socket connections
+    minPoolSize: 1, // Maintain at least 1 socket connection
+})
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
+        console.log('📊 MongoDB Connection State:', mongoose.connection.readyState);
         await createIndexes(); // 👈 Run after DB connection
 
         // Initialize recommendation system in background
@@ -61,13 +69,76 @@ mongoose.connect(process.env.MONGO_URI)
             }
         }, 5000); // Wait 5 seconds after startup
     })
-    .catch(err => console.error('❌ Failed to connect to MongoDB Atlas:', err));
+    .catch(err => {
+        console.error('❌ Failed to connect to MongoDB Atlas:', err);
+        console.error('📊 Connection details:', {
+            readyState: mongoose.connection.readyState,
+            host: mongoose.connection.host,
+            name: mongoose.connection.name,
+        });
+    });
+
+// Monitor connection status
+mongoose.connection.on('connected', () => {
+    console.log('✅ Mongoose connected to MongoDB');
+});
+
+mongoose.connection.on('error', (err) => {
+    console.error('❌ Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+    console.log('⚠️ Mongoose disconnected from MongoDB');
+});
 
 app.use(express.json());
+
+// Middleware to check MongoDB connection for API routes
+app.use('/api', (req, res, next) => {
+    if (mongoose.connection.readyState !== 1) {
+        return res.status(503).json({ 
+            error: 'Database not ready', 
+            message: 'MongoDB connection not established yet. Please try again in a moment.',
+            readyState: mongoose.connection.readyState 
+        });
+    }
+    next();
+});
 
 // Health check endpoint for Google Cloud Run
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Database connectivity test endpoint
+app.get('/db-test', async (req, res) => {
+    try {
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ 
+                status: 'db-not-ready', 
+                readyState: mongoose.connection.readyState,
+                message: 'MongoDB connection not established yet',
+                timestamp: new Date().toISOString() 
+            });
+        }
+        
+        const Article = require('./models/Article');
+        const count = await Article.countDocuments().maxTimeMS(5000);
+        res.status(200).json({ 
+            status: 'db-connected', 
+            articleCount: count,
+            readyState: mongoose.connection.readyState,
+            timestamp: new Date().toISOString() 
+        });
+    } catch (error) {
+        console.error('DB Test Error:', error);
+        res.status(500).json({ 
+            status: 'db-error', 
+            error: error.message,
+            readyState: mongoose.connection.readyState,
+            timestamp: new Date().toISOString() 
+        });
+    }
 });
 
 app.use('/api/sources', sources);

@@ -1,6 +1,11 @@
 # Created by https://www.toptal.com/developers/gitignore/api/react,node
 # Edit at https://www.toptal.com/developers/gitignore?templates=react,node
 
+# Environment variables - NEVER COMMIT THESE
+.env
+.env.local
+.env.production
+
 ### Node ###
 # Logs
 logs
