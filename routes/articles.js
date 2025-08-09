@@ -9,9 +9,9 @@ const Article = require('../models/Article');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
-const { redis } = require('../lib/redis');
-const { getFaissIndexStatus, searchFaissIndex } = require('../lib/faiss');
-const { getDeepSeekEmbedding } = require('../lib/deepseek');
+const { redis } = require('../utils/redis');
+const { getFaissIndexStatus, searchFaissIndex } = require('../recommendation/faissIndex');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
 
 const articleRouter = express.Router();
 
