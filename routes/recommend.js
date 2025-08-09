@@ -1,35 +1,32 @@
 /**
  * 📺 Video Recommendation API Routes
- * 
- * Provides personalized video recommendations using embedding similarity,
- * trending content, and diverse fallback strategies.
+ * Personalized video recommendations with page-aware recency blending.
  */
 
 const express = require('express');
 const User = require('../models/User');
-const Reel = require('../models/Reel');
 const { recommendationIndex } = require('../recommendation/fastIndex');
 const auth = require('../middleware/auth');
+
 const router = express.Router();
 
 /**
  * GET /recommend
  * Get personalized video recommendations for a user
- * Query params: userId (required), limit (optional), refresh (optional)
+ * Query: userId (required), limit, refresh, page
  */
 router.get('/recommend', async (req, res) => {
     try {
-        const { userId, limit = 20, refresh = 'false' } = req.query;
+        const { userId, limit = 20, refresh = 'false', page = 1 } = req.query;
 
         if (!userId) {
-            return res.status(400).json({
-                error: 'userId is required'
-            });
+            return res.status(400).json({ error: 'userId is required' });
         }
 
         const forceRefresh = refresh === 'true';
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
 
-        // Check cache first (unless force refresh)
+        // Cache unless forced
         if (!forceRefresh) {
             const cachedRecommendations = recommendationIndex.getCachedUserRecommendations(userId);
             if (cachedRecommendations) {
@@ -45,7 +42,7 @@ router.get('/recommend', async (req, res) => {
 
         console.log(`🔍 Generating fresh recommendations for user ${userId}`);
 
-        // Get user data
+        // Pull user profile
         const user = await User.findOne({ supabase_id: userId })
             .select('embedding embedding_pca disliked_reels viewed_reels')
             .lean();
@@ -60,11 +57,10 @@ router.get('/recommend', async (req, res) => {
             ];
             userEmbedding = user.embedding_pca;
         } else {
-            // New user - no exclusions, no personalization
             console.log(`👤 New user ${userId} - providing trending content`);
         }
 
-        // Ensure recommendation index is built
+        // Ensure index
         if (!recommendationIndex.isIndexBuilt) {
             console.log('🏗️ Building recommendation index...');
             await recommendationIndex.buildIndex();
@@ -72,7 +68,7 @@ router.get('/recommend', async (req, res) => {
 
         let recommendations = [];
 
-        // Strategy 1: Use user embedding for personalized recommendations
+        // 1) Personalized (embedding)
         if (userEmbedding && userEmbedding.length > 0) {
             console.log('🎯 Using PCA user embedding for personalized recommendations');
 
@@ -86,40 +82,69 @@ router.get('/recommend', async (req, res) => {
             );
 
             recommendations.push(...similarVideos);
-
         } else if (user && user.embedding && user.embedding.length > 0) {
             console.log('⚠️ User has original embedding but no PCA - using fallback');
-            // Fallback to trending if no PCA embedding available
+            // keep trending fallback
         } else {
             console.log('👤 New user - using trending content');
         }
 
-        // Strategy 2: Add trending videos
-        const trendingLimit = Math.max(1, Math.floor(parseInt(limit) * 0.2)); // 20% trending
+        // 2) Trending (20%)
+        const trendingLimit = Math.max(1, Math.floor(parseInt(limit) * 0.2));
         const trendingVideos = await recommendationIndex.getTrendingVideos({
             limit: trendingLimit,
             excludeIds: [...excludeIds, ...recommendations.map(r => r._id.toString())]
         });
-
         recommendations.push(...trendingVideos);
 
-        // Strategy 3: Add diverse/exploratory content
-        const diverseLimit = Math.max(1, parseInt(limit) - recommendations.length); // Fill remaining
+        // 3) Diverse fill (remaining)
+        const diverseLimit = Math.max(1, parseInt(limit) - recommendations.length);
         if (diverseLimit > 0) {
             const diverseVideos = await recommendationIndex.getDiverseVideos({
                 limit: diverseLimit,
                 excludeIds: [...excludeIds, ...recommendations.map(r => r._id.toString())]
             });
-
             recommendations.push(...diverseVideos);
         }
 
-        // Shuffle to mix personalized + trending + diverse
-        recommendations = recommendations
-            .sort(() => Math.random() - 0.5)
+        /** ---- Page-aware re-rank (replaces the old random shuffle) ----
+         * Previously: shuffle + slice. :contentReference[oaicite:7]{index=7}
+         */
+        const freshRatio =
+            pageNum === 1 ? 0.70 :
+                pageNum === 2 ? 0.55 :
+                    pageNum === 3 ? 0.45 :
+                        0.35;
+
+        const now = Date.now();
+        const recency = (ts) => {
+            const t = new Date(ts || Date.now()).getTime();
+            const hours = (now - t) / (1000 * 60 * 60);
+            if (hours <= 24) return 1.0;
+            if (hours <= 48) return 0.8;
+            if (hours <= 72) return 0.6;
+            if (hours <= 168) return 0.4;
+            return Math.max(0, 1 - hours / (24 * 30));
+        };
+
+        const withScores = recommendations.map(r => {
+            const similarity = typeof r.similarity === 'number'
+                ? r.similarity
+                : typeof r.score === 'number'
+                    ? r.score
+                    : 0.5;
+            const popularity = (r.views || r.viewCount || 0) * 0.7 + (r.likes || 0) * 0.3;
+            const baseScore = 0.6 * similarity + 0.4 * popularity;
+            const recencyScore = recency(r.publishedAt || r.createdAt);
+            const finalScore = freshRatio * recencyScore + (1 - freshRatio) * baseScore;
+            return { ...r, finalScore };
+        });
+
+        recommendations = withScores
+            .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
             .slice(0, parseInt(limit));
 
-        // Cache the results
+        // Cache result
         recommendationIndex.cacheUserRecommendations(userId, recommendations);
 
         console.log(`✅ Generated ${recommendations.length} recommendations for user ${userId}`);
@@ -136,7 +161,6 @@ router.get('/recommend', async (req, res) => {
             },
             timestamp: new Date().toISOString()
         });
-
     } catch (error) {
         console.error('❌ Error generating recommendations:', error);
         res.status(500).json({
@@ -148,7 +172,7 @@ router.get('/recommend', async (req, res) => {
 
 /**
  * POST /recommend/feedback
- * Record user feedback (not interested) to improve future recommendations
+ * Record user feedback (not interested)
  */
 router.post('/recommend/feedback', auth, async (req, res) => {
     try {
@@ -156,61 +180,38 @@ router.post('/recommend/feedback', auth, async (req, res) => {
         const userId = req.user.supabase_id;
 
         if (!videoId || !feedback) {
-            return res.status(400).json({
-                error: 'videoId and feedback are required'
-            });
+            return res.status(400).json({ error: 'videoId and feedback are required' });
         }
 
-        // Update user preferences based on feedback
         const updateData = {};
-
         if (feedback === 'not_interested') {
-            updateData.$addToSet = {
-                disliked_reels: videoId
-            };
-
-            // If categories provided, add them to disliked categories
+            updateData.$addToSet = { disliked_reels: videoId };
             if (categories && Array.isArray(categories)) {
                 updateData.$addToSet.disliked_categories = { $each: categories };
             }
         }
 
         if (Object.keys(updateData).length > 0) {
-            await User.updateOne(
-                { supabase_id: userId },
-                updateData
-            );
-
-            // Clear user cache to force fresh recommendations
+            await User.updateOne({ supabase_id: userId }, updateData);
             recommendationIndex.clearUserCache(userId);
-
             console.log(`📝 Recorded ${feedback} feedback for user ${userId} on video ${videoId}`);
         }
 
-        res.json({
-            success: true,
-            message: 'Feedback recorded successfully'
-        });
-
+        res.json({ success: true, message: 'Feedback recorded successfully' });
     } catch (error) {
         console.error('❌ Error recording feedback:', error);
-        res.status(500).json({
-            error: 'Failed to record feedback',
-            details: error.message
-        });
+        res.status(500).json({ error: 'Failed to record feedback', details: error.message });
     }
 });
 
 /**
  * POST /recommend/rebuild-index
- * Manually rebuild the recommendation index (admin only)
+ * Rebuild recommendation index (admin)
  */
 router.post('/recommend/rebuild-index', async (req, res) => {
     try {
         console.log('🔄 Manual index rebuild requested');
-
         const success = await recommendationIndex.forceRebuild();
-
         if (success) {
             res.json({
                 success: true,
@@ -218,56 +219,11 @@ router.post('/recommend/rebuild-index', async (req, res) => {
                 stats: recommendationIndex.getStats()
             });
         } else {
-            res.status(500).json({
-                success: false,
-                error: 'Failed to rebuild index'
-            });
+            res.status(500).json({ success: false, error: 'Failed to rebuild index' });
         }
-
     } catch (error) {
         console.error('❌ Error rebuilding index:', error);
-        res.status(500).json({
-            error: 'Failed to rebuild index',
-            details: error.message
-        });
-    }
-});
-
-/**
- * GET /recommend/stats
- * Get recommendation system statistics
- */
-router.get('/recommend/stats', async (req, res) => {
-    try {
-        const stats = recommendationIndex.getStats();
-
-        // Add database stats
-        const totalReels = await Reel.countDocuments();
-        const reelsWithEmbeddings = await Reel.countDocuments({
-            embedding: { $exists: true, $not: { $size: 0 } }
-        });
-        const reelsWithPcaEmbeddings = await Reel.countDocuments({
-            embedding_pca: { $exists: true, $not: { $size: 0 } }
-        });
-
-        res.json({
-            success: true,
-            indexStats: stats,
-            databaseStats: {
-                totalReels,
-                reelsWithEmbeddings,
-                reelsWithPcaEmbeddings,
-                pcaProgress: totalReels > 0 ? (reelsWithPcaEmbeddings / totalReels * 100).toFixed(1) + '%' : '0%'
-            },
-            timestamp: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('❌ Error getting stats:', error);
-        res.status(500).json({
-            error: 'Failed to get stats',
-            details: error.message
-        });
+        res.status(500).json({ error: 'Failed to rebuild index', details: error.message });
     }
 });
 

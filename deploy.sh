@@ -71,7 +71,9 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars R2_PUBLIC_URL="${R2_PUBLIC_URL}" \
     --set-env-vars R2_ACCESS_KEY="${R2_ACCESS_KEY}" \
     --set-env-vars R2_SECRET_KEY="${R2_SECRET_KEY}" \
-    --set-env-vars R2_BUCKET="${R2_BUCKET}"if [ $? -eq 0 ]; then
+    --set-env-vars R2_BUCKET="${R2_BUCKET}"
+
+if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
     echo "🌐 Service URL: https://$SERVICE_NAME-180255041979.$REGION.run.app"
 else

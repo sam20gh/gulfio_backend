@@ -20,6 +20,24 @@ function cleanText(text) {
     return text.replace(/[\u0000-\u001F]+/g, '').trim();
 }
 
+function normalizeUrl(url) {
+    if (!url) return '';
+    try {
+        const urlObj = new URL(url);
+        // Remove common tracking parameters and fragments
+        urlObj.search = '';
+        urlObj.hash = '';
+        // Ensure consistent trailing slash handling
+        if (urlObj.pathname.endsWith('/') && urlObj.pathname.length > 1) {
+            urlObj.pathname = urlObj.pathname.slice(0, -1);
+        }
+        return urlObj.toString();
+    } catch (e) {
+        // If URL parsing fails, return original URL
+        return url;
+    }
+}
+
 function isElementVisible($, element) {
     const $el = $(element);
 
@@ -114,17 +132,26 @@ async function scrapeAllSources(frequency = null) {
 
             for (const link of links) {
                 try {
-                    console.log(`🔍 Checking if article exists: ${link}`);
-                    const exists = await Article.findOne({ url: link });
+                    const normalizedLink = normalizeUrl(link);
+                    console.log(`🔍 Checking if article exists: ${normalizedLink}`);
+
+                    // Check for exact URL match and normalized URL match
+                    const exists = await Article.findOne({
+                        $or: [
+                            { url: link },
+                            { url: normalizedLink }
+                        ]
+                    });
+
                     if (exists) {
-                        console.log(`⏭️ Article already exists, skipping: ${link}`);
+                        console.log(`⏭️ Article already exists, skipping: ${normalizedLink}`);
                         continue;
                     }
-                    console.log(`🆕 New article found, processing: ${link}`);
+                    console.log(`🆕 New article found, processing: ${normalizedLink}`);
 
                     let pageHtml;
                     if (source.name.toLowerCase().includes('gulfi news')) {
-                        const { browser, page } = await fetchWithPuppeteer(source.url, { returnPage: true });
+                        const { browser, page } = await fetchWithPuppeteer(link, { returnPage: true });
 
                         try {
                             // 🛂 Try to click the consent button if present
@@ -136,16 +163,14 @@ async function scrapeAllSources(frequency = null) {
                                 await page.waitForTimeout(800); // allow modal to disappear
                             }
 
-                            const html = await page.content();
+                            pageHtml = await page.content();
                             await browser.close();
-                            // Attach html back to use as expected
-                            html && (globalThis.lastFetchedHtml = html); // temporary cache
                         } catch (err) {
                             console.warn('⚠️ Error handling consent popup:', err.message);
                             await browser.close();
+                            // Fallback to regular axios if Puppeteer fails
+                            pageHtml = (await axios.get(link)).data;
                         }
-
-                        html = globalThis.lastFetchedHtml;
                     }
                     else {
                         pageHtml = (await axios.get(link)).data;
@@ -170,6 +195,18 @@ async function scrapeAllSources(frequency = null) {
                     );
 
                     console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
+
+                    // Additional duplicate check by title to catch same articles with different URLs
+                    if (title && title.length > 5) {
+                        const titleExists = await Article.findOne({
+                            title: title,
+                            sourceId: source._id
+                        });
+                        if (titleExists) {
+                            console.log(`⏭️ Article with same title already exists, skipping: "${title.slice(0, 50)}..."`);
+                            continue;
+                        }
+                    }
 
                     // Extract images - filter out hidden images
                     let images = $$(source.imageSelector || 'img')
@@ -225,7 +262,7 @@ async function scrapeAllSources(frequency = null) {
                     // Save article if valid - more strict validation
                     if (title && content && title.length > 5 && content.length > 50) {
                         console.log(`📝 Attempting to save article: "${title.slice(0, 50)}..." for source: ${source.name}`);
-                        console.log(`📋 Article details - URL: ${link}, Category: ${source.category}, Language: ${source.language || "english"}`);
+                        console.log(`📋 Article details - URL: ${normalizedLink}, Category: ${source.category}, Language: ${source.language || "english"}`);
                         console.log(`🖼️ Images found: ${images.length}`);
                         console.log(`🔗 Embedding length: ${embedding.length}`);
                         console.log(`🔗 PCA embedding length: ${embedding_pca ? embedding_pca.length : 'N/A'}`);
@@ -234,7 +271,7 @@ async function scrapeAllSources(frequency = null) {
                             const articleData = {
                                 title,
                                 content,
-                                url: link,
+                                url: normalizedLink, // Use normalized URL for consistency
                                 sourceId: source._id,
                                 category: source.category,
                                 publishedAt: new Date(),
@@ -269,12 +306,12 @@ async function scrapeAllSources(frequency = null) {
                             });
                         }
                     } else {
-                        console.warn(`⚠️ Skipping article due to insufficient content - Title: ${!!title} (${title?.length || 0} chars), Content: ${!!content} (${content?.length || 0} chars), URL: ${link}`);
+                        console.warn(`⚠️ Skipping article due to insufficient content - Title: ${!!title} (${title?.length || 0} chars), Content: ${!!content} (${content?.length || 0} chars), URL: ${normalizedLink}`);
                         if (title && title.length <= 5) console.warn(`  - Title too short: "${title}"`);
                         if (content && content.length <= 50) console.warn(`  - Content too short: "${content.slice(0, 50)}..."`);
                     }
                 } catch (err) {
-                    console.error(`Error on article ${link}:`, err.message);
+                    console.error(`Error on article ${normalizedLink}:`, err.message);
                 }
             }
 
