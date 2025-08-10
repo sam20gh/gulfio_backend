@@ -17,22 +17,7 @@ const {
     AWS_S3_BUCKET,
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
-    // Fallback to R2 variables if AWS variables not set
-    R2_ACCESS_KEY,
-    R2_SECRET_KEY,
-    R2_BUCKET,
-    R2_ENDPOINT,
-    CLOUDFLARE_ACCOUNT_ID,
 } = process.env;
-
-// Use AWS variables first, fall back to R2 variables
-const S3_REGION = AWS_S3_REGION || 'auto'; // Cloudflare R2 uses 'auto' as region
-const S3_BUCKET = AWS_S3_BUCKET || R2_BUCKET;
-const ACCESS_KEY_ID = AWS_ACCESS_KEY_ID || R2_ACCESS_KEY;
-const SECRET_ACCESS_KEY = AWS_SECRET_ACCESS_KEY || R2_SECRET_KEY;
-
-// Build R2 endpoint if using Cloudflare R2
-const S3_ENDPOINT = R2_ENDPOINT || (CLOUDFLARE_ACCOUNT_ID ? `https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com` : undefined);
 function cosineSimilarity(vec1, vec2) {
     const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
     const magnitudeA = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
@@ -59,35 +44,16 @@ async function getInstagramVideoUrl(reelUrl) {
     }
 }
 // Helper: Upload to R2
-const s3ClientConfig = {
-    region: S3_REGION,
+const s3 = new S3Client({
+    region: AWS_S3_REGION,
     credentials: {
-        accessKeyId: ACCESS_KEY_ID,
-        secretAccessKey: SECRET_ACCESS_KEY,
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
     },
-};
-
-// Add endpoint for Cloudflare R2 if available
-if (S3_ENDPOINT) {
-    s3ClientConfig.endpoint = S3_ENDPOINT;
-}
-
-const s3 = new S3Client(s3ClientConfig);
+});
 
 async function uploadToR2(videoUrl, filename) {
     try {
-        console.log('🔧 S3 Configuration:', {
-            region: S3_REGION,
-            bucket: S3_BUCKET,
-            endpoint: S3_ENDPOINT,
-            hasAccessKey: !!ACCESS_KEY_ID,
-            hasSecretKey: !!SECRET_ACCESS_KEY
-        });
-
-        if (!S3_REGION || !S3_BUCKET || !ACCESS_KEY_ID || !SECRET_ACCESS_KEY) {
-            throw new Error('Missing S3/R2 configuration. Please check environment variables.');
-        }
-
         const response = await axios({
             method: 'get',
             url: videoUrl,
@@ -96,7 +62,7 @@ async function uploadToR2(videoUrl, filename) {
 
         const buffer = Buffer.from(response.data);
         const command = new PutObjectCommand({
-            Bucket: S3_BUCKET,
+            Bucket: AWS_S3_BUCKET,
             Key: filename,
             Body: buffer,
             ContentType: 'video/mp4',
@@ -109,7 +75,7 @@ async function uploadToR2(videoUrl, filename) {
         const signedUrl = await getSignedUrl(
             s3,
             new GetObjectCommand({
-                Bucket: S3_BUCKET,
+                Bucket: AWS_S3_BUCKET,
                 Key: filename,
             }),
             { expiresIn: 60 * 60 * 24 * 7 } // 7 days
@@ -535,7 +501,7 @@ router.post('/reels/refresh-urls', async (req, res) => {
         for (const reel of reels) {
             try {
                 const command = new GetObjectCommand({
-                    Bucket: S3_BUCKET,
+                    Bucket: AWS_S3_BUCKET,
                     Key: reel.originalKey
                 });
 
