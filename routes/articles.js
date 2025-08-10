@@ -390,18 +390,6 @@ articleRouter.get('/', async (req, res) => {
   }
 });
 
-// GET one
-articleRouter.get('/articles/:id', async (req, res) => {
-  try {
-    const article = await Article.findById(req.params.id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
-    res.json(article);
-  } catch (err) {
-    console.error('GET /articles/:id error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
 // React (like/dislike)
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   try {
@@ -629,6 +617,18 @@ articleRouter.put('/:id', auth, async (req, res) => {
     res.json(updatedArticle);
   } catch (error) {
     res.status(400).json({ message: 'Error updating article', error: error.message });
+  }
+});
+
+// GET one - Must be last to avoid conflicts with specific routes
+articleRouter.get('/:id', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+    res.json(article);
+  } catch (err) {
+    console.error('GET /:id error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
