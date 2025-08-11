@@ -332,8 +332,9 @@ articleRouter.get('/', async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const language = req.query.language || 'english';
+    const category = req.query.category;
 
-    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}`;
+    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}`;
 
     let cached;
     try {
@@ -348,8 +349,15 @@ articleRouter.get('/', async (req, res) => {
 
     const skip = (page - 1) * limit;
 
+    // Build query filter
+    const filter = { language };
+    if (category) {
+      filter.category = category;
+      console.log('🏷️ Filtering articles by category:', category);
+    }
+
     // Fetch newest first
-    const raw = await Article.find({ language })
+    const raw = await Article.find(filter)
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit)
