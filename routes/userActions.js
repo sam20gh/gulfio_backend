@@ -49,6 +49,19 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
 
     await user.save();
 
+    // Update article like/dislike counts in the database
+    const article = await Article.findById(articleObjectId);
+    if (article) {
+        // Count total likes and dislikes for this article from all users
+        const totalLikes = await User.countDocuments({ liked_articles: articleObjectId });
+        const totalDislikes = await User.countDocuments({ disliked_articles: articleObjectId });
+
+        // Update the article with the new counts
+        article.likes = totalLikes;
+        article.dislikes = totalDislikes;
+        await article.save();
+    }
+
     // Update user embedding after like/dislike action
     try {
         await updateUserProfileEmbedding(user._id);
@@ -60,7 +73,6 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     // Send notification if this is a new like
     if (action === 'like' && wasNotLiked) {
         try {
-            const article = await Article.findById(articleId);
             if (article && article.userId && article.userId !== user.supabase_id) {
                 const likerName = user.name || user.email || 'Someone';
                 await NotificationService.sendArticleLikeNotification(
@@ -80,6 +92,10 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
     res.json({
         liked_articles: user.liked_articles,
         disliked_articles: user.disliked_articles || [],
+        article: article ? {
+            likes: article.likes,
+            dislikes: article.dislikes
+        } : null
     });
 });
 

@@ -21,7 +21,7 @@ const articleRouter = express.Router();
 const viewsWeight = 1.0;
 const likesWeight = 3.0;
 const dislikesWeight = -2.0;
-const recencyWeight = 2.0;
+const recencyWeight = 4.0;
 
 function basicRecencyScore(publishedAt) {
   const now = Date.now();
