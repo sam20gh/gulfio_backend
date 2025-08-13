@@ -437,7 +437,7 @@ router.post('/reels/recommendations', async (req, res) => {
         // Get fresh reels (last 48 hours) and all reels separately
         const now = new Date();
         const twoDaysAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
-        
+
         const [freshReels, allReels] = await Promise.all([
             Reel.find({
                 embedding: { $exists: true, $type: 'array' },
@@ -447,7 +447,7 @@ router.post('/reels/recommendations', async (req, res) => {
                 .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
                 .populate('source', 'name icon favicon')
                 .lean(),
-            
+
             Reel.find({
                 embedding: { $exists: true, $type: 'array' },
                 _id: { $nin: lastSeenReelIds } // Exclude recently seen
@@ -460,20 +460,20 @@ router.post('/reels/recommendations', async (req, res) => {
         // Enhanced scoring algorithm
         const scoreReel = (reel, isFresh = false) => {
             const similarity = cosineSimilarity(embedding, reel.embedding);
-            
+
             // Time-based scoring: newer content gets higher scores
             const reelAge = now - new Date(reel.scrapedAt || reel.publishedAt);
             const hoursAge = reelAge / (1000 * 60 * 60);
             const recencyScore = Math.max(0, 1 - (hoursAge / 168)); // Decay over 1 week
-            
+
             // Engagement scoring (normalize to 0-1 range)
             const maxViews = 10000; // Reasonable upper bound
             const engagementScore = Math.min(1, (reel.viewCount || 0) / maxViews) * 0.3 +
-                                  Math.min(1, (reel.likes || 0) / 1000) * 0.2;
-            
+                Math.min(1, (reel.likes || 0) / 1000) * 0.2;
+
             // Fresh content bonus
             const freshnessBonus = isFresh ? 0.3 : 0;
-            
+
             // Combined score with weights
             const finalScore = (
                 similarity * 0.4 +           // 40% content relevance
@@ -481,7 +481,7 @@ router.post('/reels/recommendations', async (req, res) => {
                 engagementScore * 0.15 +     // 15% engagement
                 freshnessBonus               // 30% fresh content bonus
             );
-            
+
             return { ...reel, similarity, recencyScore, engagementScore, finalScore, isFresh };
         };
 
@@ -499,11 +499,11 @@ router.post('/reels/recommendations', async (req, res) => {
         const diversifiedReels = [];
         const sourceCount = {};
         const maxPerSource = 3;
-        
+
         for (const reel of allScoredReels) {
             const sourceId = reel.source?._id?.toString() || 'unknown';
             const currentCount = sourceCount[sourceId] || 0;
-            
+
             if (currentCount < maxPerSource && diversifiedReels.length < limit * 2) {
                 diversifiedReels.push(reel);
                 sourceCount[sourceId] = currentCount + 1;
