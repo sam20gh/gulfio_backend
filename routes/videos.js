@@ -434,32 +434,48 @@ router.post('/reels/recommendations', async (req, res) => {
             return res.status(400).json({ error: 'Valid embedding array required' });
         }
 
+        // Validate embedding dimensions (should be 128 for PCA or 1536 for full)
+        if (embedding.length !== 128 && embedding.length !== 1536) {
+            return res.status(400).json({ error: `Invalid embedding size: ${embedding.length}. Expected 128 (PCA) or 1536 (full)` });
+        }
+
+        console.log(`🧠 Processing recommendation request with ${embedding.length}-dimension embedding`);
+
+        // Use PCA embeddings if we receive a 128-dimension embedding
+        const usePCA = embedding.length === 128;
+        const embeddingField = usePCA ? 'embedding_pca' : 'embedding';
+        const selectFields = `source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt ${embeddingField}`;
+
+        console.log(`🎯 Using ${usePCA ? 'PCA' : 'full'} embeddings for recommendation calculation`);
+
         // Get fresh reels (last 48 hours) and all reels separately
         const now = new Date();
         const twoDaysAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
 
         const [freshReels, allReels] = await Promise.all([
             Reel.find({
-                embedding: { $exists: true, $type: 'array' },
+                [embeddingField]: { $exists: true, $type: 'array' },
                 scrapedAt: { $gte: twoDaysAgo },
                 _id: { $nin: lastSeenReelIds } // Exclude recently seen
             })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+                .select(selectFields)
                 .populate('source', 'name icon favicon')
                 .lean(),
 
             Reel.find({
-                embedding: { $exists: true, $type: 'array' },
+                [embeddingField]: { $exists: true, $type: 'array' },
                 _id: { $nin: lastSeenReelIds } // Exclude recently seen
             })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+                .select(selectFields)
                 .populate('source', 'name icon favicon')
                 .lean()
         ]);
 
         // Enhanced scoring algorithm
         const scoreReel = (reel, isFresh = false) => {
-            const similarity = cosineSimilarity(embedding, reel.embedding);
+            // Use the appropriate embedding field based on input dimensions
+            const reelEmbedding = usePCA ? reel.embedding_pca : reel.embedding;
+            const similarity = cosineSimilarity(embedding, reelEmbedding);
 
             // Time-based scoring: newer content gets higher scores
             const reelAge = now - new Date(reel.scrapedAt || reel.publishedAt);
@@ -496,17 +512,53 @@ router.post('/reels/recommendations', async (req, res) => {
             .sort((a, b) => b.finalScore - a.finalScore);
 
         // Ensure variety by source (max 3 reels per source in top results)
+        // If we don't have enough content, gradually relax the source diversity constraint
         const diversifiedReels = [];
         const sourceCount = {};
-        const maxPerSource = 3;
+        const targetLimit = limit * 2; // Aim for 2x the limit for good selection
+        let maxPerSource = 3;
 
+        // First pass: strict diversity (max 3 per source)
         for (const reel of allScoredReels) {
             const sourceId = reel.source?._id?.toString() || 'unknown';
             const currentCount = sourceCount[sourceId] || 0;
 
-            if (currentCount < maxPerSource && diversifiedReels.length < limit * 2) {
+            if (currentCount < maxPerSource && diversifiedReels.length < targetLimit) {
                 diversifiedReels.push(reel);
                 sourceCount[sourceId] = currentCount + 1;
+            }
+        }
+
+        // If we don't have enough videos, do a second pass with relaxed diversity
+        if (diversifiedReels.length < limit) {
+            console.log(`⚠️ Only ${diversifiedReels.length} videos after diversity filter, relaxing constraints...`);
+            maxPerSource = 5; // Allow up to 5 per source
+
+            for (const reel of allScoredReels) {
+                if (diversifiedReels.length >= targetLimit) break;
+
+                const sourceId = reel.source?._id?.toString() || 'unknown';
+                const currentCount = sourceCount[sourceId] || 0;
+                const alreadyIncluded = diversifiedReels.some(r => r._id.toString() === reel._id.toString());
+
+                if (!alreadyIncluded && currentCount < maxPerSource) {
+                    diversifiedReels.push(reel);
+                    sourceCount[sourceId] = currentCount + 1;
+                }
+            }
+        }
+
+        // If still not enough, add any remaining videos without source restrictions
+        if (diversifiedReels.length < limit) {
+            console.log(`⚠️ Still only ${diversifiedReels.length} videos, removing source restrictions...`);
+
+            for (const reel of allScoredReels) {
+                if (diversifiedReels.length >= targetLimit) break;
+
+                const alreadyIncluded = diversifiedReels.some(r => r._id.toString() === reel._id.toString());
+                if (!alreadyIncluded) {
+                    diversifiedReels.push(reel);
+                }
             }
         }
 
@@ -514,7 +566,15 @@ router.post('/reels/recommendations', async (req, res) => {
         const finalReels = diversifiedReels.slice(0, limit);
 
         console.log(`🎯 AI Recommendations: ${finalReels.length} reels selected`, {
+            requestedLimit: limit,
+            embeddingType: usePCA ? 'PCA (128d)' : 'Full (1536d)',
+            excludedCount: lastSeenReelIds.length,
             freshCount: finalReels.filter(r => r.isFresh).length,
+            totalSourcesUsed: Object.keys(sourceCount).length,
+            sourcesBreakdown: Object.entries(sourceCount).map(([sourceId, count]) => {
+                const sourceName = finalReels.find(r => r.source?._id?.toString() === sourceId)?.source?.name || 'Unknown';
+                return `${sourceName}: ${count}`;
+            }).join(', '),
             avgSimilarity: (finalReels.reduce((sum, r) => sum + r.similarity, 0) / finalReels.length).toFixed(3),
             avgRecency: (finalReels.reduce((sum, r) => sum + r.recencyScore, 0) / finalReels.length).toFixed(3),
             avgFinalScore: (finalReels.reduce((sum, r) => sum + r.finalScore, 0) / finalReels.length).toFixed(3)
