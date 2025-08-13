@@ -425,29 +425,102 @@ router.get('/reels/trending', async (req, res) => {
     }
 });
 
-// Add personalized recommendations endpoint
+// Add personalized recommendations endpoint with time-based scoring
 router.post('/reels/recommendations', async (req, res) => {
     try {
-        const { embedding, limit = 10 } = req.body;
+        const { embedding, limit = 10, lastSeenReelIds = [] } = req.body;
 
         if (!embedding || !Array.isArray(embedding)) {
             return res.status(400).json({ error: 'Valid embedding array required' });
         }
 
-        const reels = await Reel.find({
-            embedding: { $exists: true, $type: 'array' }
-        })
-            .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
-            .populate('source', 'name icon favicon') // Populate source info
-            .lean();
+        // Get fresh reels (last 48 hours) and all reels separately
+        const now = new Date();
+        const twoDaysAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+        
+        const [freshReels, allReels] = await Promise.all([
+            Reel.find({
+                embedding: { $exists: true, $type: 'array' },
+                scrapedAt: { $gte: twoDaysAgo },
+                _id: { $nin: lastSeenReelIds } // Exclude recently seen
+            })
+                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+                .populate('source', 'name icon favicon')
+                .lean(),
+            
+            Reel.find({
+                embedding: { $exists: true, $type: 'array' },
+                _id: { $nin: lastSeenReelIds } // Exclude recently seen
+            })
+                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding')
+                .populate('source', 'name icon favicon')
+                .lean()
+        ]);
 
-        // Calculate similarity and sort
-        const reelsWithSimilarity = reels.map(reel => {
+        // Enhanced scoring algorithm
+        const scoreReel = (reel, isFresh = false) => {
             const similarity = cosineSimilarity(embedding, reel.embedding);
-            return { ...reel, similarity };
-        }).sort((a, b) => b.similarity - a.similarity);
+            
+            // Time-based scoring: newer content gets higher scores
+            const reelAge = now - new Date(reel.scrapedAt || reel.publishedAt);
+            const hoursAge = reelAge / (1000 * 60 * 60);
+            const recencyScore = Math.max(0, 1 - (hoursAge / 168)); // Decay over 1 week
+            
+            // Engagement scoring (normalize to 0-1 range)
+            const maxViews = 10000; // Reasonable upper bound
+            const engagementScore = Math.min(1, (reel.viewCount || 0) / maxViews) * 0.3 +
+                                  Math.min(1, (reel.likes || 0) / 1000) * 0.2;
+            
+            // Fresh content bonus
+            const freshnessBonus = isFresh ? 0.3 : 0;
+            
+            // Combined score with weights
+            const finalScore = (
+                similarity * 0.4 +           // 40% content relevance
+                recencyScore * 0.35 +        // 35% recency
+                engagementScore * 0.15 +     // 15% engagement
+                freshnessBonus               // 30% fresh content bonus
+            );
+            
+            return { ...reel, similarity, recencyScore, engagementScore, finalScore, isFresh };
+        };
 
-        res.json(reelsWithSimilarity.slice(0, limit));
+        // Score fresh reels with bonus, other reels normally
+        const scoredFreshReels = freshReels.map(reel => scoreReel(reel, true));
+        const scoredOtherReels = allReels
+            .filter(reel => !freshReels.some(fresh => fresh._id.toString() === reel._id.toString()))
+            .map(reel => scoreReel(reel, false));
+
+        // Combine and sort by final score
+        const allScoredReels = [...scoredFreshReels, ...scoredOtherReels]
+            .sort((a, b) => b.finalScore - a.finalScore);
+
+        // Ensure variety by source (max 3 reels per source in top results)
+        const diversifiedReels = [];
+        const sourceCount = {};
+        const maxPerSource = 3;
+        
+        for (const reel of allScoredReels) {
+            const sourceId = reel.source?._id?.toString() || 'unknown';
+            const currentCount = sourceCount[sourceId] || 0;
+            
+            if (currentCount < maxPerSource && diversifiedReels.length < limit * 2) {
+                diversifiedReels.push(reel);
+                sourceCount[sourceId] = currentCount + 1;
+            }
+        }
+
+        // Final selection prioritizing fresh content
+        const finalReels = diversifiedReels.slice(0, limit);
+
+        console.log(`🎯 AI Recommendations: ${finalReels.length} reels selected`, {
+            freshCount: finalReels.filter(r => r.isFresh).length,
+            avgSimilarity: (finalReels.reduce((sum, r) => sum + r.similarity, 0) / finalReels.length).toFixed(3),
+            avgRecency: (finalReels.reduce((sum, r) => sum + r.recencyScore, 0) / finalReels.length).toFixed(3),
+            avgFinalScore: (finalReels.reduce((sum, r) => sum + r.finalScore, 0) / finalReels.length).toFixed(3)
+        });
+
+        res.json(finalReels);
     } catch (err) {
         console.error('Error fetching recommendations:', err.message);
         res.status(500).json({ error: 'Failed to fetch recommendations' });
