@@ -1,3 +1,39 @@
+
+// 🔧 Normalize and filter image URLs (strip css url(...), resolve to absolute, drop social SVGs, remove trackers)
+function normalizeImages(imgs, baseUrl) {
+    const EXCLUDE_FILES = new Set([
+        'insta_icon_5.svg', 'facebook.svg', 'tiktok_icon.svg', 'x_logo_1.svg', 'whatsapp.svg', 'mail.svg'
+    ]);
+    function unwrapCssUrl(s) {
+        if (!s) return s;
+        const m = s.match(/^\s*url\((?:'|")?([^'")]+)(?:'|")?\)\s*$/i);
+        return m ? m[1] : s;
+    }
+    function absolutize(u) {
+        try {
+            return new URL(u, baseUrl).toString();
+        } catch {
+            return u;
+        }
+    }
+    return Array.from(new Set(
+        (imgs || [])
+            .map(unwrapCssUrl)
+            .map(u => u && u.trim())
+            .filter(Boolean)
+            .filter(u => !/^data:/i.test(u))                        // drop data-uri
+            .map(absolutize)
+            .filter(u => {
+                try {
+                    const name = new URL(u).pathname.split('/').pop().toLowerCase();
+                    if (EXCLUDE_FILES.has(name)) return false;
+                    if (/\/wp-content\/themes\/whatson-grow\/images\//i.test(u) && name.endsWith('.svg')) return false;
+                    return true;
+                } catch { return false; }
+            })
+    ));
+}
+
 // scraper/scrape.js
 const axios = require('axios');
 const cheerio = require('cheerio');
