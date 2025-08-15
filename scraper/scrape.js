@@ -209,13 +209,37 @@ async function scrapeAllSources(frequency = null) {
                     }
 
                     // Extract images - filter out hidden images
-                    let images = $$(source.imageSelector || 'img')
-                        .filter((_, img) => isElementVisible($$, img))
-                        .map((_, img) => $$(img).attr('src'))
-                        .get()
+                    // Enhanced image extraction: supports <img>, data-bg, and CSS background-image
+                    function extractBgUrl(val) {
+                        if (!val) return null;
+                        // Handles values like: url(https://...) or url('https://...') or url("https://...")
+                        const m = /url\((?:'|\")?([^\)'\"]+)(?:'|\")?\)/i.exec(val);
+                        return m ? m[1] : null;
+                    }
+
+                    let images = [];
+                    const imageNodes = $$(source.imageSelector || 'img')
+                        .filter((_, el) => isElementVisible($$, el));
+
+                    imageNodes.each((_, el) => {
+                        const $el = $$(el);
+                        let src = null;
+
+                        if ($el.is('img')) {
+                            src = $el.attr('src') || $el.attr('data-src') || $el.attr('data-lazy-src');
+                        } else {
+                            // Support containers with background images
+                            src = $el.attr('data-bg') || extractBgUrl($el.attr('style'));
+                        }
+
+                        if (src) images.push(src);
+                    });
+
+                    // Cleanup and normalize
+                    images = images
                         .filter(Boolean)
+                        .map(s => s.trim())
                         .filter(src => {
-                            // Filter out tracking pixels and very small images
                             const url = src.toLowerCase();
                             return !url.includes('1x1') &&
                                 !url.includes('pixel') &&
@@ -223,16 +247,16 @@ async function scrapeAllSources(frequency = null) {
                                 !url.includes('analytics');
                         })
                         .map(src => {
-                            // 🔧 Fix low resolution by replacing width parameter
+                            // Replace low-res width params if present
                             src = src.replace(/w=\d+/g, 'w=800');
-
-                            // 🌐 Handle different URL types
                             if (src.startsWith('//')) return 'https:' + src;
                             if (src.startsWith('/')) return `${source.baseUrl.replace(/\/$/, '')}${src}`;
                             return src;
                         });
 
-                    // Fallback to Open Graph / Twitter meta
+                    // Deduplicate
+                    images = Array.from(new Set(images));
+                    // Fallback to Open Graph / Twitter meta// Fallback to Open Graph / Twitter meta
                     if (images.length === 0) {
                         const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
                         if (og) {
