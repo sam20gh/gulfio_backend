@@ -22,6 +22,20 @@ function normalizeImages(imgs, baseUrl) {
             .map(u => u && u.trim())
             .filter(Boolean)
             .filter(u => !/^data:/i.test(u))                        // drop data-uri
+            .filter(src => {
+                const url = src.toLowerCase();
+                return !url.includes('1x1') &&
+                    !url.includes('pixel') &&
+                    !url.includes('tracker') &&
+                    !url.includes('analytics');
+            })
+            .map(src => {
+                // Replace low-res width params if present
+                src = src.replace(/w=\d+/g, 'w=800');
+                if (src.startsWith('//')) return 'https:' + src;
+                if (src.startsWith('/')) return `${baseUrl.replace(/\/$/, '')}${src}`;
+                return src;
+            })
             .map(absolutize)
             .filter(u => {
                 try {
@@ -271,32 +285,15 @@ async function scrapeAllSources(frequency = null) {
                         if (src) images.push(src);
                     });
 
-                    // Cleanup and normalize
-                    images = images
-                        .filter(Boolean)
-                        .map(s => s.trim())
-                        .filter(src => {
-                            const url = src.toLowerCase();
-                            return !url.includes('1x1') &&
-                                !url.includes('pixel') &&
-                                !url.includes('tracker') &&
-                                !url.includes('analytics');
-                        })
-                        .map(src => {
-                            // Replace low-res width params if present
-                            src = src.replace(/w=\d+/g, 'w=800');
-                            if (src.startsWith('//')) return 'https:' + src;
-                            if (src.startsWith('/')) return `${source.baseUrl.replace(/\/$/, '')}${src}`;
-                            return src;
-                        });
+                    // Use the normalizeImages function for proper cleanup
+                    images = normalizeImages(images, source.baseUrl || source.url);
 
-                    // Deduplicate
-                    images = Array.from(new Set(images));
-                    // Fallback to Open Graph / Twitter meta// Fallback to Open Graph / Twitter meta
+                    // Fallback to Open Graph / Twitter meta
                     if (images.length === 0) {
                         const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
                         if (og) {
-                            images.push(og.startsWith('//') ? 'https:' + og : og);
+                            const fallbackImages = [og];
+                            images = normalizeImages(fallbackImages, source.baseUrl || source.url);
                         }
                     }
                     let embedding = [];
