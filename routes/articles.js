@@ -667,7 +667,7 @@ articleRouter.get('/related/:id', async (req, res) => {
         embedding_pca: { $exists: true, $not: { $size: 0 } },
         category: baseArticle.category
       })
-        .select('title category sourceId publishedAt image embedding_pca')
+        .select('title content category sourceId publishedAt image url viewCount likes dislikes embedding_pca')
         .limit(50) // Get more candidates for better similarity scoring
         .lean();
 
@@ -700,7 +700,7 @@ articleRouter.get('/related/:id', async (req, res) => {
         category: baseArticle.category,
         sourceId: { $ne: baseArticle.sourceId }
       })
-        .select('title category sourceId publishedAt image')
+        .select('title content category sourceId publishedAt image url viewCount likes dislikes')
         .sort({ publishedAt: -1 })
         .limit(remaining)
         .lean();
@@ -716,7 +716,7 @@ articleRouter.get('/related/:id', async (req, res) => {
           _id: { $nin: newExcludeIds },
           sourceId: baseArticle.sourceId
         })
-          .select('title category sourceId publishedAt image')
+          .select('title content category sourceId publishedAt image url viewCount likes dislikes')
           .sort({ publishedAt: -1 })
           .limit(stillRemaining)
           .lean();
@@ -725,18 +725,13 @@ articleRouter.get('/related/:id', async (req, res) => {
       }
     }
 
-    // Clean up the results
+    // Clean up the results - return complete article objects
     const finalResults = relatedArticles.slice(0, limit).map(article => ({
-      _id: article._id,
-      title: article.title,
-      category: article.category,
-      sourceId: article.sourceId,
-      publishedAt: article.publishedAt,
-      image: article.image,
+      ...article,
       similarity: article.similarity || 0
     }));
 
-    console.log(`✅ Returning ${finalResults.length} related articles`);
+    console.log(`✅ Returning ${finalResults.length} related articles with complete data`);
     res.json(finalResults);
 
   } catch (error) {
