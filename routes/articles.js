@@ -44,6 +44,17 @@ function calculateEngagementScore(article) {
   );
 }
 
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+}
+
 /** Clear all article caches (used after reacts) */
 async function clearArticlesCache() {
   const keys = await redis.keys('articles_*');
@@ -625,6 +636,112 @@ articleRouter.put('/:id', auth, async (req, res) => {
     res.json(updatedArticle);
   } catch (error) {
     res.status(400).json({ message: 'Error updating article', error: error.message });
+  }
+});
+
+// GET related articles based on similarity
+articleRouter.get('/related/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 5, 20); // Max 20 related articles
+
+    console.log(`🔍 Fetching related articles for: ${id}, limit: ${limit}`);
+
+    // Get the base article
+    const baseArticle = await Article.findById(id).lean();
+    if (!baseArticle) {
+      return res.status(404).json({ message: 'Article not found' });
+    }
+
+    console.log(`📰 Base article: "${baseArticle.title?.slice(0, 50)}..." Category: ${baseArticle.category}`);
+
+    let relatedArticles = [];
+
+    // Method 1: Try embedding-based similarity if embeddings exist
+    if (baseArticle.embedding_pca && baseArticle.embedding_pca.length > 0) {
+      console.log('🔍 Using PCA embedding-based similarity');
+
+      // Find articles with PCA embeddings in the same category
+      const candidateArticles = await Article.find({
+        _id: { $ne: id },
+        embedding_pca: { $exists: true, $not: { $size: 0 } },
+        category: baseArticle.category
+      })
+        .select('title category sourceId publishedAt image embedding_pca')
+        .limit(50) // Get more candidates for better similarity scoring
+        .lean();
+
+      console.log(`📊 Found ${candidateArticles.length} candidate articles with PCA embeddings`);
+
+      // Calculate cosine similarity with PCA embeddings
+      const similarities = candidateArticles.map(article => {
+        const similarity = cosineSimilarity(baseArticle.embedding_pca, article.embedding_pca);
+        return { ...article, similarity };
+      });
+
+      // Sort by similarity and take top results
+      relatedArticles = similarities
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
+
+      console.log(`🔍 Top similarities: ${relatedArticles.slice(0, 3).map(a => a.similarity.toFixed(3)).join(', ')}`);
+    }
+
+    // Method 2: If no embedding results or not enough, fall back to category/source similarity
+    if (relatedArticles.length < limit) {
+      console.log('🔍 Using category/source-based similarity as fallback');
+
+      const remaining = limit - relatedArticles.length;
+      const excludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+
+      // First try same category, different source
+      let categoryArticles = await Article.find({
+        _id: { $nin: excludeIds },
+        category: baseArticle.category,
+        sourceId: { $ne: baseArticle.sourceId }
+      })
+        .select('title category sourceId publishedAt image')
+        .sort({ publishedAt: -1 })
+        .limit(remaining)
+        .lean();
+
+      relatedArticles = relatedArticles.concat(categoryArticles.map(a => ({ ...a, similarity: 0.7 })));
+
+      // If still not enough, try same source
+      if (relatedArticles.length < limit) {
+        const stillRemaining = limit - relatedArticles.length;
+        const newExcludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+
+        const sourceArticles = await Article.find({
+          _id: { $nin: newExcludeIds },
+          sourceId: baseArticle.sourceId
+        })
+          .select('title category sourceId publishedAt image')
+          .sort({ publishedAt: -1 })
+          .limit(stillRemaining)
+          .lean();
+
+        relatedArticles = relatedArticles.concat(sourceArticles.map(a => ({ ...a, similarity: 0.5 })));
+      }
+    }
+
+    // Clean up the results
+    const finalResults = relatedArticles.slice(0, limit).map(article => ({
+      _id: article._id,
+      title: article.title,
+      category: article.category,
+      sourceId: article.sourceId,
+      publishedAt: article.publishedAt,
+      image: article.image,
+      similarity: article.similarity || 0
+    }));
+
+    console.log(`✅ Returning ${finalResults.length} related articles`);
+    res.json(finalResults);
+
+  } catch (error) {
+    console.error('Error fetching related articles:', error);
+    res.status(500).json({ message: 'Error fetching related articles', error: error.message });
   }
 });
 
