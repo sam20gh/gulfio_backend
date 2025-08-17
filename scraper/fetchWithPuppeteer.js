@@ -3,25 +3,32 @@ const fs = require('fs');
 
 async function findChrome() {
     const possiblePaths = [
+        // Puppeteer's bundled Chrome (should be first priority)
+        puppeteer.executablePath(),
+        // macOS paths
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        // Linux paths
         '/usr/bin/google-chrome-stable',
         '/usr/bin/google-chrome',
         '/usr/bin/chromium-browser',
         '/usr/bin/chromium',
-        puppeteer.executablePath(), // Puppeteer's bundled Chrome
     ];
 
     for (const path of possiblePaths) {
         try {
-            if (fs.existsSync(path)) {
+            if (path && fs.existsSync(path)) {
                 console.log(`[Puppeteer] Found Chrome at: ${path}`);
                 return path;
             }
         } catch (error) {
             // Continue to next path
+            console.log(`[Puppeteer] Path check failed for ${path}:`, error.message);
         }
     }
 
     console.log('[Puppeteer] No Chrome executable found, using Puppeteer default');
+    console.log('[Puppeteer] If this fails, run: npx puppeteer browsers install chrome');
     return undefined;
 }
 
@@ -60,7 +67,20 @@ async function fetchWithPuppeteer(url, options = {}) {
             args: launchOptions.args.length + ' args'
         });
 
-        browser = await puppeteer.launch(launchOptions);
+        try {
+            browser = await puppeteer.launch(launchOptions);
+        } catch (launchError) {
+            console.error('[Puppeteer] Failed to launch browser:', launchError.message);
+            
+            // If Chrome path was specified but failed, try without explicit path
+            if (launchOptions.executablePath) {
+                console.log('[Puppeteer] Retrying without explicit Chrome path...');
+                delete launchOptions.executablePath;
+                browser = await puppeteer.launch(launchOptions);
+            } else {
+                throw launchError;
+            }
+        }
         const page = await browser.newPage();
 
         // Set user agent to avoid detection
