@@ -71,7 +71,7 @@ async function fetchWithPuppeteer(url, options = {}) {
             browser = await puppeteer.launch(launchOptions);
         } catch (launchError) {
             console.error('[Puppeteer] Failed to launch browser:', launchError.message);
-            
+
             // If Chrome path was specified but failed, try without explicit path
             if (launchOptions.executablePath) {
                 console.log('[Puppeteer] Retrying without explicit Chrome path...');
