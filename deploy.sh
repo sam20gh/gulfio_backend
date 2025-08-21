@@ -71,7 +71,12 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars R2_PUBLIC_URL="${R2_PUBLIC_URL}" \
     --set-env-vars R2_ACCESS_KEY="${R2_ACCESS_KEY}" \
     --set-env-vars R2_SECRET_KEY="${R2_SECRET_KEY}" \
-    --set-env-vars R2_BUCKET="${R2_BUCKET}"
+    --set-env-vars R2_BUCKET="${R2_BUCKET}" \
+    --set-env-vars AWS_S3_BUCKET="${AWS_S3_BUCKET}" \
+    --set-env-vars AWS_S3_REGION="${AWS_S3_REGION}" \
+    --set-env-vars AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+    --set-env-vars AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+    --set-env-vars LOTTO_URL="${LOTTO_URL}"
 
 if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
