@@ -19,69 +19,69 @@ async function addPersonalizationIndexes() {
         console.log('✅ Connected to MongoDB');
 
         console.log('\n📊 Adding Reel indexes for personalization...');
-        
+
         // Indexes for user interaction arrays
         await Reel.collection.createIndex({ "likedBy": 1 });
         console.log('✅ Added index: likedBy');
-        
+
         await Reel.collection.createIndex({ "dislikedBy": 1 });
         console.log('✅ Added index: dislikedBy');
-        
+
         await Reel.collection.createIndex({ "savedBy": 1 });
         console.log('✅ Added index: savedBy');
-        
+
         await Reel.collection.createIndex({ "viewedBy": 1 });
         console.log('✅ Added index: viewedBy');
 
         // Compound indexes for personalized queries
-        await Reel.collection.createIndex({ 
-            "scrapedAt": -1, 
-            "viewCount": -1 
+        await Reel.collection.createIndex({
+            "scrapedAt": -1,
+            "viewCount": -1
         });
         console.log('✅ Added compound index: scrapedAt + viewCount');
 
-        await Reel.collection.createIndex({ 
-            "likes": -1, 
-            "scrapedAt": -1 
+        await Reel.collection.createIndex({
+            "likes": -1,
+            "scrapedAt": -1
         });
         console.log('✅ Added compound index: likes + scrapedAt');
 
-        await Reel.collection.createIndex({ 
-            "embedding": 1, 
-            "scrapedAt": -1 
+        await Reel.collection.createIndex({
+            "embedding": 1,
+            "scrapedAt": -1
         }, { sparse: true });
         console.log('✅ Added sparse index: embedding + scrapedAt');
 
-        await Reel.collection.createIndex({ 
-            "embedding_pca": 1, 
-            "scrapedAt": -1 
+        await Reel.collection.createIndex({
+            "embedding_pca": 1,
+            "scrapedAt": -1
         }, { sparse: true });
         console.log('✅ Added sparse index: embedding_pca + scrapedAt');
 
         console.log('\n📈 Adding UserActivity indexes...');
-        
+
         // UserActivity indexes for personalization
-        await UserActivity.collection.createIndex({ 
-            "userId": 1, 
-            "eventType": 1, 
-            "timestamp": -1 
+        await UserActivity.collection.createIndex({
+            "userId": 1,
+            "eventType": 1,
+            "timestamp": -1
         });
         console.log('✅ Added compound index: userId + eventType + timestamp');
 
-        await UserActivity.collection.createIndex({ 
-            "userId": 1, 
-            "timestamp": -1 
+        await UserActivity.collection.createIndex({
+            "userId": 1,
+            "timestamp": -1
         });
         console.log('✅ Added compound index: userId + timestamp');
 
-        await UserActivity.collection.createIndex({ 
-            "articleId": 1, 
-            "eventType": 1 
+        await UserActivity.collection.createIndex({
+            "articleId": 1,
+            "eventType": 1
         });
         console.log('✅ Added compound index: articleId + eventType');
 
         console.log('\n📋 Listing all indexes...');
-        
+
         // List all indexes on Reel collection
         const reelIndexes = await Reel.collection.listIndexes().toArray();
         console.log('\n🎬 Reel collection indexes:');
@@ -124,8 +124,8 @@ async function getDatabaseStats() {
 
         console.log('\n📊 Database Statistics:');
         console.log(`  Total Reels: ${reelCount.toLocaleString()}`);
-        console.log(`  Reels with full embeddings: ${reelsWithEmbeddings.toLocaleString()} (${((reelsWithEmbeddings/reelCount)*100).toFixed(1)}%)`);
-        console.log(`  Reels with PCA embeddings: ${reelsWithPCAEmbeddings.toLocaleString()} (${((reelsWithPCAEmbeddings/reelCount)*100).toFixed(1)}%)`);
+        console.log(`  Reels with full embeddings: ${reelsWithEmbeddings.toLocaleString()} (${((reelsWithEmbeddings / reelCount) * 100).toFixed(1)}%)`);
+        console.log(`  Reels with PCA embeddings: ${reelsWithPCAEmbeddings.toLocaleString()} (${((reelsWithPCAEmbeddings / reelCount) * 100).toFixed(1)}%)`);
         console.log(`  User activities: ${activityCount.toLocaleString()}`);
 
         // Sample reel with interactions

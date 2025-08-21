@@ -65,13 +65,13 @@ function cosineSimilarity(vec1, vec2) {
 // Helper: Intelligent shuffle that maintains some structure while randomizing
 function intelligentShuffle(reels, seed = Date.now()) {
     // Use seed for consistent randomization if needed
-    Math.seedrandom = Math.seedrandom || function(seed) {
+    Math.seedrandom = Math.seedrandom || function (seed) {
         const m = 2147483647; // 2^31 - 1
         let a = 1103515245;
         let c = 12345;
         let state = seed ? seed : Math.floor(Math.random() * (m - 1));
-        
-        return function() {
+
+        return function () {
             state = (a * state + c) % m;
             return state / m;
         };
@@ -79,19 +79,19 @@ function intelligentShuffle(reels, seed = Date.now()) {
 
     const rng = Math.seedrandom(seed);
     const result = [...reels];
-    
+
     // Weighted Fisher-Yates shuffle - prioritizes higher weight items towards the beginning
     for (let i = result.length - 1; i > 0; i--) {
         // Adjust swap probability based on content weight
         const currentWeight = result[i].weight || 0.5;
         const swapProbability = currentWeight * rng();
-        
+
         if (swapProbability > 0.3) { // Threshold for swapping
             const j = Math.floor(rng() * (i + 1));
             [result[i], result[j]] = [result[j], result[i]];
         }
     }
-    
+
     return result;
 }
 
@@ -102,22 +102,22 @@ async function getUserPreferences(userId) {
             userId,
             eventType: { $in: ['view', 'like', 'save'] }
         })
-        .populate('articleId', 'category embedding')
-        .sort({ timestamp: -1 })
-        .limit(100)
-        .lean();
+            .populate('articleId', 'category embedding')
+            .sort({ timestamp: -1 })
+            .limit(100)
+            .lean();
 
         // Also check reel interactions from the Reel model
-        const likedReels = await Reel.find({ 
-            likedBy: userId 
+        const likedReels = await Reel.find({
+            likedBy: userId
         }).select('source categories embedding').populate('source', 'name').lean();
 
-        const savedReels = await Reel.find({ 
-            savedBy: userId 
+        const savedReels = await Reel.find({
+            savedBy: userId
         }).select('source categories embedding').populate('source', 'name').lean();
 
-        const viewedReels = await Reel.find({ 
-            viewedBy: userId 
+        const viewedReels = await Reel.find({
+            viewedBy: userId
         }).select('source categories embedding').populate('source', 'name').lean();
 
         // Analyze preferences
@@ -126,15 +126,15 @@ async function getUserPreferences(userId) {
         const interactionWeights = { like: 3, save: 2.5, view: 1 };
 
         // Process reel interactions
-        [...likedReels.map(r => ({...r, type: 'like'})), 
-         ...savedReels.map(r => ({...r, type: 'save'})), 
-         ...viewedReels.map(r => ({...r, type: 'view'}))].forEach(reel => {
+        [...likedReels.map(r => ({ ...r, type: 'like' })),
+        ...savedReels.map(r => ({ ...r, type: 'save' })),
+        ...viewedReels.map(r => ({ ...r, type: 'view' }))].forEach(reel => {
             const weight = interactionWeights[reel.type] || 1;
-            
+
             // Source preferences
             const sourceName = reel.source?.name || 'Unknown';
             sourcePreferences[sourceName] = (sourcePreferences[sourceName] || 0) + weight;
-            
+
             // Category preferences
             if (reel.categories) {
                 reel.categories.forEach(category => {
@@ -152,22 +152,22 @@ async function getUserPreferences(userId) {
         if (validEmbeddings.length > 0) {
             const embeddingSize = validEmbeddings[0].length;
             averageEmbedding = new Array(embeddingSize).fill(0);
-            
+
             validEmbeddings.forEach(embedding => {
                 embedding.forEach((value, index) => {
                     averageEmbedding[index] += value;
                 });
             });
-            
+
             averageEmbedding = averageEmbedding.map(sum => sum / validEmbeddings.length);
         }
 
         return {
             sourcePreferences: Object.entries(sourcePreferences)
-                .sort(([,a], [,b]) => b - a)
+                .sort(([, a], [, b]) => b - a)
                 .slice(0, 10), // Top 10 sources
             categoryPreferences: Object.entries(categoryPreferences)
-                .sort(([,a], [,b]) => b - a)
+                .sort(([, a], [, b]) => b - a)
                 .slice(0, 10), // Top 10 categories
             averageEmbedding,
             totalInteractions: likedReels.length + savedReels.length + viewedReels.length,
@@ -189,15 +189,15 @@ async function getUserPreferences(userId) {
 async function getPersonalizedReels(req, res, userId, limit, page, skip) {
     try {
         console.log(`🎯 Getting personalized reels for user ${userId}`);
-        
+
         // Get user preferences
         const userPrefs = await getUserPreferences(userId);
         console.log(`👤 User preferences: ${userPrefs.sourcePreferences.length} sources, ${userPrefs.categoryPreferences.length} categories, ${userPrefs.totalInteractions} interactions`);
 
         // Get user's recently viewed reels to avoid duplicates
-        const recentlyViewedIds = await Reel.find({ 
-            viewedBy: userId 
-        }).select('_id').sort({ updatedAt: -1 }).limit(50).lean().then(reels => 
+        const recentlyViewedIds = await Reel.find({
+            viewedBy: userId
+        }).select('_id').sort({ updatedAt: -1 }).limit(50).lean().then(reels =>
             reels.map(r => r._id)
         );
 
@@ -207,7 +207,7 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
 
         // Strategy based on user interaction history
         let strategy = 'discovery'; // Default for new users
-        
+
         if (userPrefs.totalInteractions > 10) {
             strategy = 'balanced'; // Mix of personalized and discovery
         }
@@ -229,22 +229,22 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
                     scrapedAt: { $gte: oneDayAgo },
                     _id: { $nin: recentlyViewedIds }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ scrapedAt: -1 })
-                .limit(Math.ceil(limit * 0.25))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ scrapedAt: -1 })
+                    .limit(Math.ceil(limit * 0.25))
+                    .lean(),
                 // 15% Trending content
                 Reel.find({
                     scrapedAt: { $gte: oneWeekAgo },
                     _id: { $nin: recentlyViewedIds },
                     $expr: { $gt: [{ $add: ['$likes', { $multiply: ['$viewCount', 0.1] }] }, 10] }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ likes: -1, viewCount: -1 })
-                .limit(Math.ceil(limit * 0.15))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ likes: -1, viewCount: -1 })
+                    .limit(Math.ceil(limit * 0.15))
+                    .lean(),
                 // 10% Random for serendipity
                 Reel.aggregate([
                     { $match: { _id: { $nin: recentlyViewedIds } } },
@@ -270,41 +270,41 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
         } else if (strategy === 'balanced') {
             // Balanced approach for moderate users
             const preferredSources = userPrefs.sourcePreferences.slice(0, 5).map(([name]) => name);
-            
+
             const [sourceBasedReels, freshReels, popularReels, randomReels] = await Promise.all([
                 // 40% From preferred sources
                 Reel.find({
                     _id: { $nin: recentlyViewedIds }
                 })
-                .populate('source', 'name icon favicon')
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .lean()
-                .then(reels => 
-                    reels.filter(reel => 
-                        preferredSources.includes(reel.source?.name)
-                    ).sort((a, b) => new Date(b.scrapedAt) - new Date(a.scrapedAt))
-                     .slice(0, Math.ceil(limit * 0.4))
-                ),
+                    .populate('source', 'name icon favicon')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .lean()
+                    .then(reels =>
+                        reels.filter(reel =>
+                            preferredSources.includes(reel.source?.name)
+                        ).sort((a, b) => new Date(b.scrapedAt) - new Date(a.scrapedAt))
+                            .slice(0, Math.ceil(limit * 0.4))
+                    ),
                 // 30% Fresh content
                 Reel.find({
                     scrapedAt: { $gte: oneDayAgo },
                     _id: { $nin: recentlyViewedIds }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ scrapedAt: -1 })
-                .limit(Math.ceil(limit * 0.3))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ scrapedAt: -1 })
+                    .limit(Math.ceil(limit * 0.3))
+                    .lean(),
                 // 20% Popular content
                 Reel.find({
                     _id: { $nin: recentlyViewedIds },
                     viewCount: { $gt: 10 }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ viewCount: -1, likes: -1 })
-                .limit(Math.ceil(limit * 0.2))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ viewCount: -1, likes: -1 })
+                    .limit(Math.ceil(limit * 0.2))
+                    .lean(),
                 // 10% Random
                 Reel.aggregate([
                     { $match: { _id: { $nin: recentlyViewedIds } } },
@@ -335,32 +335,32 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
                     scrapedAt: { $gte: oneDayAgo },
                     _id: { $nin: recentlyViewedIds }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ scrapedAt: -1 })
-                .limit(Math.ceil(limit * 0.3))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ scrapedAt: -1 })
+                    .limit(Math.ceil(limit * 0.3))
+                    .lean(),
                 // 30% Popular content
                 Reel.find({
                     _id: { $nin: recentlyViewedIds },
                     viewCount: { $gt: 50 }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ viewCount: -1, likes: -1 })
-                .limit(Math.ceil(limit * 0.3))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ viewCount: -1, likes: -1 })
+                    .limit(Math.ceil(limit * 0.3))
+                    .lean(),
                 // 25% Trending content
                 Reel.find({
                     scrapedAt: { $gte: oneWeekAgo },
                     _id: { $nin: recentlyViewedIds },
                     $expr: { $gt: [{ $add: ['$likes', { $multiply: ['$viewCount', 0.1] }] }, 20] }
                 })
-                .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                .populate('source', 'name icon favicon')
-                .sort({ likes: -1, viewCount: -1 })
-                .limit(Math.ceil(limit * 0.25))
-                .lean(),
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .populate('source', 'name icon favicon')
+                    .sort({ likes: -1, viewCount: -1 })
+                    .limit(Math.ceil(limit * 0.25))
+                    .lean(),
                 // 15% Random for discovery
                 Reel.aggregate([
                     { $match: { _id: { $nin: recentlyViewedIds } } },
@@ -387,7 +387,7 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
 
         // Remove duplicates and ensure variety
         const uniqueReels = removeDuplicatesAndEnsureVariety(reels, limit);
-        
+
         // Intelligent shuffle that maintains some structure
         const shuffledReels = intelligentShuffle(uniqueReels, page + Date.now());
 
@@ -466,24 +466,24 @@ async function getEmbeddingBasedReels(userEmbedding, limit, excludeIds = []) {
     try {
         const usePCA = userEmbedding.length === 128;
         const embeddingField = usePCA ? 'embedding_pca' : 'embedding';
-        
+
         const reelsWithEmbeddings = await Reel.find({
             [embeddingField]: { $exists: true, $type: 'array' },
             _id: { $nin: excludeIds }
         })
-        .select(`source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt ${embeddingField} originalKey`)
-        .populate('source', 'name icon favicon')
-        .lean();
+            .select(`source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt ${embeddingField} originalKey`)
+            .populate('source', 'name icon favicon')
+            .lean();
 
         // Calculate similarity scores
         const scoredReels = reelsWithEmbeddings.map(reel => {
             const reelEmbedding = usePCA ? reel.embedding_pca : reel.embedding;
             const similarity = cosineSimilarity(userEmbedding, reelEmbedding);
-            
+
             // Add small random factor to prevent identical recommendations
             const randomFactor = (Math.random() - 0.5) * 0.1; // ±0.05
             const finalScore = similarity + randomFactor;
-            
+
             return {
                 ...reel,
                 similarity: finalScore
@@ -494,7 +494,7 @@ async function getEmbeddingBasedReels(userEmbedding, limit, excludeIds = []) {
         return scoredReels
             .sort((a, b) => b.similarity - a.similarity)
             .slice(0, limit);
-            
+
     } catch (error) {
         console.error('Error getting embedding-based reels:', error);
         return [];
@@ -506,26 +506,26 @@ function removeDuplicatesAndEnsureVariety(reels, targetLimit) {
     const seen = new Set();
     const sourceCount = {};
     const maxPerSource = Math.ceil(targetLimit / 3); // Max 33% from any single source
-    
+
     return reels.filter(reel => {
         const reelId = reel._id.toString();
         const sourceId = reel.source?._id?.toString() || 'unknown';
         const sourceName = reel.source?.name || 'Unknown';
-        
+
         // Check for duplicates
         if (seen.has(reelId)) {
             return false;
         }
-        
+
         // Check source variety
         const currentSourceCount = sourceCount[sourceId] || 0;
         if (currentSourceCount >= maxPerSource) {
             return false;
         }
-        
+
         seen.add(reelId);
         sourceCount[sourceId] = currentSourceCount + 1;
-        
+
         return true;
     }).slice(0, targetLimit);
 }
@@ -779,11 +779,11 @@ router.get('/reels', async (req, res) => {
                         const reelId = reel._id.toString();
                         const sourceId = reel.source?._id?.toString() || 'unknown';
                         const sourceCurrentCount = sourceCount[sourceId] || 0;
-                        
+
                         if (usedIds.has(reelId) || sourceCurrentCount >= maxPerSource) {
                             return false;
                         }
-                        
+
                         usedIds.add(reelId);
                         sourceCount[sourceId] = sourceCurrentCount + 1;
                         return true;
@@ -931,7 +931,7 @@ router.post('/reels/:reelId/view', async (req, res) => {
 
         // Find and update the reel's view count and user tracking
         const updateQuery = { $inc: { viewCount: 1 } };
-        
+
         // Add user to viewedBy array if authenticated (avoid duplicates)
         if (userId) {
             updateQuery.$addToSet = { viewedBy: userId };
@@ -995,7 +995,7 @@ router.post('/reels/:reelId/like', async (req, res) => {
     try {
         const { reelId } = req.params;
         const authToken = req.headers.authorization?.replace('Bearer ', '');
-        
+
         if (!authToken) {
             return res.status(401).json({ error: 'Authentication required' });
         }
@@ -1019,7 +1019,7 @@ router.post('/reels/:reelId/like', async (req, res) => {
         const isDisliked = reel.dislikedBy.includes(userId);
 
         let updateQuery = {};
-        
+
         if (isLiked) {
             // Unlike
             updateQuery = {
@@ -1032,7 +1032,7 @@ router.post('/reels/:reelId/like', async (req, res) => {
                 $inc: { likes: 1 },
                 $addToSet: { likedBy: userId }
             };
-            
+
             if (isDisliked) {
                 updateQuery.$inc.dislikes = -1;
                 updateQuery.$pull = { dislikedBy: userId };
@@ -1072,7 +1072,7 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
     try {
         const { reelId } = req.params;
         const authToken = req.headers.authorization?.replace('Bearer ', '');
-        
+
         if (!authToken) {
             return res.status(401).json({ error: 'Authentication required' });
         }
@@ -1095,7 +1095,7 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
         const isDisliked = reel.dislikedBy.includes(userId);
 
         let updateQuery = {};
-        
+
         if (isDisliked) {
             // Remove dislike
             updateQuery = {
@@ -1108,7 +1108,7 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
                 $inc: { dislikes: 1 },
                 $addToSet: { dislikedBy: userId }
             };
-            
+
             if (isLiked) {
                 updateQuery.$inc.likes = -1;
                 updateQuery.$pull = { likedBy: userId };
@@ -1148,7 +1148,7 @@ router.post('/reels/:reelId/save', async (req, res) => {
     try {
         const { reelId } = req.params;
         const authToken = req.headers.authorization?.replace('Bearer ', '');
-        
+
         if (!authToken) {
             return res.status(401).json({ error: 'Authentication required' });
         }
@@ -1168,10 +1168,10 @@ router.post('/reels/:reelId/save', async (req, res) => {
         }
 
         const isSaved = reel.savedBy.includes(userId);
-        
+
         let updateQuery = {};
         let eventType = '';
-        
+
         if (isSaved) {
             // Unsave
             updateQuery = {
@@ -1231,15 +1231,15 @@ router.get('/user/preferences', async (req, res) => {
         }
 
         const preferences = await getUserPreferences(userId);
-        
+
         res.json({
             success: true,
             userId,
             preferences,
             recommendations: {
                 availableStrategies: ['personalized', 'balanced', 'discovery'],
-                currentStrategy: preferences.totalInteractions > 50 ? 'personalized' : 
-                               preferences.totalInteractions > 10 ? 'balanced' : 'discovery'
+                currentStrategy: preferences.totalInteractions > 50 ? 'personalized' :
+                    preferences.totalInteractions > 10 ? 'balanced' : 'discovery'
             }
         });
     } catch (err) {
@@ -1252,7 +1252,7 @@ router.post('/reels/interaction-status', async (req, res) => {
     try {
         const { reelIds } = req.body;
         const authToken = req.headers.authorization?.replace('Bearer ', '');
-        
+
         if (!authToken) {
             return res.status(401).json({ error: 'Authentication required' });
         }
@@ -1276,7 +1276,7 @@ router.post('/reels/interaction-status', async (req, res) => {
         }).select('_id likedBy dislikedBy savedBy viewedBy').lean();
 
         const interactionStatus = {};
-        
+
         reels.forEach(reel => {
             interactionStatus[reel._id] = {
                 isLiked: reel.likedBy.includes(userId),

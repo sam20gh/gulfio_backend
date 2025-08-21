@@ -25,14 +25,14 @@ class PersonalizationTester {
 
     async testBasicReelFeed() {
         console.log('\n🎬 Testing Basic Reel Feed...');
-        
+
         try {
             const response = await axios.get(`${this.baseUrl}/reels?limit=10`);
             const data = response.data;
-            
+
             console.log(`✅ Retrieved ${data.reels?.length || data.length} reels`);
             console.log('Content types:', this.analyzeContentTypes(data.reels || data));
-            
+
             return data;
         } catch (error) {
             console.error('❌ Basic feed test failed:', error.message);
@@ -42,15 +42,15 @@ class PersonalizationTester {
 
     async testPersonalizedFeed() {
         console.log('\n🎯 Testing Personalized Feed...');
-        
+
         try {
             const response = await axios.get(`${this.baseUrl}/reels?sort=personalized&limit=10`, {
                 headers: this.headers
             });
             const data = response.data;
-            
+
             console.log(`✅ Retrieved ${data.reels?.length || data.length} personalized reels`);
-            
+
             if (data.personalization) {
                 console.log('🧠 Personalization Info:');
                 console.log(`  Strategy: ${data.personalization.strategy}`);
@@ -58,7 +58,7 @@ class PersonalizationTester {
                 console.log(`  Content Mix:`, data.personalization.contentMix);
                 console.log(`  Preferred Sources:`, data.personalization.preferredSources?.map(([name]) => name).join(', '));
             }
-            
+
             return data;
         } catch (error) {
             console.error('❌ Personalized feed test failed:', error.message);
@@ -68,13 +68,13 @@ class PersonalizationTester {
 
     async testUserPreferences() {
         console.log('\n👤 Testing User Preferences...');
-        
+
         try {
             const response = await axios.get(`${this.baseUrl}/user/preferences`, {
                 headers: this.headers
             });
             const data = response.data;
-            
+
             if (data.success) {
                 console.log('✅ User preferences retrieved successfully');
                 console.log(`📊 Total interactions: ${data.preferences.totalInteractions}`);
@@ -82,7 +82,7 @@ class PersonalizationTester {
                 console.log('🔝 Top sources:', data.preferences.sourcePreferences.slice(0, 3));
                 console.log('📂 Top categories:', data.preferences.categoryPreferences.slice(0, 3));
             }
-            
+
             return data;
         } catch (error) {
             console.error('❌ User preferences test failed:', error.message);
@@ -92,21 +92,21 @@ class PersonalizationTester {
 
     async testViewTracking(reelId) {
         console.log(`\n👀 Testing View Tracking for reel ${reelId}...`);
-        
+
         try {
             const response = await axios.post(`${this.baseUrl}/reels/${reelId}/view`, {
                 duration: Math.floor(Math.random() * 30) + 10 // Random 10-40 second duration
             }, {
                 headers: this.headers
             });
-            
+
             const data = response.data;
             if (data.success) {
                 console.log('✅ View tracked successfully');
                 console.log(`📊 View count: ${data.viewCount}`);
                 console.log(`🔐 Authenticated: ${data.isAuthenticated}`);
             }
-            
+
             return data;
         } catch (error) {
             console.error('❌ View tracking test failed:', error.message);
@@ -116,7 +116,7 @@ class PersonalizationTester {
 
     async testInteractions(reelId) {
         console.log(`\n❤️ Testing Interactions for reel ${reelId}...`);
-        
+
         try {
             // Test like
             const likeResponse = await axios.post(`${this.baseUrl}/reels/${reelId}/like`, {}, {
@@ -149,14 +149,14 @@ class PersonalizationTester {
 
         // Test 1: Basic feed
         const basicFeed = await this.testBasicReelFeed();
-        
+
         // Test 2: User preferences (if authenticated)
         if (this.token && this.token !== 'your-test-jwt-token-here') {
             await this.testUserPreferences();
-            
+
             // Test 3: Personalized feed
             const personalizedFeed = await this.testPersonalizedFeed();
-            
+
             // Test 4: Interactions with first reel
             if (personalizedFeed?.reels?.length > 0) {
                 const firstReelId = personalizedFeed.reels[0]._id;
@@ -166,7 +166,7 @@ class PersonalizationTester {
         } else {
             console.log('⚠️ Skipping authenticated tests - no valid token provided');
         }
-        
+
         console.log('\n✅ Test suite completed!');
     }
 
