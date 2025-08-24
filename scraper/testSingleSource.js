@@ -138,10 +138,10 @@ async function testSingleSource(sourceId) {
         // Step 1: Fetch main page
         testResults.steps.push('Fetching main page...');
         console.log('📥 Fetching main page...');
-        
+
         let response;
         try {
-            response = await axios.get(source.url, { 
+            response = await axios.get(source.url, {
                 timeout: 10000,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -160,19 +160,19 @@ async function testSingleSource(sourceId) {
                 const errorMsg = `HTTP ${statusCode} ${statusText} - Website may have bot protection or be temporarily unavailable`;
                 testResults.errors.push(errorMsg);
                 testResults.steps.push(`❌ Failed to fetch main page: ${errorMsg}`);
-                
+
                 if (statusCode === 403) {
                     testResults.errors.push('403 Forbidden - This website likely has bot protection (CloudFront, DataDome, etc.)');
                     testResults.steps.push('💡 Suggestion: This source may need Puppeteer/headless browser to bypass bot protection');
                 }
-                
+
                 return testResults;
             } else {
                 throw fetchError; // Re-throw for network errors
             }
         }
-        
-        let $ = cheerio.load(response.data);        testResults.steps.push(`✅ Main page fetched (${response.data.length} bytes)`);
+
+        let $ = cheerio.load(response.data); testResults.steps.push(`✅ Main page fetched (${response.data.length} bytes)`);
         console.log(`✅ Main page fetched (${response.data.length} bytes)`);
 
         // Step 2: Extract article links
@@ -197,30 +197,30 @@ async function testSingleSource(sourceId) {
         if (links.length === 0) {
             // Check if this might be a Single Page Application (SPA)
             const bodyContent = response.data.toLowerCase();
-            const isSPA = bodyContent.includes('<div id="app">') || 
-                         bodyContent.includes('<div id="root">') ||
-                         bodyContent.includes('vue') || 
-                         bodyContent.includes('react') || 
-                         bodyContent.includes('angular') ||
-                         bodyContent.includes('chunk-vendors') ||
-                         bodyContent.includes('app.js') ||
-                         bodyContent.includes('main.js') ||
-                         bodyContent.includes('__nuxt') ||
-                         bodyContent.includes('next.js');
-                         
+            const isSPA = bodyContent.includes('<div id="app">') ||
+                bodyContent.includes('<div id="root">') ||
+                bodyContent.includes('vue') ||
+                bodyContent.includes('react') ||
+                bodyContent.includes('angular') ||
+                bodyContent.includes('chunk-vendors') ||
+                bodyContent.includes('app.js') ||
+                bodyContent.includes('main.js') ||
+                bodyContent.includes('__nuxt') ||
+                bodyContent.includes('next.js');
+
             if (isSPA) {
                 testResults.steps.push('🔍 SPA detected, switching to Puppeteer for JavaScript rendering...');
                 console.log('🔍 SPA detected, switching to Puppeteer for JavaScript rendering...');
-                
+
                 try {
                     const fetchWithPuppeteer = require('./fetchWithPuppeteer');
                     const puppeteerResult = await fetchWithPuppeteer(source.url);
                     const puppeteerHtml = puppeteerResult.html;
                     $ = cheerio.load(puppeteerHtml);
-                    
+
                     testResults.steps.push('✅ Puppeteer successfully rendered SPA content');
                     console.log('✅ Puppeteer successfully rendered SPA content');
-                    
+
                     // Re-extract links with Puppeteer-rendered content
                     $(source.listSelector).each((_, element) => {
                         const $elem = $(element);
@@ -232,17 +232,17 @@ async function testSingleSource(sourceId) {
                             }
                         }
                     });
-                    
+
                     testResults.steps.push(`✅ Re-extraction found ${links.length} article links with Puppeteer`);
                     console.log(`✅ Re-extraction found ${links.length} article links`);
-                    
+
                 } catch (puppeteerError) {
                     testResults.errors.push(`❌ Puppeteer failed: ${puppeteerError.message}`);
                     testResults.steps.push('❌ Puppeteer rendering failed');
                     console.error('❌ Puppeteer failed:', puppeteerError.message);
                 }
             }
-            
+
             if (links.length === 0) {
                 if (isSPA) {
                     testResults.errors.push('No article links found even with Puppeteer - check selectors');
@@ -266,16 +266,16 @@ async function testSingleSource(sourceId) {
             try {
                 let pageHtml;
                 // Check if this source needs Puppeteer (same logic as main scraper)
-                const needsPuppeteer = source.name.toLowerCase().includes('gulfi news') || 
-                                     source.name.toLowerCase().includes('timeout') ||
-                                     source.name.toLowerCase().includes('bot-protection') ||
-                                     source.name.toLowerCase().includes('spa') ||
-                                     source.name.toLowerCase().includes('javascript') ||
-                                     source.name.toLowerCase().includes('alnassr') ||
-                                     source.name.toLowerCase().includes('al nassr') ||
-                                     source.name.toLowerCase().includes('doha') ||
-                                     source.name.toLowerCase().includes('dohanews');
-                                     
+                const needsPuppeteer = source.name.toLowerCase().includes('gulfi news') ||
+                    source.name.toLowerCase().includes('timeout') ||
+                    source.name.toLowerCase().includes('bot-protection') ||
+                    source.name.toLowerCase().includes('spa') ||
+                    source.name.toLowerCase().includes('javascript') ||
+                    source.name.toLowerCase().includes('alnassr') ||
+                    source.name.toLowerCase().includes('al nassr') ||
+                    source.name.toLowerCase().includes('doha') ||
+                    source.name.toLowerCase().includes('dohanews');
+
                 if (needsPuppeteer) {
                     const { browser, page } = await fetchWithPuppeteer(link, { returnPage: true });
                     try {
@@ -291,7 +291,7 @@ async function testSingleSource(sourceId) {
                     } catch (err) {
                         console.warn('⚠️ Error handling consent popup:', err.message);
                         await browser.close();
-                        pageHtml = (await axios.get(link, { 
+                        pageHtml = (await axios.get(link, {
                             timeout: 10000,
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -300,7 +300,7 @@ async function testSingleSource(sourceId) {
                     }
                 } else {
                     try {
-                        pageHtml = (await axios.get(link, { 
+                        pageHtml = (await axios.get(link, {
                             timeout: 10000,
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'

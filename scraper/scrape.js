@@ -154,18 +154,18 @@ async function scrapeAllSources(frequency = null) {
             console.log(`Scraping ${source.name}`);
             let html;
             let usedPuppeteer = false;
-            
+
             // Use Puppeteer for sources with known bot protection or specific keywords
-            const needsPuppeteer = source.name.toLowerCase().includes('gulfi news') || 
-                                 source.name.toLowerCase().includes('timeout') ||
-                                 source.name.toLowerCase().includes('bot-protection') ||
-                                 source.name.toLowerCase().includes('spa') ||
-                                 source.name.toLowerCase().includes('javascript') ||
-                                 source.name.toLowerCase().includes('alnassr') ||
-                                 source.name.toLowerCase().includes('al nassr') ||
-                                 source.name.toLowerCase().includes('doha') ||
-                                 source.name.toLowerCase().includes('dohanews');
-            
+            const needsPuppeteer = source.name.toLowerCase().includes('gulfi news') ||
+                source.name.toLowerCase().includes('timeout') ||
+                source.name.toLowerCase().includes('bot-protection') ||
+                source.name.toLowerCase().includes('spa') ||
+                source.name.toLowerCase().includes('javascript') ||
+                source.name.toLowerCase().includes('alnassr') ||
+                source.name.toLowerCase().includes('al nassr') ||
+                source.name.toLowerCase().includes('doha') ||
+                source.name.toLowerCase().includes('dohanews');
+
             if (needsPuppeteer) {
                 console.log(`🤖 Using Puppeteer for ${source.name} (bot protection/special handling)`);
                 ({ html } = await fetchWithPuppeteer(source.url));
@@ -173,7 +173,7 @@ async function scrapeAllSources(frequency = null) {
             } else {
                 // Try regular request first, fallback to Puppeteer if 403
                 try {
-                    const response = await axios.get(source.url, { 
+                    const response = await axios.get(source.url, {
                         timeout: 10000,
                         headers: {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -186,20 +186,20 @@ async function scrapeAllSources(frequency = null) {
                         }
                     });
                     html = response.data;
-                    
+
                     // Check if this might be a SPA that needs JavaScript rendering
                     const bodyContent = html.toLowerCase();
-                    const isSPA = bodyContent.includes('<div id="app">') || 
-                                 bodyContent.includes('<div id="root">') ||
-                                 bodyContent.includes('vue') || 
-                                 bodyContent.includes('react') || 
-                                 bodyContent.includes('angular') ||
-                                 bodyContent.includes('chunk-vendors') ||
-                                 bodyContent.includes('app.js') ||
-                                 bodyContent.includes('main.js') ||
-                                 bodyContent.includes('__nuxt') ||
-                                 bodyContent.includes('next.js');
-                                 
+                    const isSPA = bodyContent.includes('<div id="app">') ||
+                        bodyContent.includes('<div id="root">') ||
+                        bodyContent.includes('vue') ||
+                        bodyContent.includes('react') ||
+                        bodyContent.includes('angular') ||
+                        bodyContent.includes('chunk-vendors') ||
+                        bodyContent.includes('app.js') ||
+                        bodyContent.includes('main.js') ||
+                        bodyContent.includes('__nuxt') ||
+                        bodyContent.includes('next.js');
+
                     if (isSPA) {
                         console.log(`🔍 SPA detected for ${source.name}, switching to Puppeteer for JavaScript rendering...`);
                         try {
