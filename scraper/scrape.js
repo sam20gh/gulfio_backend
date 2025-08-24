@@ -153,10 +153,81 @@ async function scrapeAllSources(frequency = null) {
         try {
             console.log(`Scraping ${source.name}`);
             let html;
-            if (source.name.toLowerCase().includes('gulfi news')) {
+            let usedPuppeteer = false;
+            
+            // Use Puppeteer for sources with known bot protection or specific keywords
+            const needsPuppeteer = source.name.toLowerCase().includes('gulfi news') || 
+                                 source.name.toLowerCase().includes('timeout') ||
+                                 source.name.toLowerCase().includes('bot-protection') ||
+                                 source.name.toLowerCase().includes('spa') ||
+                                 source.name.toLowerCase().includes('javascript') ||
+                                 source.name.toLowerCase().includes('alnassr') ||
+                                 source.name.toLowerCase().includes('al nassr') ||
+                                 source.name.toLowerCase().includes('doha') ||
+                                 source.name.toLowerCase().includes('dohanews');
+            
+            if (needsPuppeteer) {
+                console.log(`🤖 Using Puppeteer for ${source.name} (bot protection/special handling)`);
                 ({ html } = await fetchWithPuppeteer(source.url));
+                usedPuppeteer = true;
             } else {
-                html = (await axios.get(source.url)).data;
+                // Try regular request first, fallback to Puppeteer if 403
+                try {
+                    const response = await axios.get(source.url, { 
+                        timeout: 10000,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'DNT': '1',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                        }
+                    });
+                    html = response.data;
+                    
+                    // Check if this might be a SPA that needs JavaScript rendering
+                    const bodyContent = html.toLowerCase();
+                    const isSPA = bodyContent.includes('<div id="app">') || 
+                                 bodyContent.includes('<div id="root">') ||
+                                 bodyContent.includes('vue') || 
+                                 bodyContent.includes('react') || 
+                                 bodyContent.includes('angular') ||
+                                 bodyContent.includes('chunk-vendors') ||
+                                 bodyContent.includes('app.js') ||
+                                 bodyContent.includes('main.js') ||
+                                 bodyContent.includes('__nuxt') ||
+                                 bodyContent.includes('next.js');
+                                 
+                    if (isSPA) {
+                        console.log(`🔍 SPA detected for ${source.name}, switching to Puppeteer for JavaScript rendering...`);
+                        try {
+                            ({ html } = await fetchWithPuppeteer(source.url));
+                            usedPuppeteer = true;
+                            console.log(`✅ Puppeteer successfully rendered SPA content for ${source.name}`);
+                        } catch (puppeteerError) {
+                            console.error(`❌ Puppeteer failed for SPA ${source.name}:`, puppeteerError.message);
+                            console.log(`⚠️ Falling back to basic HTML for ${source.name} (content may be incomplete)`);
+                            // Continue with the original HTML
+                        }
+                    }
+                } catch (fetchError) {
+                    if (fetchError.response && fetchError.response.status === 403) {
+                        console.log(`🔒 Bot protection detected for ${source.name}, switching to Puppeteer...`);
+                        try {
+                            ({ html } = await fetchWithPuppeteer(source.url));
+                            usedPuppeteer = true;
+                            console.log(`✅ Puppeteer successfully bypassed bot protection for ${source.name}`);
+                        } catch (puppeteerError) {
+                            console.error(`❌ Puppeteer failed for bot-protected ${source.name}:`, puppeteerError.message);
+                            console.log(`⚠️ Bot protection bypass failed - ${source.name} may not scrape correctly`);
+                            throw new Error(`Both standard fetch and Puppeteer failed: ${puppeteerError.message}`);
+                        }
+                    } else {
+                        throw fetchError;
+                    }
+                }
             }
 
             const $ = cheerio.load(html);
@@ -200,7 +271,7 @@ async function scrapeAllSources(frequency = null) {
                     console.log(`🆕 New article found, processing: ${normalizedLink}`);
 
                     let pageHtml;
-                    if (source.name.toLowerCase().includes('gulfi news')) {
+                    if (usedPuppeteer || source.name.toLowerCase().includes('gulfi news') || source.name.toLowerCase().includes('timeout')) {
                         const { browser, page } = await fetchWithPuppeteer(link, { returnPage: true });
 
                         try {
@@ -219,11 +290,42 @@ async function scrapeAllSources(frequency = null) {
                             console.warn('⚠️ Error handling consent popup:', err.message);
                             await browser.close();
                             // Fallback to regular axios if Puppeteer fails
-                            pageHtml = (await axios.get(link)).data;
+                            try {
+                                pageHtml = (await axios.get(link, {
+                                    timeout: 10000,
+                                    headers: {
+                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                                    }
+                                })).data;
+                            } catch (fallbackError) {
+                                console.warn(`⚠️ Failed to fetch article ${link}:`, fallbackError.message);
+                                continue; // Skip this article
+                            }
                         }
-                    }
-                    else {
-                        pageHtml = (await axios.get(link)).data;
+                    } else {
+                        try {
+                            pageHtml = (await axios.get(link, {
+                                timeout: 10000,
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                                }
+                            })).data;
+                        } catch (articleError) {
+                            if (articleError.response && articleError.response.status === 403) {
+                                console.log(`🔒 Bot protection detected for article ${link}, switching to Puppeteer...`);
+                                try {
+                                    const { browser, page } = await fetchWithPuppeteer(link, { returnPage: true });
+                                    pageHtml = await page.content();
+                                    await browser.close();
+                                } catch (puppeteerError) {
+                                    console.warn(`⚠️ Puppeteer fallback failed for ${link}:`, puppeteerError.message);
+                                    continue; // Skip this article
+                                }
+                            } else {
+                                console.warn(`⚠️ Failed to fetch article ${link}:`, articleError.message);
+                                continue; // Skip this article
+                            }
+                        }
                     }
                     const $$ = cheerio.load(pageHtml);
 
@@ -288,12 +390,23 @@ async function scrapeAllSources(frequency = null) {
                     // Use the normalizeImages function for proper cleanup
                     images = normalizeImages(images, source.baseUrl || source.url);
 
+                    // Try to pull hero background from .page-header when no body images found
+                    if (images.length === 0) {
+                        const style = $$('.page-header').attr('style') || '';
+                        const m = style.match(/background-image:\s*url\(["']?([^"')]+)["']?\)/i);
+                        if (m) {
+                            images.unshift(m[1]);
+                            console.log(`📸 Found hero background image: ${m[1]}`);
+                        }
+                    }
+
                     // Fallback to Open Graph / Twitter meta
                     if (images.length === 0) {
                         const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
                         if (og) {
                             const fallbackImages = [og];
                             images = normalizeImages(fallbackImages, source.baseUrl || source.url);
+                            console.log(`📸 Using Open Graph/Twitter image: ${og}`);
                         }
                     }
                     let embedding = [];
