@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const scrapeAllSources = require('../scraper/scrape');
+const testSingleSource = require('../scraper/testSingleSource');
 const auth = require('../middleware/auth');
 
 router.post('/', auth, async (req, res) => {
@@ -48,6 +49,32 @@ router.get('/weekly', validateApiKey, async (req, res) => {
     } catch (err) {
         console.error('❌ Weekly scrape error:', err);
         res.status(500).send('❌ Weekly scrape failed');
+    }
+});
+
+// POST endpoint for testing a single source
+router.post('/test/:sourceId', validateApiKey, async (req, res) => {
+    try {
+        const { sourceId } = req.params;
+        console.log(`🧪 Test scrape requested for source ID: ${sourceId}`);
+
+        const testResults = await testSingleSource(sourceId);
+        res.json({
+            message: testResults.success ? '✅ Test completed successfully' : '⚠️ Test completed with issues',
+            results: testResults
+        });
+    } catch (err) {
+        console.error('❌ Test scrape error:', err);
+        res.status(500).json({
+            message: '❌ Test scrape failed',
+            error: err.message,
+            results: {
+                success: false,
+                errors: [err.message],
+                steps: ['❌ Test failed during execution'],
+                articles: []
+            }
+        });
     }
 });
 
