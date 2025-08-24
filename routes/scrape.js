@@ -78,4 +78,13 @@ router.post('/test/:sourceId', validateApiKey, async (req, res) => {
     }
 });
 
+// Simple diagnostic endpoint
+router.get('/test-endpoint', validateApiKey, (req, res) => {
+    res.json({
+        message: '✅ Test endpoint is working!',
+        timestamp: new Date().toISOString(),
+        url: req.originalUrl
+    });
+});
+
 module.exports = router;
