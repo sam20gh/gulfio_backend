@@ -8,19 +8,12 @@ const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
-const redis = require('redis');
+const redisClient = require('../utils/redis');
 const axios = require('axios');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const Reel = require('../models/Reel');
 const FormData = require('form-data')
 const form = new FormData()
-
-// Initialize Redis client
-const redisClient = redis.createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'
-});
-redisClient.on('error', (err) => console.log('Redis Client Error', err));
-redisClient.connect();
 
 
 router.post('/check-or-create', auth, async (req, res) => {
@@ -55,62 +48,100 @@ router.get('/dashboard-summary/:id', async (req, res) => {
     const cacheKey = `user_dashboard_summary_${userId}`;
 
     try {
-        // Check cache first
+        console.log(`Dashboard summary requested for user: ${userId}`);
+
+        // Check cache first (with timeout)
         let cachedResult = null;
-        if (!noCache) {
+        if (!noCache && redisClient.isConnected()) {
             try {
                 const cached = await redisClient.get(cacheKey);
                 if (cached) {
                     cachedResult = JSON.parse(cached);
+                    console.log(`Cache hit for user: ${userId}`);
                     res.set('Server-Timing', `summary_cache;dur=${Date.now() - startTime}`);
                     return res.json(cachedResult);
                 }
             } catch (cacheErr) {
-                console.warn('Cache read error:', cacheErr);
+                console.warn('Cache read error:', cacheErr.message);
             }
         }
 
-        // Fetch from DB with aggregation
+        // Fetch from DB with aggregation and timeout
+        console.log(`Cache miss, querying DB for user: ${userId}`);
         const dbStartTime = Date.now();
-        const result = await User.aggregate([
-            { $match: { supabase_id: userId } },
-            {
-                $project: {
-                    email: 1,
-                    name: 1,
-                    avatar_url: 1,
-                    profile_image: 1,
-                    following_sources_count: { $size: { $ifNull: ['$following_sources', []] } },
-                    following_users_count: { $size: { $ifNull: ['$following_users', []] } },
-                    liked_count: { $size: { $ifNull: ['$liked_articles', []] } },
-                    disliked_count: { $size: { $ifNull: ['$disliked_articles', []] } },
-                    saved_count: { $size: { $ifNull: ['$saved_articles', []] } },
-                    saved_reels_count: { $size: { $ifNull: ['$saved_reels', []] } }
-                }
-            }
-        ]);
+        
+        // Use find instead of aggregation for better reliability
+        console.log(`Querying user directly: ${userId}`);
+        const user = await User.findOne({ supabase_id: userId })
+            .select('email name avatar_url profile_image following_sources following_users liked_articles disliked_articles saved_articles saved_reels')
+            .lean()
+            .maxTimeMS(3000);
+        
+        if (!user) {
+            console.log(`User not found in DB: ${userId}`);
+            return res.status(404).json({ message: 'User not found' });
+        }
 
-        if (result.length === 0) {
+        const result = [{
+            email: user.email || null,
+            name: user.name || null,
+            avatar_url: user.avatar_url || null,
+            profile_image: user.profile_image || null,
+            following_sources_count: (user.following_sources || []).length,
+            following_users_count: (user.following_users || []).length,
+            liked_count: (user.liked_articles || []).length,
+            disliked_count: (user.disliked_articles || []).length,
+            saved_count: (user.saved_articles || []).length,
+            saved_reels_count: (user.saved_reels || []).length
+        }];
+
+        if (!result || result.length === 0) {
+            console.log(`Query returned no results for user: ${userId}`);
             return res.status(404).json({ message: 'User not found' });
         }
 
         const summary = result[0];
+        console.log(`DB query completed for user: ${userId} in ${Date.now() - dbStartTime}ms`);
 
-        // Cache the result
-        try {
-            await redisClient.setex(cacheKey, 120, JSON.stringify(summary));
-        } catch (cacheErr) {
-            console.warn('Cache write error:', cacheErr);
+        // Cache the result (with timeout)
+        if (redisClient.isConnected()) {
+            try {
+                await redisClient.set(cacheKey, JSON.stringify(summary), 120);
+            } catch (cacheErr) {
+                console.warn('Cache write error:', cacheErr.message);
+            }
         }
 
         const dbDuration = Date.now() - dbStartTime;
         const totalDuration = Date.now() - startTime;
-        res.set('Server-Timing', `summary_db;dur=${dbDuration}, summary_cache;dur=0`);
+        res.set('Server-Timing', `summary_db;dur=${dbDuration}, summary_total;dur=${totalDuration}`);
+        
+        console.log(`Dashboard summary completed for user: ${userId} in ${totalDuration}ms`);
         res.json(summary);
 
     } catch (err) {
-        console.error('Error in /dashboard-summary/:id:', err);
-        res.status(500).json({ message: 'Internal server error' });
+        const duration = Date.now() - startTime;
+        console.error(`Error in /dashboard-summary/${userId} (${duration}ms):`, {
+            message: err.message,
+            stack: err.stack,
+            name: err.name
+        });
+        
+        // Return a minimal response on error instead of 500
+        res.status(200).json({
+            email: null,
+            name: null,
+            avatar_url: null,
+            profile_image: null,
+            following_sources_count: 0,
+            following_users_count: 0,
+            liked_count: 0,
+            disliked_count: 0,
+            saved_count: 0,
+            saved_reels_count: 0,
+            _error: true,
+            _errorMessage: err.message
+        });
     }
 });
 
