@@ -93,38 +93,94 @@ function simpleHash(str) {
   }
   return Math.abs(hash);
 }
+const mongoose = require('mongoose');
+const Article = require('../models/Article');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+const ensureMongoUser = require('../middleware/ensureMongoUser');
+const { redis } = require('../utils/redis');
+const { getFaissIndexStatus, searchFaissIndex } = require('../recommendation/faissIndex');
+const { getDeepSeekEmbedding } = require('../utils/deepseek');
+
+const articleRouter = express.Router();
+
+/** ---- Utilities ---- **/
+
+// Engagement score: tune weights here if needed
+const viewsWeight = 1.0;
+const likesWeight = 3.0;
+const dislikesWeight = -2.0;
+const recencyWeight = 4.0;
+
+function basicRecencyScore(publishedAt) {
+  const now = Date.now();
+  const t = new Date(publishedAt || Date.now()).getTime();
+  const hours = (now - t) / (1000 * 60 * 60);
+  if (hours <= 24) return 1.0;
+  if (hours <= 48) return 0.8;
+  if (hours <= 72) return 0.6;
+  if (hours <= 168) return 0.4; // 7 days
+  return Math.max(0, 1 - hours / (24 * 30)); // taper over ~30 days
+}
+
+function calculateEngagementScore(article) {
+  const recencyScore = basicRecencyScore(article.publishedAt);
+  return (
+    (article.viewCount || 0) * viewsWeight +
+    (article.likes || 0) * likesWeight +
+    (article.dislikes || 0) * dislikesWeight +
+    recencyScore * recencyWeight
+  );
+}
+
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+}
+
+/** Clear all article caches (used after reacts) */
+async function clearArticlesCache() {
+  const keys = await redis.keys('articles_*');
+  if (keys.length > 0) {
+    await redis.del(keys);
+    console.log('🧹 Cleared article caches:', keys);
+  }
+}
+
+/** Recompute the user’s profile embedding after an interaction */
+async function updateUserProfileEmbedding(userMongoId) {
+  try {
+    // Project-specific: you already have this logic in your codebase
+    // Call into your existing function to rebuild user embedding and store
+    // For illustration only:
+    const user = await User.findById(userMongoId).lean();
+    if (!user) return;
+    // ... compute new embedding (e.g., from recent likes/dislikes/text) ...
+    // await User.updateOne({ _id: userMongoId }, { $set: { embedding_pca: newEmbeddingPCA }});
+  } catch (e) {
+    console.warn('Embedding refresh failed (non-fatal):', e.message);
+  }
+}
 
 /** ---- Routes ---- **/
 
 // GET: Personalized article recommendations (server-side ranking + recency mix)
 articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
   try {
-    // Input validation and clamping
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
     const language = req.query.language || 'english';
     const userId = req.mongoUser.supabase_id;
-    const resetServed = req.query.resetServed === '1';
-
-    // Day-based keys for non-repetition
-    const dayKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const servedKey = `served_personalized_${userId}_${language}_${dayKey}`;
-    const noveltySeed = simpleHash(`${userId}:${page}:${dayKey}`);
 
     console.log(`🎯 Fetching personalized articles for user ${userId}, page ${page}, limit ${limit}, language ${language}`);
 
-    // Reset served articles if requested
-    if (resetServed) {
-      try {
-        await redis.del(servedKey);
-        console.log('🔄 Reset served articles for today');
-      } catch (err) {
-        console.error('⚠️ Failed to reset served articles:', err.message);
-      }
-    }
-
-    // Enhanced cache key with day and novelty seed
-    const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${dayKey}_${noveltySeed}`;
+    const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}`;
 
     // Cache check
     let cached;
@@ -138,29 +194,9 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       return res.json(JSON.parse(cached));
     }
 
-    // Get already served articles
-    let servedIds = [];
-    try {
-      servedIds = await redis.smembers(servedKey);
-      console.log(`📚 Served set size: ${servedIds.length}`);
-    } catch (err) {
-      console.error('⚠️ Redis served set error (safe to ignore):', err.message);
-    }
-
     // User embedding
     const user = await User.findOne({ supabase_id: userId }).lean();
     let userEmbedding = user?.embedding_pca || user?.embedding;
-
-    // Progressive time windows based on page
-    const getTimeWindow = (page) => {
-      if (page === 1) return { hours: 72, label: 'last 72h' };
-      if (page === 2) return { hours: 168, label: 'last 7d' };
-      if (page === 3) return { hours: 336, label: 'last 14d' };
-      return { hours: 720, label: 'last 30d' };
-    };
-
-    const timeWindow = getTimeWindow(page);
-    console.log(`⏰ Time window: ${timeWindow.label}, noveltySeed: ${noveltySeed}`);
 
     // Faiss status
     const faissStatus = getFaissIndexStatus();
@@ -171,73 +207,70 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       console.warn('⚠️ Falling back to engagement-based sorting WITH fresh articles injection');
       console.warn(`User embedding: ${userEmbedding ? 'exists' : 'missing'}, Faiss initialized: ${faissStatus.isInitialized}`);
 
-      // Apply same time window constraints to fallback
-      const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
-      console.log(`📅 FALLBACK: Applying time window: ${timeWindow.label}`);
+      // 40% fresh in fallback (your original fallback; unchanged)
+      const freshLimit = Math.max(3, Math.ceil(limit * 0.4));
+      console.log(`🆕 FALLBACK: Adding ${freshLimit} fresh articles for MAXIMUM priority`);
 
-      // Exclude served and disliked articles
-      const excludeIds = [
-        ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
-        ...(user?.disliked_articles || [])
+      let freshArticles = [];
+      const timeRanges = [
+        { name: '24h', hours: 24 },
+        { name: '48h', hours: 48 },
+        { name: '72h', hours: 72 },
+        { name: '1week', hours: 168 }
       ];
 
-      const fallbackArticles = await Article.find({
-        language,
-        publishedAt: { $gte: cutoffTime },
-        _id: { $nin: excludeIds }
-      })
-        .sort({ publishedAt: -1, viewCount: -1 })
-        .limit(limit * 2)
-        .lean();
+      for (const range of timeRanges) {
+        const cutoffTime = new Date(Date.now() - range.hours * 60 * 60 * 1000);
+        console.log(`📅 FALLBACK: Searching for articles newer than: ${cutoffTime.toISOString()} (last ${range.name})`);
 
-      // If insufficient articles, progressively widen time window
-      let finalFallbackArticles = fallbackArticles;
-      if (fallbackArticles.length < limit && timeWindow.hours < 720) {
-        const widerRanges = [
-          { hours: 168, label: 'last 7d' },
-          { hours: 336, label: 'last 14d' },
-          { hours: 720, label: 'last 30d' }
-        ];
+        freshArticles = await Article.find({
+          language,
+          publishedAt: { $gte: cutoffTime },
+          _id: { $nin: user?.disliked_articles || [] }
+        })
+          .sort({ publishedAt: -1, viewCount: -1 })
+          .limit(freshLimit)
+          .lean();
 
-        for (const range of widerRanges) {
-          if (range.hours <= timeWindow.hours) continue;
-          
-          const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
-          const additionalArticles = await Article.find({
-            language,
-            publishedAt: { $gte: widerCutoff, $lt: cutoffTime },
-            _id: { $nin: [...excludeIds, ...finalFallbackArticles.map(a => a._id)] }
-          })
-            .sort({ publishedAt: -1, viewCount: -1 })
-            .limit(limit * 2 - finalFallbackArticles.length)
-            .lean();
-
-          finalFallbackArticles = [...finalFallbackArticles, ...additionalArticles];
-          console.log(`📅 FALLBACK: Widened to ${range.label}, total: ${finalFallbackArticles.length}`);
-          
-          if (finalFallbackArticles.length >= limit) break;
+        console.log(`✅ FALLBACK: Found ${freshArticles.length} articles from last ${range.name}`);
+        if (freshArticles.length >= Math.min(3, freshLimit)) {
+          console.log(`🎯 FALLBACK: Using articles from last ${range.name} (sufficient quantity)`);
+          break;
         }
       }
 
-      const response = finalFallbackArticles.slice(0, limit).map(article => ({
+      // Remaining personalized-ish by engagement
+      const remainingLimit = limit - freshArticles.length;
+      const personalizedArticles = await Article.find({
+        language,
+        _id: {
+          $nin: [
+            ...freshArticles.map(a => a._id),
+            ...(user?.disliked_articles || [])
+          ]
+        }
+      })
+        .sort({ viewCount: -1, publishedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(remainingLimit)
+        .lean();
+
+      const freshEnhanced = freshArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFresh: true,
+        isFallback: true,
+        finalScore: 1000 + (article.viewCount || 0) // keep your “force-to-top” heuristic
+      })); // Your original fallback "fresh first" enhancement. :contentReference[oaicite:2]{index=2}
+
+      const personalizedEnhanced = personalizedArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFallback: true,
-        timeWindow: timeWindow.label,
-        noveltySeed,
         engagementScore: calculateEngagementScore(article)
       }));
 
-      // Track served articles
-      if (response.length > 0) {
-        try {
-          const articleIds = response.map(a => a._id.toString());
-          await redis.sadd(servedKey, ...articleIds);
-          await redis.expire(servedKey, 86400);
-        } catch (err) {
-          console.error('⚠️ Failed to track served articles:', err.message);
-        }
-      }
+      const response = [...freshEnhanced, ...personalizedEnhanced].slice(0, limit);
 
       try {
         await redis.set(cacheKey, JSON.stringify(response), 'EX', 1800);
@@ -252,118 +285,104 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     console.log('🔍 Using Faiss for personalized recommendations');
 
     // Over-fetch for mixing
-    const searchLimit = limit * 3;
+    const searchLimit = limit * 2;
     const { ids, distances } = await searchFaissIndex(userEmbedding, searchLimit);
 
-    // Time window constraint
-    const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
-    
-    // Exclude served and disliked articles
-    const excludeIds = [
-      ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
-      ...(user?.disliked_articles || [])
-    ];
-
-    let candidateArticles = await Article.find({
+    // Pull details
+    let articles = await Article.find({
       _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
       language,
-      publishedAt: { $gte: cutoffTime },
-      _id: { $nin: excludeIds }
+      _id: { $nin: user?.disliked_articles || [] }
     }).lean();
 
-    // If insufficient candidates, progressively widen time window
-    if (candidateArticles.length < limit * 2 && timeWindow.hours < 720) {
-      const widerRanges = [
-        { hours: 168, label: 'last 7d' },
-        { hours: 336, label: 'last 14d' },
-        { hours: 720, label: 'last 30d' }
-      ];
+    console.log(`📄 Found ${articles.length} articles from Faiss search`);
 
-      for (const range of widerRanges) {
-        if (range.hours <= timeWindow.hours) continue;
-        
-        const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
-        const additionalCandidates = await Article.find({
-          _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
-          language,
-          publishedAt: { $gte: widerCutoff, $lt: cutoffTime },
-          _id: { $nin: [...excludeIds, ...candidateArticles.map(a => a._id)] }
-        }).lean();
+    // Page-aware freshRatio curve
+    const freshRatio =
+      page === 1 ? 0.70 :
+        page === 2 ? 0.55 :
+          page === 3 ? 0.45 :
+            0.35;
 
-        candidateArticles = [...candidateArticles, ...additionalCandidates];
-        console.log(`📅 Widened time window to ${range.label}, candidates: ${candidateArticles.length}`);
-        
-        if (candidateArticles.length >= limit * 2) break;
-      }
-    }
-
-    console.log(`📄 Found ${candidateArticles.length} candidate articles within time window: ${timeWindow.label}`);
-
-    // Page-aware recency weighting
-    const w_recency = 
-      page === 1 ? 0.75 :
-      page === 2 ? 0.65 :
-      page === 3 ? 0.55 :
-      0.45;
-
-    // Recency-first similarity scoring
-    const scoredArticles = candidateArticles.map(article => {
+    // Replaces your original simple (similarity 0.4 + engagement 0.6) weighting. :contentReference[oaicite:3]{index=3}
+    const scoredArticles = articles.map(article => {
       const index = ids.indexOf(article._id.toString());
-      const similarity = index !== -1 ? Math.max(0, Math.min(1, 1 - distances[index])) : 0;
+      const similarity = index !== -1 ? Math.max(0, 1 - distances[index]) : 0; // Convert distance to similarity
       const engagementScore = calculateEngagementScore(article);
-      const recencyScore = basicRecencyScore(article.publishedAt);
       const baseScore = (similarity * 0.6) + (engagementScore * 0.4);
-      const finalScore = w_recency * recencyScore + (1 - w_recency) * baseScore;
+      const recencyScore = basicRecencyScore(article.publishedAt);
+      const finalScore = freshRatio * recencyScore + (1 - freshRatio) * baseScore;
 
       return {
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         similarity,
         engagementScore,
-        recencyScore,
         finalScore,
-        timeWindow: timeWindow.label,
-        noveltySeed
       };
     });
 
-    // Sort by final score and take main results
-    scoredArticles.sort((a, b) => b.finalScore - a.finalScore);
-    const mainResultsCount = Math.ceil(limit * 0.85); // 85% main results
-    let finalArticles = scoredArticles.slice(0, mainResultsCount);
+    // Sort & paginate
+    let finalArticles = scoredArticles
+      .sort((a, b) => b.finalScore - a.finalScore)
+      .slice((page - 1) * limit, page * limit);
 
-    console.log(`📊 Recent count: ${finalArticles.length}, w_recency: ${w_recency.toFixed(2)}`);
+    console.log(`📄 After pagination: showing articles ${(page - 1) * limit + 1}-${page * limit} of ${scoredArticles.length} total`);
 
-    // Diversity injection: 10-15% older-but-relevant articles
-    const diversityLimit = Math.min(Math.ceil(limit * 0.15), limit - finalArticles.length);
-    if (diversityLimit > 0 && scoredArticles.length > mainResultsCount) {
-      console.log(`🎲 Adding ${diversityLimit} diversity articles`);
-      
-      // Use older high-similarity articles for diversity
-      const diversityCandidates = scoredArticles
-        .slice(mainResultsCount)
-        .filter(a => a.similarity > 0.3)
-        .slice(0, diversityLimit * 2);
+    // Fresh injection: reuse the same page-aware freshRatio (was previously re-declared differently). :contentReference[oaicite:4]{index=4}
+    const freshLimit = Math.max(1, Math.ceil(limit * freshRatio));
+    console.log(`🆕 Adding ${freshLimit} fresh articles for page ${page} (${(freshRatio * 100).toFixed(0)}% fresh ratio)`);
 
-      // Deterministic shuffle using LCG
-      const rng = lcg(noveltySeed);
-      const shuffledDiversity = diversityCandidates
-        .map(article => ({ article, sort: rng() }))
-        .sort((a, b) => a.sort - b.sort)
-        .map(item => ({ ...item.article, isDiverse: true }))
-        .slice(0, diversityLimit);
+    // Try progressively older time ranges
+    let freshArticles = [];
+    const timeRanges = [
+      { hours: 24, label: 'last 24h' },
+      { hours: 48, label: 'last 48h' },
+      { hours: 72, label: 'last 3 days' },
+      { hours: 168, label: 'last week' }
+    ];
 
-      // Insert diversity articles at deterministic positions
-      const diversityRng = lcg(noveltySeed + 1);
-      shuffledDiversity.forEach(article => {
-        const insertIndex = Math.floor(diversityRng() * (finalArticles.length + 1));
-        finalArticles.splice(insertIndex, 0, article);
-      });
+    for (const timeRange of timeRanges) {
+      const timeAgo = new Date(Date.now() - timeRange.hours * 60 * 60 * 1000);
+      console.log(`📅 Searching for articles newer than: ${timeAgo.toISOString()} (${timeRange.label})`);
 
-      console.log(`🎯 Diversity injected count: ${shuffledDiversity.length}`);
+      freshArticles = await Article.find({
+        language,
+        publishedAt: { $gte: timeAgo },
+        _id: { $nin: finalArticles.map(a => a._id) },
+        _id: { $nin: user?.disliked_articles || [] },
+      })
+        .sort({ publishedAt: -1 })
+        .skip(page > 1 ? (page - 1) * Math.ceil(freshLimit / 2) : 0)
+        .limit(freshLimit)
+        .lean();
+
+      console.log(`✅ Found ${freshArticles.length} articles from ${timeRange.label}`);
+      if (freshArticles.length >= Math.ceil(freshLimit * 0.6)) {
+        console.log(`🎯 Using articles from ${timeRange.label} (sufficient quantity)`);
+        break;
+      }
     }
 
-    // Trending injection (10%)
+    if (freshArticles.length > 0) {
+      const freshEnhanced = freshArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFresh: true,
+        // give a strong bump but still allow personalization to compete
+        finalScore: 1000 + Math.random() * 100
+      }));
+
+      // Replace the lowest scoring personalized with fresh
+      finalArticles.sort((a, b) => b.finalScore - a.finalScore);
+      const personalizedToKeep = finalArticles.slice(0, limit - freshArticles.length);
+      finalArticles = [...freshEnhanced, ...personalizedToKeep];
+      console.log(`🔄 Final composition: ${freshArticles.length} fresh + ${personalizedToKeep.length} personalized`);
+    } else {
+      console.log('⚠️ No fresh articles found, using only personalized results');
+    }
+
+    // Add some trending for diversity (keep your 10%)
     const trendingLimit = Math.ceil(limit * 0.1);
     if (trendingLimit > 0) {
       console.log(`📈 Adding ${trendingLimit} trending articles for diversity`);
@@ -371,44 +390,28 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       const trendingArticles = await Article.find({
         language,
         viewCount: { $exists: true, $gt: 0 },
-        publishedAt: { $gte: cutoffTime },
-        _id: { $nin: [...excludeIds, ...finalArticles.map(a => a._id)] }
+        _id: { $nin: finalArticles.map(a => a._id) },
+        _id: { $nin: user?.disliked_articles || [] },
       })
         .sort({ viewCount: -1, publishedAt: -1 })
-        .limit(trendingLimit * 2)
+        .limit(trendingLimit)
         .lean();
 
-      const trendingEnhanced = trendingArticles.slice(0, trendingLimit).map(article => ({
+      const trendingEnhanced = trendingArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isTrending: true,
-        timeWindow: timeWindow.label,
-        noveltySeed,
         engagementScore: calculateEngagementScore(article)
       }));
 
-      // Deterministic insertion using LCG
-      const trendingRng = lcg(noveltySeed + 2);
-      trendingEnhanced.forEach(article => {
-        const insertIndex = Math.floor(trendingRng() * (finalArticles.length + 1));
-        finalArticles.splice(insertIndex, 0, article);
-      });
-    }
-
-    finalArticles = finalArticles.slice(0, limit);
-
-    // Track served articles
-    if (finalArticles.length > 0) {
-      try {
-        const articleIds = finalArticles.map(a => a._id.toString());
-        await redis.sadd(servedKey, ...articleIds);
-        await redis.expire(servedKey, 86400);
-      } catch (err) {
-        console.error('⚠️ Failed to track served articles:', err.message);
+      // Random insertion
+      for (let i = 0; i < trendingEnhanced.length; i++) {
+        const insertIndex = Math.floor(Math.random() * (finalArticles.length + 1));
+        finalArticles.splice(insertIndex, 0, trendingEnhanced[i]);
       }
     }
 
-    console.log(`🎯 Final composition: ${finalArticles.length} articles, cacheKey: ${cacheKey.slice(-20)}...`);
+    finalArticles = finalArticles.slice(0, limit);
 
     try {
       await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 3600);
