@@ -8,11 +8,19 @@ const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
+const redis = require('redis');
 const axios = require('axios');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const Reel = require('../models/Reel');
 const FormData = require('form-data')
 const form = new FormData()
+
+// Initialize Redis client
+const redisClient = redis.createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
+redisClient.connect();
 
 
 router.post('/check-or-create', auth, async (req, res) => {
@@ -39,10 +47,79 @@ router.post('/check-or-create', auth, async (req, res) => {
     }
 });
 
+// GET dashboard summary - optimized single endpoint
+router.get('/dashboard-summary/:id', async (req, res) => {
+    const startTime = Date.now();
+    const userId = req.params.id;
+    const noCache = req.query.noCache === '1';
+    const cacheKey = `user_dashboard_summary_${userId}`;
+
+    try {
+        // Check cache first
+        let cachedResult = null;
+        if (!noCache) {
+            try {
+                const cached = await redisClient.get(cacheKey);
+                if (cached) {
+                    cachedResult = JSON.parse(cached);
+                    res.set('Server-Timing', `summary_cache;dur=${Date.now() - startTime}`);
+                    return res.json(cachedResult);
+                }
+            } catch (cacheErr) {
+                console.warn('Cache read error:', cacheErr);
+            }
+        }
+
+        // Fetch from DB with aggregation
+        const dbStartTime = Date.now();
+        const result = await User.aggregate([
+            { $match: { supabase_id: userId } },
+            {
+                $project: {
+                    email: 1,
+                    name: 1,
+                    avatar_url: 1,
+                    profile_image: 1,
+                    following_sources_count: { $size: { $ifNull: ['$following_sources', []] } },
+                    following_users_count: { $size: { $ifNull: ['$following_users', []] } },
+                    liked_count: { $size: { $ifNull: ['$liked_articles', []] } },
+                    disliked_count: { $size: { $ifNull: ['$disliked_articles', []] } },
+                    saved_count: { $size: { $ifNull: ['$saved_articles', []] } },
+                    saved_reels_count: { $size: { $ifNull: ['$saved_reels', []] } }
+                }
+            }
+        ]);
+
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const summary = result[0];
+
+        // Cache the result
+        try {
+            await redisClient.setex(cacheKey, 120, JSON.stringify(summary));
+        } catch (cacheErr) {
+            console.warn('Cache write error:', cacheErr);
+        }
+
+        const dbDuration = Date.now() - dbStartTime;
+        const totalDuration = Date.now() - startTime;
+        res.set('Server-Timing', `summary_db;dur=${dbDuration}, summary_cache;dur=0`);
+        res.json(summary);
+
+    } catch (err) {
+        console.error('Error in /dashboard-summary/:id:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // GET user by Supabase ID
 router.get('/by-supabase/:id', async (req, res) => {
     try {
-        const user = await User.findOne({ supabase_id: req.params.id });
+        const user = await User.findOne({ supabase_id: req.params.id })
+            .select('supabase_id email name avatar_url profile_image gender dob following_sources following_users')
+            .select('-liked_articles -disliked_articles -saved_articles -embedding -embedding_pca');
         if (!user) return res.status(404).json({ message: 'User not found' });
         res.json(user);
     } catch (err) {
@@ -717,5 +794,9 @@ router.get('/search', auth, async (req, res) => {
         res.status(500).json({ message: 'Error searching users', error: error.message });
     }
 });
+
+// Suggested MongoDB indexes for optimal performance:
+// db.users.createIndex({ supabase_id: 1 })
+// db.users.createIndex({ email: 1 })
 
 module.exports = router;
