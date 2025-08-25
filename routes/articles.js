@@ -96,8 +96,222 @@ function simpleHash(str) {
 
 /** ---- Routes ---- **/
 
-// GET: Personalized article recommendations (server-side ranking + recency mix)
+// GET: Quick performance test endpoint
+articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const userId = req.mongoUser.supabase_id;
+
+    // Test 1: Simple article count
+    const simpleCount = await Article.countDocuments({ language: 'english' });
+    const t1 = Date.now() - startTime;
+
+    // Test 2: User lookup
+    const user = await User.findOne({ supabase_id: userId }).lean();
+    const t2 = Date.now() - startTime;
+
+    // Test 3: Redis test
+    let redisOk = false;
+    try {
+      await redis.set('test_key', 'test_value', 'EX', 10);
+      await redis.get('test_key');
+      redisOk = true;
+    } catch (e) {
+      console.error('Redis test failed:', e.message);
+    }
+    const t3 = Date.now() - startTime;
+
+    // Test 4: Basic article fetch
+    const sampleArticles = await Article.find({ language: 'english' })
+      .sort({ publishedAt: -1 })
+      .limit(5)
+      .lean();
+    const t4 = Date.now() - startTime;
+
+    res.json({
+      totalTime: Date.now() - startTime,
+      tests: {
+        articleCount: { time: t1, result: simpleCount },
+        userLookup: { time: t2, hasUser: !!user, hasEmbedding: !!(user?.embedding_pca) },
+        redis: { time: t3, working: redisOk },
+        sampleFetch: { time: t4, count: sampleArticles.length }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Performance test failed',
+      message: error.message,
+      totalTime: Date.now() - startTime
+    });
+  }
+});
+
+// GET: Fast personalized fallback (simplified algorithm)
+articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+    const language = req.query.language || 'english';
+    const userId = req.mongoUser.supabase_id;
+
+    console.log(`⚡ Fast personalized for user ${userId}, page ${page}, limit ${limit}`);
+
+    // Simple cache key
+    const cacheKey = `articles_fast_${userId}_page_${page}_limit_${limit}_lang_${language}`;
+
+    // Cache check
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+      if (!req.query.noCache && cached) {
+        console.log(`⚡ Fast cache hit in ${Date.now() - startTime}ms`);
+        return res.json(JSON.parse(cached));
+      }
+    } catch (err) {
+      console.error('⚠️ Redis get error:', err.message);
+    }
+
+    // Get user preferences quickly
+    const user = await User.findOne({ supabase_id: userId }, 'liked_articles disliked_articles').lean();
+    const skip = (page - 1) * limit;
+
+    // Fast query: recent articles, exclude dislikes
+    const excludeIds = user?.disliked_articles || [];
+    const articles = await Article.find({
+      language,
+      _id: { $nin: excludeIds },
+      publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+    })
+      .sort({ publishedAt: -1, viewCount: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // Simple enhancement
+    const enhancedArticles = articles.map(article => ({
+      ...article,
+      fetchId: new mongoose.Types.ObjectId().toString(),
+      isFast: true,
+      engagementScore: calculateEngagementScore(article)
+    }));
+
+    // Cache for 10 minutes
+    try {
+      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 600);
+    } catch (err) {
+      console.error('⚠️ Redis set error:', err.message);
+    }
+
+    console.log(`⚡ Fast personalized complete in ${Date.now() - startTime}ms - ${enhancedArticles.length} articles`);
+    res.json(enhancedArticles);
+
+  } catch (error) {
+    console.error('❌ Fast personalized error:', error);
+    res.status(500).json({ error: 'Fast personalized error', message: error.message });
+  }
+});
+
+// Performance configuration constants
+const VECTOR_INDEX = "articles_pca_index";
+const NUM_CANDIDATE_MULT = 4;
+const LIMIT_MULT = 2;
+const DIVERSITY_RATIO = 0.15;
+const TRENDING_RATIO = 0.10;
+const VECTOR_PROBE_TTL_MS = 5 * 60 * 1000;
+const VECTOR_MAX_TIME_MS = 2000;
+const ROUTE_BUDGET_MS = 4500;
+const ENABLE_SERVER_TIMING = true;
+
+// Module-scoped vector readiness cache
+let _vectorProbe = { ok: false, checkedAt: 0, dims: null };
+
+// Vector readiness probe
+async function isVectorSearchReady() {
+  const now = Date.now();
+  if (now - _vectorProbe.checkedAt < VECTOR_PROBE_TTL_MS) {
+    return _vectorProbe.ok;
+  }
+
+  try {
+    const indexes = await Article.collection.listSearchIndexes({ name: VECTOR_INDEX }).toArray();
+    const vectorIndex = indexes.find(idx => idx.name === VECTOR_INDEX);
+    const ok = vectorIndex && (vectorIndex.status === 'READY' || vectorIndex.queryable);
+    const dims = vectorIndex?.latestDefinition?.mappings?.fields?.embedding_pca?.dimensions || null;
+
+    _vectorProbe = { ok, checkedAt: now, dims };
+    return ok;
+  } catch (error) {
+    console.error('🔍 Vector readiness probe failed:', error.message);
+    _vectorProbe = { ok: false, checkedAt: now, dims: null };
+    return false;
+  }
+}
+
+// Quick vector probe
+async function quickVectorProbe(queryVector, cutoffDate, language, excludeIds) {
+  try {
+    const pipeline = [
+      {
+        $vectorSearch: {
+          index: VECTOR_INDEX,
+          path: "embedding_pca",
+          queryVector: queryVector,
+          numCandidates: 32,
+          limit: 1,
+          filter: {
+            language: language,
+            publishedAt: { $gte: cutoffDate },
+            _id: { $nin: excludeIds }
+          }
+        }
+      }
+    ];
+
+    const results = await Article.aggregate(pipeline, { maxTimeMS: 400, allowDiskUse: true });
+    return { ok: true };
+  } catch (error) {
+    if (error.message.includes('index') || error.message.includes('cluster')) {
+      return { ok: false };
+    }
+    return { ok: true }; // Other errors don't mean vector search is unavailable
+  }
+}
+
+// GET: Personalized article recommendations (MongoDB Atlas $vectorSearch + recency mix)
 articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
+  // Set a longer timeout for this complex endpoint
+  req.setTimeout(60000); // 60 seconds for complex AI processing
+
+  // 📏 End-to-end timing: Request received
+  const requestStartTime = Date.now();
+  const startTime = Date.now();
+  const deadlineMs = ROUTE_BUDGET_MS;
+  const timings = {};
+  const mark = (k) => timings[k] = Date.now() - startTime;
+
+  console.log('🔥 PERSONALIZED ENDPOINT START:', new Date().toISOString());
+  console.log(`📏 E2E: Request received at ${requestStartTime}ms`);
+
+  // Override res.json to measure JSON serialization time
+  const originalJson = res.json;
+  res.json = function (data) {
+    const jsonStartTime = Date.now();
+    console.log(`📏 E2E: Starting JSON serialization at ${jsonStartTime - requestStartTime}ms`);
+
+    const result = originalJson.call(this, data);
+
+    const jsonEndTime = Date.now();
+    const totalE2ETime = jsonEndTime - requestStartTime;
+    const jsonSerializationTime = jsonEndTime - jsonStartTime;
+
+    console.log(`📏 E2E: JSON serialization took ${jsonSerializationTime}ms`);
+    console.log(`📏 E2E: TOTAL REQUEST-TO-JSON time: ${totalE2ETime}ms`);
+    console.log(`📏 E2E: Response sent at ${jsonEndTime}ms`);
+
+    return result;
+  };
+
   try {
     // Input validation and clamping
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -112,6 +326,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     const noveltySeed = simpleHash(`${userId}:${page}:${dayKey}`);
 
     console.log(`🎯 Fetching personalized articles for user ${userId}, page ${page}, limit ${limit}, language ${language}`);
+    console.log(`⏱️ Processing time so far: ${Date.now() - startTime}ms`);
 
     // Reset served articles if requested
     if (resetServed) {
@@ -135,8 +350,20 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }
     if (!req.query.noCache && cached) {
       console.log('🧠 Returning cached personalized articles');
+      console.log(`⚡ Cache hit in ${Date.now() - startTime}ms`);
+      mark('cache_check');
+      mark('total');
+      if (ENABLE_SERVER_TIMING) {
+        res.setHeader('Server-Timing', Object.entries(timings).map(([k, v]) => `${k};dur=${v}`).join(', '));
+        res.setHeader('X-Gulfio-Timings', JSON.stringify(timings));
+      }
+      console.log(`📏 E2E: About to return cached result at ${Date.now() - requestStartTime}ms`);
       return res.json(JSON.parse(cached));
     }
+
+    mark('cache_check');
+
+    console.log(`⏱️ Cache check complete: ${Date.now() - startTime}ms`);
 
     // Get already served articles
     let servedIds = [];
@@ -149,7 +376,11 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     // User embedding
     const user = await User.findOne({ supabase_id: userId }).lean();
-    let userEmbedding = user?.embedding_pca || user?.embedding;
+    let userEmbedding = user?.embedding_pca;
+
+    mark('user_load');
+
+    console.log(`⏱️ User data loaded: ${Date.now() - startTime}ms`);
 
     // Progressive time windows based on page
     const getTimeWindow = (page) => {
@@ -162,112 +393,70 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     const timeWindow = getTimeWindow(page);
     console.log(`⏰ Time window: ${timeWindow.label}, noveltySeed: ${noveltySeed}`);
 
-    // Faiss status
-    const faissStatus = getFaissIndexStatus();
-    console.log('📊 Faiss status:', faissStatus);
+    // Vector readiness and probe
+    const vectorReady = await isVectorSearchReady();
+    const canUseVectorSearch = userEmbedding && Array.isArray(userEmbedding) && userEmbedding.length > 0 && vectorReady;
+    console.log(`🔍 Vector search available: ${canUseVectorSearch}`);
 
-    // Fallback path (no embedding or index)
-    if (!userEmbedding || !Array.isArray(userEmbedding) || !faissStatus.isInitialized) {
-      console.warn('⚠️ Falling back to engagement-based sorting WITH fresh articles injection');
-      console.warn(`User embedding: ${userEmbedding ? 'exists' : 'missing'}, Faiss initialized: ${faissStatus.isInitialized}`);
+    console.log(`🔍 Vector search ready: ${vectorReady}, dims: ${_vectorProbe.dims}, user embedding: ${userEmbedding ? 'exists' : 'missing'}`);
 
-      // Apply same time window constraints to fallback
-      const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
-      console.log(`📅 FALLBACK: Applying time window: ${timeWindow.label}`);
+    // Time window constraint for probes
+    const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
+    const excludeIds = [
+      ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
+      ...(user?.disliked_articles || [])
+    ];
 
-      // Exclude served and disliked articles
-      const excludeIds = [
-        ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
-        ...(user?.disliked_articles || [])
-      ];
+    let quickProbeOk = true;
+    if (canUseVectorSearch) {
+      const probeResult = await quickVectorProbe(userEmbedding, cutoffTime, language, excludeIds);
+      quickProbeOk = probeResult.ok;
+      console.log(`🔍 Quick vector probe: ${quickProbeOk ? 'OK' : 'FAILED'}`);
+    }
 
-      const fallbackArticles = await Article.find({
-        language,
-        publishedAt: { $gte: cutoffTime },
-        _id: { $nin: excludeIds }
-      })
-        .sort({ publishedAt: -1, viewCount: -1 })
-        .limit(limit * 3 * page) // Build larger pool for pagination
-        .lean();
+    mark('vector_probe');
+    console.log(`⏱️ Vector probe complete: ${Date.now() - startTime}ms`);
 
-      // If insufficient articles, progressively widen time window
-      let finalFallbackArticles = fallbackArticles;
-      const minFallbackNeeded = limit * page + limit; // Ensure enough for this page + buffer
-      if (fallbackArticles.length < minFallbackNeeded && timeWindow.hours < 720) {
-        const widerRanges = [
-          { hours: 168, label: 'last 7d' },
-          { hours: 336, label: 'last 14d' },
-          { hours: 720, label: 'last 30d' }
-        ];
+    // Fast fallback path for various conditions
+    const isSlowRequest = (Date.now() - startTime) > deadlineMs;
+    const shouldUseFastFallback = !canUseVectorSearch || !quickProbeOk || (isSlowRequest && page === 1);
 
-        for (const range of widerRanges) {
-          if (range.hours <= timeWindow.hours) continue;
-
-          const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
-          const additionalArticles = await Article.find({
-            language,
-            publishedAt: { $gte: widerCutoff, $lt: cutoffTime },
-            _id: { $nin: [...excludeIds, ...finalFallbackArticles.map(a => a._id)] }
-          })
-            .sort({ publishedAt: -1, viewCount: -1 })
-            .limit(minFallbackNeeded - finalFallbackArticles.length)
-            .lean();
-
-          finalFallbackArticles = [...finalFallbackArticles, ...additionalArticles];
-          console.log(`📅 FALLBACK: Widened to ${range.label}, total: ${finalFallbackArticles.length}`);
-
-          if (finalFallbackArticles.length >= minFallbackNeeded) break;
-        }
+    // Fallback path (no embedding OR slow request OR vector unavailable)
+    if (shouldUseFastFallback) {
+      if (isSlowRequest) {
+        console.warn('⚡ Using FAST FALLBACK due to budget exceeded');
+      } else if (!canUseVectorSearch) {
+        console.warn('⚠️ Falling back to engagement-based sorting');
+        console.warn(`Vector ready: ${vectorReady}, embedding: ${userEmbedding ? 'exists' : 'missing'}`);
+      } else {
+        console.warn('⚡ Using FAST FALLBACK due to probe failure');
       }
 
-      const response = finalFallbackArticles.slice(0, limit * 3 * page).map(article => ({
+      // Fast inline fallback (replicating /personalized-fast logic)
+      const fallbackArticles = await Article.find({
+        language,
+        _id: { $nin: excludeIds },
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+      })
+        .sort({ publishedAt: -1, viewCount: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean();
+
+      const fastResponse = fallbackArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
+        isFast: true,
         isFallback: true,
         timeWindow: timeWindow.label,
         noveltySeed,
         engagementScore: calculateEngagementScore(article)
       }));
 
-      // Source diversification for fallback articles
-      console.log(`🔀 Applying fallback source diversification to ${response.length} articles`);
-
-      const fallbackSourceGroups = {};
-      response.forEach(article => {
-        const sourceKey = article.source || article.sourceId || 'unknown';
-        if (!fallbackSourceGroups[sourceKey]) {
-          fallbackSourceGroups[sourceKey] = [];
-        }
-        fallbackSourceGroups[sourceKey].push(article);
-      });
-
-      // Sort each fallback source group by engagement score
-      Object.keys(fallbackSourceGroups).forEach(source => {
-        fallbackSourceGroups[source].sort((a, b) => (b.engagementScore || 0) - (a.engagementScore || 0));
-      });
-
-      // Round-robin interleaving for fallback
-      const fallbackInterleaved = [];
-      const fallbackSourceKeys = Object.keys(fallbackSourceGroups);
-      let fallbackMaxGroupSize = Math.max(...fallbackSourceKeys.map(key => fallbackSourceGroups[key].length));
-
-      for (let round = 0; round < fallbackMaxGroupSize; round++) {
-        for (const sourceKey of fallbackSourceKeys) {
-          if (fallbackSourceGroups[sourceKey][round]) {
-            fallbackInterleaved.push(fallbackSourceGroups[sourceKey][round]);
-          }
-        }
-      }
-
-      // Apply pagination to fallback
-      const fallbackStartIndex = (page - 1) * limit;
-      const fallbackEndIndex = fallbackStartIndex + limit;
-      const paginatedFallback = fallbackInterleaved.slice(fallbackStartIndex, fallbackEndIndex);
-
       // Track served articles
-      if (paginatedFallback.length > 0) {
+      if (fastResponse.length > 0) {
         try {
-          const articleIds = paginatedFallback.map(a => a._id.toString());
+          const articleIds = fastResponse.map(a => a._id.toString());
           await redis.sadd(servedKey, ...articleIds);
           await redis.expire(servedKey, 86400);
         } catch (err) {
@@ -275,38 +464,115 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         }
       }
 
+      mark('total');
+      console.log(`⚡ FAST FALLBACK complete: ${fastResponse.length} articles, timings.total: ${timings.total}ms`);
+
       try {
-        await redis.set(cacheKey, JSON.stringify(paginatedFallback), 'EX', 1800);
+        await redis.set(cacheKey, JSON.stringify(fastResponse), 'EX', 600); // Shorter cache for fallback
       } catch (err) {
         console.error('⚠️ Redis set error (safe to ignore):', err.message);
       }
 
-      return res.json(paginatedFallback);
+      if (ENABLE_SERVER_TIMING) {
+        res.setHeader('Server-Timing', Object.entries(timings).map(([k, v]) => `${k};dur=${v}`).join(', '));
+        res.setHeader('X-Gulfio-Timings', JSON.stringify(timings));
+      }
+
+      return res.json(fastResponse);
     }
 
-    /** ---------- Personalized path (Faiss) ---------- */
-    console.log('🔍 Using Faiss for personalized recommendations');
+    /** ---------- Personalized path (MongoDB Atlas $vectorSearch) ---------- */
+    console.log('🔍 Using MongoDB Atlas $vectorSearch for personalized recommendations');
 
-    // Build larger candidate pool for pagination (limit * 3 per page)
+    // Build larger candidate pool for pagination
     const candidatePoolSize = limit * 3 * page;
-    const searchLimit = Math.max(candidatePoolSize, limit * 10); // Minimum buffer for FAISS
-    const { ids, distances } = await searchFaissIndex(userEmbedding, searchLimit);
+    const searchLimit = candidatePoolSize * LIMIT_MULT;
+    const numCandidates = candidatePoolSize * NUM_CANDIDATE_MULT;
 
-    // Time window constraint
-    const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
+    console.log(`🎯 Vector search params: numCandidates=${numCandidates}, limit=${searchLimit}, excludeIds=${excludeIds.length}`);
 
-    // Exclude served and disliked articles
-    const excludeIds = [
-      ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
-      ...(user?.disliked_articles || [])
-    ];
+    // MongoDB Atlas $vectorSearch aggregation
+    const performVectorSearch = async (cutoffDate, isWideningSearch = false) => {
+      try {
+        const pipeline = [
+          {
+            $vectorSearch: {
+              index: VECTOR_INDEX,
+              path: "embedding_pca",
+              queryVector: userEmbedding,
+              numCandidates: numCandidates,
+              limit: searchLimit,
+              filter: {
+                language: language,
+                publishedAt: { $gte: cutoffDate },
+                _id: { $nin: excludeIds }
+              }
+            }
+          },
+          { $addFields: { similarity: { $meta: "vectorSearchScore" } } },
+          {
+            $project: {
+              _id: 1,
+              title: 1,
+              summary: 1,
+              image: 1,
+              sourceId: 1,
+              source: 1,
+              publishedAt: 1,
+              viewCount: 1,
+              category: 1,
+              likes: 1,
+              dislikes: 1,
+              likedBy: 1,
+              dislikedBy: 1,
+              similarity: 1
+            }
+          }
+        ];
 
-    let candidateArticles = await Article.find({
-      _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
-      language,
-      publishedAt: { $gte: cutoffTime },
-      _id: { $nin: excludeIds }
-    }).lean();
+        const results = await Article.aggregate(pipeline, {
+          maxTimeMS: VECTOR_MAX_TIME_MS,
+          allowDiskUse: true
+        });
+        console.log(`📊 Vector search returned ${results.length} results (cutoff: ${cutoffDate.toISOString().slice(0, 10)})`);
+        return results;
+      } catch (error) {
+        console.error('❌ Vector search error:', error.message);
+        if (error.message.includes('index') || error.message.includes('cluster')) {
+          console.warn('⚠️ Vector search unavailable, falling back to engagement-based sorting');
+          return null; // Trigger fallback
+        }
+        throw error;
+      }
+    };
+
+    // Perform initial vector search
+    let candidateArticles = await performVectorSearch(cutoffTime);
+    mark('vector_search');
+
+    // If vector search failed, fall back to engagement-based approach
+    if (candidateArticles === null) {
+      console.warn('🔄 Vector search failed, using engagement-based fallback with time window');
+
+      const fallbackArticles = await Article.find({
+        language,
+        publishedAt: { $gte: cutoffTime },
+        _id: { $nin: excludeIds }
+      })
+        .sort({ publishedAt: -1, viewCount: -1 })
+        .limit(candidatePoolSize * 2)
+        .lean();
+
+      candidateArticles = fallbackArticles.map(article => ({
+        ...article,
+        similarity: 0, // No similarity score available
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFallback: true,
+        timeWindow: timeWindow.label,
+        noveltySeed,
+        engagementScore: calculateEngagementScore(article)
+      }));
+    }
 
     // If insufficient candidates, progressively widen time window
     const minCandidatesNeeded = candidatePoolSize + limit; // Buffer for pagination
@@ -321,21 +587,101 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         if (range.hours <= timeWindow.hours) continue;
 
         const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
-        const additionalCandidates = await Article.find({
-          _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
-          language,
-          publishedAt: { $gte: widerCutoff, $lt: cutoffTime },
-          _id: { $nin: [...excludeIds, ...candidateArticles.map(a => a._id)] }
-        }).lean();
+
+        // Additional vector search with wider time window
+        let additionalCandidates;
+        if (candidateArticles.some(a => !a.isFallback)) {
+          // Use vector search for additional candidates
+          const widerResults = await performVectorSearch(widerCutoff, true);
+          if (widerResults) {
+            // Filter out already found articles
+            const existingIds = new Set(candidateArticles.map(a => a._id.toString()));
+            additionalCandidates = widerResults.filter(a =>
+              !existingIds.has(a._id.toString()) &&
+              a.publishedAt < cutoffTime
+            );
+          } else {
+            additionalCandidates = [];
+          }
+        } else {
+          // Fallback path - use regular query
+          const widerArticles = await Article.find({
+            language,
+            publishedAt: { $gte: widerCutoff, $lt: cutoffTime },
+            _id: { $nin: [...excludeIds, ...candidateArticles.map(a => a._id)] }
+          })
+            .sort({ publishedAt: -1, viewCount: -1 })
+            .limit(minCandidatesNeeded - candidateArticles.length)
+            .lean();
+
+          additionalCandidates = widerArticles.map(article => ({
+            ...article,
+            similarity: 0,
+            isFallback: true
+          }));
+        }
 
         candidateArticles = [...candidateArticles, ...additionalCandidates];
-        console.log(`📅 Widened time window to ${range.label}, candidates: ${candidateArticles.length}`);
+        console.log(`📅 Widened time window to ${range.label}, total candidates: ${candidateArticles.length}`);
 
         if (candidateArticles.length >= minCandidatesNeeded) break;
       }
     }
 
     console.log(`📄 Found ${candidateArticles.length} candidate articles within time window: ${timeWindow.label}`);
+
+    mark('widen');
+
+    // Budget check - if we're over the deadline, return fast fallback
+    if (Date.now() - startTime > deadlineMs) {
+      console.warn(`⚡ Budget exceeded after vector search, returning fast fallback`);
+
+      const fastFallbackArticles = await Article.find({
+        language,
+        _id: { $nin: excludeIds },
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+      })
+        .sort({ publishedAt: -1, viewCount: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean();
+
+      const fastResponse = fastFallbackArticles.map(article => ({
+        ...article,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        isFast: true,
+        isOverBudget: true,
+        timeWindow: timeWindow.label,
+        noveltySeed,
+        engagementScore: calculateEngagementScore(article)
+      }));
+
+      if (fastResponse.length > 0) {
+        try {
+          const articleIds = fastResponse.map(a => a._id.toString());
+          await redis.sadd(servedKey, ...articleIds);
+          await redis.expire(servedKey, 86400);
+        } catch (err) {
+          console.error('⚠️ Failed to track served articles:', err.message);
+        }
+      }
+
+      mark('total');
+      console.log(`⚡ OVER-BUDGET FALLBACK complete: ${fastResponse.length} articles, timings.total: ${timings.total}ms`);
+
+      try {
+        await redis.set(cacheKey, JSON.stringify(fastResponse), 'EX', 600);
+      } catch (err) {
+        console.error('⚠️ Redis set error (safe to ignore):', err.message);
+      }
+
+      if (ENABLE_SERVER_TIMING) {
+        res.setHeader('Server-Timing', Object.entries(timings).map(([k, v]) => `${k};dur=${v}`).join(', '));
+        res.setHeader('X-Gulfio-Timings', JSON.stringify(timings));
+      }
+
+      return res.json(fastResponse);
+    }
 
     // Page-aware recency weighting
     const w_recency =
@@ -346,8 +692,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     // Recency-first similarity scoring
     const scoredArticles = candidateArticles.map(article => {
-      const index = ids.indexOf(article._id.toString());
-      const similarity = index !== -1 ? Math.max(0, Math.min(1, 1 - distances[index])) : 0;
+      const similarity = article.similarity || 0; // From $meta: "vectorSearchScore" or 0 for fallback
       const engagementScore = calculateEngagementScore(article);
       const recencyScore = basicRecencyScore(article.publishedAt);
       const baseScore = (similarity * 0.6) + (engagementScore * 0.4);
@@ -355,7 +700,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       return {
         ...article,
-        fetchId: new mongoose.Types.ObjectId().toString(),
+        fetchId: article.fetchId || new mongoose.Types.ObjectId().toString(),
         similarity,
         engagementScore,
         recencyScore,
@@ -368,12 +713,14 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     // Sort by final score for all candidates
     scoredArticles.sort((a, b) => b.finalScore - a.finalScore);
 
+    mark('scoring');
+
     // Build final pool with diversity and trending before pagination
     const candidatePool = [...scoredArticles];
     console.log(`📊 Base scored articles: ${candidatePool.length}, w_recency: ${w_recency.toFixed(2)}`);
 
     // Diversity injection: add older-but-relevant articles to candidate pool
-    const diversityPoolSize = Math.ceil(candidatePoolSize * 0.15);
+    const diversityPoolSize = Math.ceil(candidatePoolSize * DIVERSITY_RATIO);
     if (diversityPoolSize > 0 && candidatePool.length < candidatePoolSize) {
       console.log(`🎲 Adding up to ${diversityPoolSize} diversity articles to pool`);
 
@@ -395,8 +742,10 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       console.log(`🎯 Diversity added to pool: ${shuffledDiversity.length}`);
     }
 
+    mark('diversity');
+
     // Trending injection: add to candidate pool
-    const trendingPoolSize = Math.ceil(candidatePoolSize * 0.1);
+    const trendingPoolSize = Math.ceil(candidatePoolSize * TRENDING_RATIO);
     if (trendingPoolSize > 0 && candidatePool.length < candidatePoolSize) {
       console.log(`📈 Adding up to ${trendingPoolSize} trending articles to pool`);
 
@@ -424,6 +773,8 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       candidatePool.push(...trendingEnhanced);
       console.log(`📈 Trending added to pool: ${trendingEnhanced.length}`);
     }
+
+    mark('trending');
 
     // Source diversification shuffle
     console.log(`🔀 Applying source diversification to ${candidatePool.length} articles`);
@@ -461,10 +812,14 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     console.log(`🎯 Source diversification complete: ${interleaved.length} articles interleaved`);
 
+    mark('interleave');
+
     // Apply pagination AFTER scoring, diversity, and source shuffling
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
     let finalArticles = interleaved.slice(startIndex, endIndex);
+
+    mark('paginate');
 
     // Track served articles
     if (finalArticles.length > 0) {
@@ -478,6 +833,16 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }
 
     console.log(`🎯 Final composition: ${finalArticles.length} articles, cacheKey: ${cacheKey.slice(-20)}...`);
+    mark('cache_set');
+
+    mark('total');
+    console.log(`⚡ TOTAL PROCESSING TIME: ${timings.total}ms`);
+    console.log(`📊 Vector ready: ${vectorReady}, dims: ${_vectorProbe.dims}, timings:`, timings);
+
+    if (ENABLE_SERVER_TIMING) {
+      res.setHeader('Server-Timing', Object.entries(timings).map(([k, v]) => `${k};dur=${v}`).join(', '));
+      res.setHeader('X-Gulfio-Timings', JSON.stringify(timings));
+    }
 
     try {
       await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 3600);
@@ -485,10 +850,20 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
 
+    console.log(`📏 E2E: About to send final response at ${Date.now() - requestStartTime}ms`);
     res.json(finalArticles);
   } catch (error) {
+    const processingTime = Date.now() - startTime;
+    const e2eTime = Date.now() - requestStartTime;
     console.error('❌ Error fetching personalized articles:', error);
-    res.status(500).json({ error: 'Error fetching personalized articles', message: error.message });
+    console.error(`⏱️ Failed after ${processingTime}ms (E2E: ${e2eTime}ms)`);
+
+    // Return a meaningful error response
+    if (processingTime > 50000) {
+      res.status(504).json({ error: 'Request timeout - processing took too long', message: error.message });
+    } else {
+      res.status(500).json({ error: 'Error fetching personalized articles', message: error.message });
+    }
   }
 });
 
@@ -908,3 +1283,77 @@ articleRouter.get('/:id', async (req, res) => {
 });
 
 module.exports = articleRouter;
+
+/*
+=== MongoDB Atlas Search Index Configuration ===
+
+Create this Atlas Search index named "articles_pca_index" on the articles collection:
+
+{
+  "mappings": {
+    "dynamic": false,
+    "fields": {
+      "embedding_pca": {
+        "type": "vector",
+        "similarity": "cosine",
+        "dimensions": 128
+      },
+      "language": { "type": "keyword" },
+      "publishedAt": { "type": "date" }
+    }
+  }
+}
+
+Note: Replace 128 with your actual PCA dimensions if different.
+
+=== MongoDB Secondary Indexes ===
+
+Run these commands in MongoDB shell or compass:
+
+db.articles.createIndex({ language: 1, publishedAt: -1 })
+db.articles.createIndex({ viewCount: -1, publishedAt: -1, language: 1 })
+db.articles.createIndex({ "source": 1, publishedAt: -1 })
+
+=== Test Plan ===
+
+Unit Tests:
+- Test vector search with valid embedding_pca
+- Test fallback when embedding_pca is missing
+- Test progressive time window widening
+- Test diversity and trending injection
+- Test source diversification
+- Test pagination correctness
+- Test Redis served set management
+
+Integration Tests:
+- Test with real MongoDB Atlas cluster
+- Test vector search index availability
+- Test performance under load
+- Test cache hit/miss scenarios
+
+Smoke Tests:
+- GET /articles/personalized?page=1&limit=20&language=english
+- GET /articles/personalized?page=2&limit=10&language=arabic
+- GET /articles/personalized?resetServed=1
+- GET /articles/personalized?noCache=1
+
+=== Operations Notes ===
+
+Redis Keys & TTLs:
+- served_personalized_${userId}_${language}_${dayKey} (86400s TTL)
+- articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${dayKey}_${noveltySeed} (3600s TTL)
+
+Monitoring:
+- Track vector search response times
+- Monitor fallback usage rates  
+- Alert on vector search errors
+- Monitor Redis memory usage
+- Track cache hit rates
+
+Performance Knobs:
+- VECTOR_INDEX: Atlas Search index name
+- NUM_CANDIDATE_MULT: Controls numCandidates (4x pool size)
+- LIMIT_MULT: Controls search limit (2x pool size)
+- DIVERSITY_RATIO: Diversity injection percentage (0.15 = 15%)
+- TRENDING_RATIO: Trending injection percentage (0.10 = 10%)
+*/
