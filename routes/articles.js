@@ -187,12 +187,13 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         _id: { $nin: excludeIds }
       })
         .sort({ publishedAt: -1, viewCount: -1 })
-        .limit(limit * 2)
+        .limit(limit * 3 * page) // Build larger pool for pagination
         .lean();
 
       // If insufficient articles, progressively widen time window
       let finalFallbackArticles = fallbackArticles;
-      if (fallbackArticles.length < limit && timeWindow.hours < 720) {
+      const minFallbackNeeded = limit * page + limit; // Ensure enough for this page + buffer
+      if (fallbackArticles.length < minFallbackNeeded && timeWindow.hours < 720) {
         const widerRanges = [
           { hours: 168, label: 'last 7d' },
           { hours: 336, label: 'last 14d' },
@@ -201,7 +202,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
         for (const range of widerRanges) {
           if (range.hours <= timeWindow.hours) continue;
-          
+
           const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
           const additionalArticles = await Article.find({
             language,
@@ -209,17 +210,17 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
             _id: { $nin: [...excludeIds, ...finalFallbackArticles.map(a => a._id)] }
           })
             .sort({ publishedAt: -1, viewCount: -1 })
-            .limit(limit * 2 - finalFallbackArticles.length)
+            .limit(minFallbackNeeded - finalFallbackArticles.length)
             .lean();
 
           finalFallbackArticles = [...finalFallbackArticles, ...additionalArticles];
           console.log(`📅 FALLBACK: Widened to ${range.label}, total: ${finalFallbackArticles.length}`);
-          
-          if (finalFallbackArticles.length >= limit) break;
+
+          if (finalFallbackArticles.length >= minFallbackNeeded) break;
         }
       }
 
-      const response = finalFallbackArticles.slice(0, limit).map(article => ({
+      const response = finalFallbackArticles.slice(0, limit * 3 * page).map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFallback: true,
@@ -228,10 +229,45 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         engagementScore: calculateEngagementScore(article)
       }));
 
+      // Source diversification for fallback articles
+      console.log(`🔀 Applying fallback source diversification to ${response.length} articles`);
+
+      const fallbackSourceGroups = {};
+      response.forEach(article => {
+        const sourceKey = article.source || article.sourceId || 'unknown';
+        if (!fallbackSourceGroups[sourceKey]) {
+          fallbackSourceGroups[sourceKey] = [];
+        }
+        fallbackSourceGroups[sourceKey].push(article);
+      });
+
+      // Sort each fallback source group by engagement score
+      Object.keys(fallbackSourceGroups).forEach(source => {
+        fallbackSourceGroups[source].sort((a, b) => (b.engagementScore || 0) - (a.engagementScore || 0));
+      });
+
+      // Round-robin interleaving for fallback
+      const fallbackInterleaved = [];
+      const fallbackSourceKeys = Object.keys(fallbackSourceGroups);
+      let fallbackMaxGroupSize = Math.max(...fallbackSourceKeys.map(key => fallbackSourceGroups[key].length));
+
+      for (let round = 0; round < fallbackMaxGroupSize; round++) {
+        for (const sourceKey of fallbackSourceKeys) {
+          if (fallbackSourceGroups[sourceKey][round]) {
+            fallbackInterleaved.push(fallbackSourceGroups[sourceKey][round]);
+          }
+        }
+      }
+
+      // Apply pagination to fallback
+      const fallbackStartIndex = (page - 1) * limit;
+      const fallbackEndIndex = fallbackStartIndex + limit;
+      const paginatedFallback = fallbackInterleaved.slice(fallbackStartIndex, fallbackEndIndex);
+
       // Track served articles
-      if (response.length > 0) {
+      if (paginatedFallback.length > 0) {
         try {
-          const articleIds = response.map(a => a._id.toString());
+          const articleIds = paginatedFallback.map(a => a._id.toString());
           await redis.sadd(servedKey, ...articleIds);
           await redis.expire(servedKey, 86400);
         } catch (err) {
@@ -240,24 +276,25 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       }
 
       try {
-        await redis.set(cacheKey, JSON.stringify(response), 'EX', 1800);
+        await redis.set(cacheKey, JSON.stringify(paginatedFallback), 'EX', 1800);
       } catch (err) {
         console.error('⚠️ Redis set error (safe to ignore):', err.message);
       }
 
-      return res.json(response);
+      return res.json(paginatedFallback);
     }
 
     /** ---------- Personalized path (Faiss) ---------- */
     console.log('🔍 Using Faiss for personalized recommendations');
 
-    // Over-fetch for mixing
-    const searchLimit = limit * 3;
+    // Build larger candidate pool for pagination (limit * 3 per page)
+    const candidatePoolSize = limit * 3 * page;
+    const searchLimit = Math.max(candidatePoolSize, limit * 10); // Minimum buffer for FAISS
     const { ids, distances } = await searchFaissIndex(userEmbedding, searchLimit);
 
     // Time window constraint
     const cutoffTime = new Date(Date.now() - timeWindow.hours * 60 * 60 * 1000);
-    
+
     // Exclude served and disliked articles
     const excludeIds = [
       ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
@@ -272,7 +309,8 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }).lean();
 
     // If insufficient candidates, progressively widen time window
-    if (candidateArticles.length < limit * 2 && timeWindow.hours < 720) {
+    const minCandidatesNeeded = candidatePoolSize + limit; // Buffer for pagination
+    if (candidateArticles.length < minCandidatesNeeded && timeWindow.hours < 720) {
       const widerRanges = [
         { hours: 168, label: 'last 7d' },
         { hours: 336, label: 'last 14d' },
@@ -281,7 +319,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       for (const range of widerRanges) {
         if (range.hours <= timeWindow.hours) continue;
-        
+
         const widerCutoff = new Date(Date.now() - range.hours * 60 * 60 * 1000);
         const additionalCandidates = await Article.find({
           _id: { $in: ids.map(id => new mongoose.Types.ObjectId(id)) },
@@ -292,19 +330,19 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
         candidateArticles = [...candidateArticles, ...additionalCandidates];
         console.log(`📅 Widened time window to ${range.label}, candidates: ${candidateArticles.length}`);
-        
-        if (candidateArticles.length >= limit * 2) break;
+
+        if (candidateArticles.length >= minCandidatesNeeded) break;
       }
     }
 
     console.log(`📄 Found ${candidateArticles.length} candidate articles within time window: ${timeWindow.label}`);
 
     // Page-aware recency weighting
-    const w_recency = 
+    const w_recency =
       page === 1 ? 0.75 :
-      page === 2 ? 0.65 :
-      page === 3 ? 0.55 :
-      0.45;
+        page === 2 ? 0.65 :
+          page === 3 ? 0.55 :
+            0.45;
 
     // Recency-first similarity scoring
     const scoredArticles = candidateArticles.map(article => {
@@ -327,23 +365,23 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       };
     });
 
-    // Sort by final score and take main results
+    // Sort by final score for all candidates
     scoredArticles.sort((a, b) => b.finalScore - a.finalScore);
-    const mainResultsCount = Math.ceil(limit * 0.85); // 85% main results
-    let finalArticles = scoredArticles.slice(0, mainResultsCount);
 
-    console.log(`📊 Recent count: ${finalArticles.length}, w_recency: ${w_recency.toFixed(2)}`);
+    // Build final pool with diversity and trending before pagination
+    const candidatePool = [...scoredArticles];
+    console.log(`📊 Base scored articles: ${candidatePool.length}, w_recency: ${w_recency.toFixed(2)}`);
 
-    // Diversity injection: 10-15% older-but-relevant articles
-    const diversityLimit = Math.min(Math.ceil(limit * 0.15), limit - finalArticles.length);
-    if (diversityLimit > 0 && scoredArticles.length > mainResultsCount) {
-      console.log(`🎲 Adding ${diversityLimit} diversity articles`);
-      
-      // Use older high-similarity articles for diversity
+    // Diversity injection: add older-but-relevant articles to candidate pool
+    const diversityPoolSize = Math.ceil(candidatePoolSize * 0.15);
+    if (diversityPoolSize > 0 && candidatePool.length < candidatePoolSize) {
+      console.log(`🎲 Adding up to ${diversityPoolSize} diversity articles to pool`);
+
+      // Use older high-similarity articles for diversity (not yet in pool)
+      const usedIds = new Set(candidatePool.map(a => a._id.toString()));
       const diversityCandidates = scoredArticles
-        .slice(mainResultsCount)
-        .filter(a => a.similarity > 0.3)
-        .slice(0, diversityLimit * 2);
+        .filter(a => !usedIds.has(a._id.toString()) && a.similarity > 0.3)
+        .slice(0, diversityPoolSize * 2);
 
       // Deterministic shuffle using LCG
       const rng = lcg(noveltySeed);
@@ -351,51 +389,82 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         .map(article => ({ article, sort: rng() }))
         .sort((a, b) => a.sort - b.sort)
         .map(item => ({ ...item.article, isDiverse: true }))
-        .slice(0, diversityLimit);
+        .slice(0, diversityPoolSize);
 
-      // Insert diversity articles at deterministic positions
-      const diversityRng = lcg(noveltySeed + 1);
-      shuffledDiversity.forEach(article => {
-        const insertIndex = Math.floor(diversityRng() * (finalArticles.length + 1));
-        finalArticles.splice(insertIndex, 0, article);
-      });
-
-      console.log(`🎯 Diversity injected count: ${shuffledDiversity.length}`);
+      candidatePool.push(...shuffledDiversity);
+      console.log(`🎯 Diversity added to pool: ${shuffledDiversity.length}`);
     }
 
-    // Trending injection (10%)
-    const trendingLimit = Math.ceil(limit * 0.1);
-    if (trendingLimit > 0) {
-      console.log(`📈 Adding ${trendingLimit} trending articles for diversity`);
+    // Trending injection: add to candidate pool
+    const trendingPoolSize = Math.ceil(candidatePoolSize * 0.1);
+    if (trendingPoolSize > 0 && candidatePool.length < candidatePoolSize) {
+      console.log(`📈 Adding up to ${trendingPoolSize} trending articles to pool`);
 
+      const usedIds = new Set(candidatePool.map(a => a._id.toString()));
       const trendingArticles = await Article.find({
         language,
         viewCount: { $exists: true, $gt: 0 },
         publishedAt: { $gte: cutoffTime },
-        _id: { $nin: [...excludeIds, ...finalArticles.map(a => a._id)] }
+        _id: { $nin: [...excludeIds, ...Array.from(usedIds).map(id => new mongoose.Types.ObjectId(id))] }
       })
         .sort({ viewCount: -1, publishedAt: -1 })
-        .limit(trendingLimit * 2)
+        .limit(trendingPoolSize * 2)
         .lean();
 
-      const trendingEnhanced = trendingArticles.slice(0, trendingLimit).map(article => ({
+      const trendingEnhanced = trendingArticles.slice(0, trendingPoolSize).map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isTrending: true,
         timeWindow: timeWindow.label,
         noveltySeed,
-        engagementScore: calculateEngagementScore(article)
+        engagementScore: calculateEngagementScore(article),
+        finalScore: calculateEngagementScore(article) * 0.7 // Lower score for trending
       }));
 
-      // Deterministic insertion using LCG
-      const trendingRng = lcg(noveltySeed + 2);
-      trendingEnhanced.forEach(article => {
-        const insertIndex = Math.floor(trendingRng() * (finalArticles.length + 1));
-        finalArticles.splice(insertIndex, 0, article);
-      });
+      candidatePool.push(...trendingEnhanced);
+      console.log(`📈 Trending added to pool: ${trendingEnhanced.length}`);
     }
 
-    finalArticles = finalArticles.slice(0, limit);
+    // Source diversification shuffle
+    console.log(`🔀 Applying source diversification to ${candidatePool.length} articles`);
+
+    // Group articles by source
+    const sourceGroups = {};
+    candidatePool.forEach(article => {
+      const sourceKey = article.source || article.sourceId || 'unknown';
+      if (!sourceGroups[sourceKey]) {
+        sourceGroups[sourceKey] = [];
+      }
+      sourceGroups[sourceKey].push(article);
+    });
+
+    // Sort each source group by finalScore (maintain ranking priority)
+    Object.keys(sourceGroups).forEach(source => {
+      sourceGroups[source].sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
+    });
+
+    // Round-robin interleaving with ranking priority
+    const interleaved = [];
+    const sourceKeys = Object.keys(sourceGroups);
+    let maxGroupSize = Math.max(...sourceKeys.map(key => sourceGroups[key].length));
+
+    console.log(`🔀 Interleaving ${sourceKeys.length} source groups, max group size: ${maxGroupSize}`);
+
+    // Interleave round-robin: take highest scoring from each group in turns
+    for (let round = 0; round < maxGroupSize; round++) {
+      for (const sourceKey of sourceKeys) {
+        if (sourceGroups[sourceKey][round]) {
+          interleaved.push(sourceGroups[sourceKey][round]);
+        }
+      }
+    }
+
+    console.log(`🎯 Source diversification complete: ${interleaved.length} articles interleaved`);
+
+    // Apply pagination AFTER scoring, diversity, and source shuffling
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    let finalArticles = interleaved.slice(startIndex, endIndex);
 
     // Track served articles
     if (finalArticles.length > 0) {
