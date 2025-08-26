@@ -69,14 +69,14 @@ router.get('/dashboard-summary/:id', async (req, res) => {
         // Fetch from DB with aggregation and timeout
         console.log(`Cache miss, querying DB for user: ${userId}`);
         const dbStartTime = Date.now();
-        
+
         // Use find instead of aggregation for better reliability
         console.log(`Querying user directly: ${userId}`);
         const user = await User.findOne({ supabase_id: userId })
             .select('email name avatar_url profile_image following_sources following_users liked_articles disliked_articles saved_articles saved_reels')
             .lean()
             .maxTimeMS(3000);
-        
+
         if (!user) {
             console.log(`User not found in DB: ${userId}`);
             return res.status(404).json({ message: 'User not found' });
@@ -115,7 +115,7 @@ router.get('/dashboard-summary/:id', async (req, res) => {
         const dbDuration = Date.now() - dbStartTime;
         const totalDuration = Date.now() - startTime;
         res.set('Server-Timing', `summary_db;dur=${dbDuration}, summary_total;dur=${totalDuration}`);
-        
+
         console.log(`Dashboard summary completed for user: ${userId} in ${totalDuration}ms`);
         res.json(summary);
 
@@ -126,7 +126,7 @@ router.get('/dashboard-summary/:id', async (req, res) => {
             stack: err.stack,
             name: err.name
         });
-        
+
         // Return a minimal response on error instead of 500
         res.status(200).json({
             email: null,
