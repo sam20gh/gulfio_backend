@@ -62,7 +62,7 @@ async function clearArticlesCache() {
     const articleKeys = await redis.keys('articles_*');
     const servedKeys = await redis.keys('served_personalized_*');
     const allKeys = [...articleKeys, ...servedKeys];
-    
+
     if (allKeys.length > 0) {
       await redis.del(allKeys);
       console.log('🧹 Cleared article caches:', allKeys.length, 'keys');
