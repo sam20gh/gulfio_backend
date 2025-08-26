@@ -880,6 +880,103 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
   }
 });
 
+// GET: Articles by category (public - works for both authenticated and non-authenticated users)
+articleRouter.get('/category', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const language = req.query.language || 'english';
+    const category = req.query.category;
+
+    if (!category) {
+      return res.status(400).json({ error: 'Category parameter is required' });
+    }
+
+    console.log(`🏷️ Fetching category articles for category: "${category}", page: ${page}, limit: ${limit}`);
+    console.log(`🔍 Raw query params:`, req.query);
+
+    const startTime = Date.now();
+    const skip = (page - 1) * limit;
+
+    // Build cache key
+    const today = new Date().toISOString().split('T')[0];
+    const cacheKey = `articles_category_public_${category}_page_${page}_limit_${limit}_lang_${language}_${today}`;
+
+    // Check cache first
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached category articles');
+      return res.json(JSON.parse(cached));
+    }
+
+    // Build base query with category filter
+    const filter = {
+      language,
+      category
+    };
+
+    console.log(`🔍 MongoDB query filter:`, filter);
+    console.log(`🔍 Searching for articles in category: "${category}"`);
+
+    // Check how many articles exist in this category total
+    const totalInCategory = await Article.countDocuments({ language, category });
+    console.log(`📊 Total articles in category "${category}": ${totalInCategory}`);
+
+    // Fetch articles from the specified category
+    const raw = await Article.find(filter)
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit * 2) // Get more to allow for better ranking
+      .lean();
+
+    console.log(`📊 Found ${raw.length} articles in category`);
+
+    if (raw.length === 0) {
+      console.log(`⚠️ No articles found in category: "${category}"`);
+      return res.json([]);
+    }
+
+    // Apply basic ranking (no personalization for public endpoint)
+    const enhancedArticles = raw
+      .map((article) => {
+        const engagement = calculateEngagementScore(article);
+        const recency = basicRecencyScore(article.publishedAt);
+
+        // Weight more toward recency for public endpoint
+        const finalScore = 0.7 * recency + 0.3 * engagement;
+
+        return {
+          ...article,
+          fetchId: new mongoose.Types.ObjectId().toString(),
+          engagementScore: engagement,
+          finalScore,
+        };
+      })
+      .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
+      .slice(0, limit); // Take only the requested limit
+
+    // Cache the results
+    try {
+      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300); // 5 minutes
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`✅ Category articles fetched in ${duration}ms - ${enhancedArticles.length} articles`);
+
+    res.json(enhancedArticles);
+  } catch (error) {
+    console.error('❌ Error fetching category articles:', error);
+    res.status(500).json({ error: 'Error fetching category articles', message: error.message });
+  }
+});
+
 // GET: Personalized articles by category (similar to personalized but filtered by category)
 articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, res) => {
   try {
@@ -893,7 +990,8 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       return res.status(400).json({ error: 'Category parameter is required' });
     }
 
-    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: ${category}, page: ${page}, limit: ${limit}`);
+    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: "${category}", page: ${page}, limit: ${limit}`);
+    console.log(`🔍 Raw query params:`, req.query);
 
     const startTime = Date.now();
     const skip = (page - 1) * limit;
@@ -926,7 +1024,12 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       _id: { $nin: [...likedArticles, ...dislikedArticles] } // Exclude already interacted articles
     };
 
-    console.log(`🔍 Searching for articles in category: ${category}`);
+    console.log(`🔍 MongoDB query filter:`, filter);
+    console.log(`🔍 Searching for articles in category: "${category}"`);
+
+    // First, let's check how many articles exist in this category total
+    const totalInCategory = await Article.countDocuments({ language, category });
+    console.log(`📊 Total articles in category "${category}": ${totalInCategory}`);
 
     // Fetch articles from the specified category
     const raw = await Article.find(filter)
@@ -935,8 +1038,20 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       .limit(limit * 2) // Get more to allow for better ranking
       .lean();
 
+    console.log(`📊 Found ${raw.length} articles after applying user exclusions`);
+
     if (raw.length === 0) {
-      console.log(`⚠️ No articles found in category: ${category}`);
+      console.log(`⚠️ No articles found in category: "${category}" after applying user exclusions`);
+
+      // Try without user exclusions to see if that's the issue
+      const rawWithoutExclusions = await Article.find({ language, category })
+        .sort({ publishedAt: -1 })
+        .skip(skip)
+        .limit(5)
+        .lean();
+
+      console.log(`🔍 Articles in "${category}" without user exclusions: ${rawWithoutExclusions.length}`);
+
       return res.json([]);
     }
 
