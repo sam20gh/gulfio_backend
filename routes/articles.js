@@ -880,6 +880,111 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
   }
 });
 
+// GET: Personalized articles by category (similar to personalized but filtered by category)
+articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const language = req.query.language || 'english';
+    const category = req.query.category;
+    const userId = req.mongoUserId;
+
+    if (!category) {
+      return res.status(400).json({ error: 'Category parameter is required' });
+    }
+
+    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: ${category}, page: ${page}, limit: ${limit}`);
+
+    const startTime = Date.now();
+    const skip = (page - 1) * limit;
+
+    // Build cache key including category
+    const today = new Date().toISOString().split('T')[0];
+    const cacheKey = `articles_personalized_category_${userId}_${category}_page_${page}_limit_${limit}_lang_${language}_${today}`;
+
+    // Check cache first
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis get error (safe to ignore):', err.message);
+    }
+    if (!req.query.noCache && cached) {
+      console.log('🧠 Returning cached personalized category articles');
+      return res.json(JSON.parse(cached));
+    }
+
+    // Get user preferences
+    const user = await User.findById(userId).lean();
+    const likedArticles = user?.liked_articles || [];
+    const dislikedArticles = user?.disliked_articles || [];
+
+    // Build base query with category filter
+    const filter = {
+      language,
+      category,
+      _id: { $nin: [...likedArticles, ...dislikedArticles] } // Exclude already interacted articles
+    };
+
+    console.log(`🔍 Searching for articles in category: ${category}`);
+
+    // Fetch articles from the specified category
+    const raw = await Article.find(filter)
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit * 2) // Get more to allow for better ranking
+      .lean();
+
+    if (raw.length === 0) {
+      console.log(`⚠️ No articles found in category: ${category}`);
+      return res.json([]);
+    }
+
+    // Apply personalized ranking based on user preferences
+    const freshRatio = page === 1 ? 0.75 : page === 2 ? 0.60 : page === 3 ? 0.50 : 0.40;
+
+    const enhancedArticles = raw
+      .map((article) => {
+        const engagement = calculateEngagementScore(article);
+        const recency = basicRecencyScore(article.publishedAt);
+
+        // Simple preference bonus if user has liked similar sources or recent articles
+        let preferenceBonus = 0;
+        if (likedArticles.length > 0) {
+          // Small bonus for articles from sources user has liked before
+          preferenceBonus = 0.1;
+        }
+
+        const baseScore = engagement + preferenceBonus;
+        const finalScore = freshRatio * recency + (1 - freshRatio) * baseScore;
+
+        return {
+          ...article,
+          fetchId: new mongoose.Types.ObjectId().toString(),
+          engagementScore: engagement,
+          finalScore,
+        };
+      })
+      .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
+      .slice(0, limit); // Take only the requested limit
+
+    // Cache the results
+    try {
+      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300); // 5 minutes
+    } catch (err) {
+      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`✅ Personalized category articles fetched in ${duration}ms - ${enhancedArticles.length} articles`);
+
+    res.json(enhancedArticles);
+  } catch (error) {
+    console.error('❌ Error fetching personalized category articles:', error);
+    res.status(500).json({ error: 'Error fetching personalized category articles', message: error.message });
+  }
+});
+
 // GET: Generic (guest) feed with recency-aware sort
 articleRouter.get('/', async (req, res) => {
   try {
