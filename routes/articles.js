@@ -57,10 +57,23 @@ function cosineSimilarity(a, b) {
 
 /** Clear all article caches (used after reacts) */
 async function clearArticlesCache() {
-  const keys = await redis.keys('articles_*');
-  if (keys.length > 0) {
-    await redis.del(keys);
-    console.log('🧹 Cleared article caches:', keys);
+  try {
+    // Clear all article-related caches
+    const articleKeys = await redis.keys('articles_*');
+    const servedKeys = await redis.keys('served_personalized_*');
+    const allKeys = [...articleKeys, ...servedKeys];
+    
+    if (allKeys.length > 0) {
+      await redis.del(allKeys);
+      console.log('🧹 Cleared article caches:', allKeys.length, 'keys');
+      console.log('🧹 Article keys cleared:', articleKeys.length);
+      console.log('🧹 Served keys cleared:', servedKeys.length);
+    } else {
+      console.log('🧹 No article caches to clear');
+    }
+  } catch (error) {
+    console.error('⚠️ Error clearing article caches:', error.message);
+    // Don't throw - cache clearing failure shouldn't break the like/dislike
   }
 }
 

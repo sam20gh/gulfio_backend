@@ -159,6 +159,19 @@ router.get('/by-supabase/:id', async (req, res) => {
     }
 });
 
+// GET user by Supabase ID with preferences (for ArticleActions)
+router.get('/by-supabase/:id/with-preferences', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id })
+            .select('supabase_id email name avatar_url liked_articles disliked_articles saved_articles saved_reels');
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        res.json(user);
+    } catch (err) {
+        console.error('Error in /by-supabase/:id/with-preferences:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // ✅ Get liked articles
 // ✅ Get liked articles
 router.get('/:id/liked-articles', async (req, res) => {
