@@ -792,10 +792,21 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     // Source diversification shuffle
     console.log(`🔀 Applying source diversification to ${candidatePool.length} articles`);
 
-    // Group articles by source
+    // Get Source data to map sourceId to groupName
+    const uniqueSourceIds = [...new Set(candidatePool.map(a => a.sourceId).filter(Boolean))];
+    const Source = require('../models/Source'); // Make sure this path is correct
+    const sources = await Source.find({ _id: { $in: uniqueSourceIds } }, 'groupName').lean();
+    const sourceIdToGroupName = {};
+    sources.forEach(source => {
+      sourceIdToGroupName[source._id.toString()] = source.groupName || 'default-group';
+    });
+
+    console.log(`📊 Found ${sources.length} sources with groupNames: ${Object.values(sourceIdToGroupName).join(', ')}`);
+
+    // Group articles by source.groupName
     const sourceGroups = {};
     candidatePool.forEach(article => {
-      const sourceKey = article.source || article.sourceId || 'unknown';
+      const sourceKey = sourceIdToGroupName[article.sourceId?.toString()] || article.source || 'unknown-group';
       if (!sourceGroups[sourceKey]) {
         sourceGroups[sourceKey] = [];
       }
@@ -812,7 +823,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     const sourceKeys = Object.keys(sourceGroups);
     let maxGroupSize = Math.max(...sourceKeys.map(key => sourceGroups[key].length));
 
-    console.log(`🔀 Interleaving ${sourceKeys.length} source groups, max group size: ${maxGroupSize}`);
+    console.log(`🔀 Interleaving ${sourceKeys.length} source groups (${sourceKeys.join(', ')}), max group size: ${maxGroupSize}`);
 
     // Interleave round-robin: take highest scoring from each group in turns
     for (let round = 0; round < maxGroupSize; round++) {
@@ -823,7 +834,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       }
     }
 
-    console.log(`🎯 Source diversification complete: ${interleaved.length} articles interleaved`);
+    console.log(`🎯 Source diversification complete: ${interleaved.length} articles interleaved across ${sourceKeys.length} groups`);
 
     mark('interleave');
 
