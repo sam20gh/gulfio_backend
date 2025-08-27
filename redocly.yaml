@@ -1,0 +1,32 @@
+apis:
+  mena-api@v1:
+    root: ./openapi.yaml
+    
+extends:
+  - recommended
+
+rules:
+  no-unresolved-refs: error
+  no-unused-components: warn
+  operation-description: warn
+  operation-2xx-response: error
+  operation-4xx-response: off
+  path-declaration-must-exist: error
+  path-not-include-query: error
+  path-parameters-defined: error
+  tag-description: off
+  operation-operationId: off
+  component-name-unique: error
+  path-segment-plural: off
+  no-path-trailing-slash: error
+  security-defined: off
+  no-server-example.com: off
+
+theme:
+  colors:
+    primary:
+      main: '#1976d2'
+  typography:
+    fontSize: '14px'
+    lineHeight: '1.5'
+    fontFamily: 'Source Sans Pro, sans-serif'

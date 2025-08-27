@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const sources = require('./routes/sources');
 const articles = require('./routes/articles');
 const scrapeRoute = require('./routes/scrape');
@@ -20,6 +22,7 @@ const recommendationRoutes = require('./routes/recommend');
 const thumbnailRoutes = require('./routes/thumbnails');
 const debugRoutes = require('./routes/debug');
 const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
+const docsRouter = require('./routes/docs');
 const { recommendationIndex } = require('./recommendation/fastIndex');
 require('dotenv').config();
 const app = express();
@@ -94,6 +97,9 @@ mongoose.connection.on('disconnected', () => {
 
 app.use(express.json());
 
+// Serve static files from public directory
+app.use('/static', express.static(path.join(__dirname, 'public')));
+
 // Middleware to check MongoDB connection for API routes
 app.use('/api', (req, res, next) => {
     if (mongoose.connection.readyState !== 1) {
@@ -109,6 +115,30 @@ app.use('/api', (req, res, next) => {
 // Health check endpoint for Google Cloud Run
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Root endpoint - API welcome page
+app.get('/', (req, res) => {
+    const path = require('path');
+    const indexPath = path.join(__dirname, 'public', 'index.html');
+    const fs = require('fs');
+    
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.json({
+            message: 'Welcome to MENA News API',
+            version: '1.0.0',
+            documentation: '/docs',
+            endpoints: {
+                health: '/health',
+                database_test: '/db-test',
+                api_docs: '/docs',
+                openapi_spec: '/docs/openapi.json'
+            },
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
 // Database connectivity test endpoint
@@ -158,5 +188,6 @@ app.use('/api/lotto', lottoRoutes);
 app.use('/api/thumbnails', thumbnailRoutes);
 app.use('/api/debug', debugRoutes);
 app.use('/api/puppeteer', puppeteerDebugRoutes);
+app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
 module.exports = app;
