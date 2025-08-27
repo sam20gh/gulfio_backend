@@ -23,7 +23,7 @@ const rateLimit = (req, res, next) => {
     const clientIP = req.ip || req.connection.remoteAddress;
     const now = Date.now();
     const windowStart = now - RATE_LIMIT_WINDOW;
-    
+
     // Clean old entries
     for (const [ip, requests] of rateLimits.entries()) {
         rateLimits.set(ip, requests.filter(time => time > windowStart));
@@ -31,17 +31,17 @@ const rateLimit = (req, res, next) => {
             rateLimits.delete(ip);
         }
     }
-    
+
     // Check current IP
     const requests = rateLimits.get(clientIP) || [];
     if (requests.length >= RATE_LIMIT_MAX_REQUESTS) {
         return res.status(429).json({ error: 'Rate limit exceeded' });
     }
-    
+
     // Add current request
     requests.push(now);
     rateLimits.set(clientIP, requests);
-    
+
     next();
 };
 
@@ -49,7 +49,7 @@ const rateLimit = (req, res, next) => {
 router.post('/paid', rateLimit, async (req, res) => {
     try {
         const { adUnitId, articleId, sourceId, value, currency, precision, platform } = req.body;
-        
+
         // Validate required fields
         if (!adUnitId || !articleId || !sourceId || value === undefined || !currency || precision === undefined || !platform) {
             return res.status(400).json({
@@ -57,34 +57,34 @@ router.post('/paid', rateLimit, async (req, res) => {
                 required: ['adUnitId', 'articleId', 'sourceId', 'value', 'currency', 'precision', 'platform']
             });
         }
-        
+
         // Validate adUnitId is in allowlist
         if (!VALID_AD_UNIT_IDS.includes(adUnitId)) {
             return res.status(400).json({ error: 'Invalid ad unit ID' });
         }
-        
+
         // Validate ObjectId formats
         if (!mongoose.Types.ObjectId.isValid(articleId) || !mongoose.Types.ObjectId.isValid(sourceId)) {
             return res.status(400).json({ error: 'Invalid articleId or sourceId format' });
         }
-        
+
         // Validate platform
         if (!['android', 'ios'].includes(platform)) {
             return res.status(400).json({ error: 'Platform must be android or ios' });
         }
-        
+
         // Get source name
         const source = await Source.findById(sourceId).select('name');
         if (!source) {
             return res.status(404).json({ error: 'Source not found' });
         }
-        
+
         // Verify article exists
         const article = await Article.findById(articleId).select('_id');
         if (!article) {
             return res.status(404).json({ error: 'Article not found' });
         }
-        
+
         // Create ad revenue event
         const adRevenueEvent = new AdRevenueEvent({
             adUnitId,
@@ -96,17 +96,17 @@ router.post('/paid', rateLimit, async (req, res) => {
             precision,
             platform
         });
-        
+
         await adRevenueEvent.save();
-        
+
         console.log(`💰 Ad revenue event recorded: ${source.name}, $${(value / 1000000).toFixed(6)} ${currency}`);
-        
+
         res.status(201).json({
             success: true,
             message: 'Ad revenue event recorded',
             eventId: adRevenueEvent._id
         });
-        
+
     } catch (error) {
         console.error('❌ Error recording ad revenue event:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -117,7 +117,7 @@ router.post('/paid', rateLimit, async (req, res) => {
 router.get('/summary/sources', async (req, res) => {
     try {
         const { from, to, currency = 'USD' } = req.query;
-        
+
         // Parse date range
         let dateFilter = {};
         if (from || to) {
@@ -129,7 +129,7 @@ router.get('/summary/sources', async (req, res) => {
                 dateFilter.ts.$lte = new Date(to);
             }
         }
-        
+
         // Aggregate revenue by source
         const pipeline = [
             { $match: { currency, ...dateFilter } },
@@ -192,30 +192,30 @@ router.get('/summary/sources', async (req, res) => {
             },
             { $sort: { totalRevenueUSD: -1 } }
         ];
-        
+
         const summary = await AdRevenueEvent.aggregate(pipeline);
-        
+
         // Calculate totals
         const totals = summary.reduce((acc, source) => ({
             totalRevenue: acc.totalRevenue + source.totalRevenueUSD,
             totalImpressions: acc.totalImpressions + source.impressions,
             totalPayout: acc.totalPayout + source.payout
         }), { totalRevenue: 0, totalImpressions: 0, totalPayout: 0 });
-        
+
         res.json({
             summary,
             totals: {
                 totalRevenueUSD: Math.round(totals.totalRevenue * 1000000) / 1000000,
                 totalImpressions: totals.totalImpressions,
                 totalPayoutUSD: Math.round(totals.totalPayout * 1000000) / 1000000,
-                averageRevenuePerImpression: totals.totalImpressions > 0 
+                averageRevenuePerImpression: totals.totalImpressions > 0
                     ? Math.round((totals.totalRevenue / totals.totalImpressions) * 100000000) / 100000000
                     : 0
             },
             dateRange: { from, to },
             currency
         });
-        
+
     } catch (error) {
         console.error('❌ Error fetching ad revenue summary:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -227,14 +227,14 @@ router.get('/events', async (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 50, 500);
         const skip = parseInt(req.query.skip) || 0;
-        
+
         const events = await AdRevenueEvent.find({})
             .sort({ ts: -1 })
             .skip(skip)
             .limit(limit)
             .populate('sourceId', 'name groupName')
             .populate('articleId', 'title url');
-            
+
         res.json({
             events,
             pagination: {
@@ -243,7 +243,7 @@ router.get('/events', async (req, res) => {
                 hasMore: events.length === limit
             }
         });
-        
+
     } catch (error) {
         console.error('❌ Error fetching ad revenue events:', error);
         res.status(500).json({ error: 'Internal server error' });
