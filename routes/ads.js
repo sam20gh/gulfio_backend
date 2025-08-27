@@ -5,14 +5,12 @@ const Source = require('../models/Source');
 const Article = require('../models/Article');
 const mongoose = require('mongoose');
 
-// Allowlist of valid ad unit IDs (add your production ad units here)
+// Allowlist of valid ad unit IDs (only for source-attributed content)
 const VALID_AD_UNIT_IDS = [
     'TEST', // For development/testing
-    'ca-app-pub-6546605536002166/9412569479', // Article detail banner
-    'ca-app-pub-6546605536002166/6930989759', // Article list banner
-    'ca-app-pub-6546605536002166/3360793298', // Football page banner
-    'ca-app-pub-6546605536002166/1577740664', // Match details banner
-    // Add other production ad unit IDs as needed
+    'ca-app-pub-6546605536002166/9412569479', // Article detail banner (source-specific content)
+    // Note: List, football, and match detail ads don't participate in revenue sharing
+    // as they are not source-specific content
 ];
 
 // Rate limiting map (simple in-memory approach)
