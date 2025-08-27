@@ -20,6 +20,9 @@ const SourceSchema = new mongoose.Schema({
     language: { type: String, default: "english" },
     bioSection: { type: String, default: null },
     bioLink: { type: String, default: null },
+    // Rev-share fields for AdMob revenue tracking
+    revSharePercent: { type: Number, default: 70 }, // Default 70% to source
+    payoutCurrency: { type: String, default: 'USD' },
 });
 
 module.exports = mongoose.model('Source', SourceSchema);

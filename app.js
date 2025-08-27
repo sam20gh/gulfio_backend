@@ -23,6 +23,7 @@ const thumbnailRoutes = require('./routes/thumbnails');
 const debugRoutes = require('./routes/debug');
 const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
+const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const { recommendationIndex } = require('./recommendation/fastIndex');
 require('dotenv').config();
 const app = express();
@@ -190,4 +191,5 @@ app.use('/api/debug', debugRoutes);
 app.use('/api/puppeteer', puppeteerDebugRoutes);
 app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
+app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
 module.exports = app;
