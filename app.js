@@ -122,7 +122,7 @@ app.get('/', (req, res) => {
     const path = require('path');
     const indexPath = path.join(__dirname, 'public', 'index.html');
     const fs = require('fs');
-    
+
     if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
     } else {

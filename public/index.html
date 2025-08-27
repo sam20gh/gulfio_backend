@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,35 +18,35 @@
             align-items: center;
             justify-content: center;
         }
-        
+
         .container {
             background: white;
             border-radius: 15px;
             padding: 2rem;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
             max-width: 600px;
             width: 90%;
             text-align: center;
         }
-        
+
         h1 {
             color: #2c3e50;
             margin-bottom: 0.5rem;
             font-size: 2.5rem;
         }
-        
+
         .subtitle {
             color: #7f8c8d;
             margin-bottom: 2rem;
             font-size: 1.1rem;
         }
-        
+
         .api-links {
             display: grid;
             gap: 1rem;
             margin: 2rem 0;
         }
-        
+
         .api-link {
             display: block;
             padding: 1rem 1.5rem;
@@ -58,29 +59,29 @@
             position: relative;
             overflow: hidden;
         }
-        
+
         .api-link:hover {
             background: #2980b9;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
         }
-        
+
         .api-link.docs {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             font-size: 1.2rem;
             padding: 1.5rem;
         }
-        
+
         .api-link.docs:hover {
             background: linear-gradient(135deg, #5a6fd8 0%, #6b4190 100%);
         }
-        
+
         .description {
             font-size: 0.9rem;
             opacity: 0.9;
             margin-top: 0.5rem;
         }
-        
+
         .stats {
             margin-top: 2rem;
             padding-top: 2rem;
@@ -90,25 +91,25 @@
             gap: 1rem;
             text-align: center;
         }
-        
+
         .stat {
             background: #f8f9fa;
             padding: 1rem;
             border-radius: 8px;
         }
-        
+
         .stat-number {
             font-size: 1.5rem;
             font-weight: bold;
             color: #2c3e50;
             display: block;
         }
-        
+
         .stat-label {
             font-size: 0.9rem;
             color: #7f8c8d;
         }
-        
+
         .footer {
             margin-top: 2rem;
             padding-top: 1rem;
@@ -116,49 +117,51 @@
             font-size: 0.9rem;
             color: #7f8c8d;
         }
-        
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 2rem;
             }
+
             .container {
                 padding: 1.5rem;
             }
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>🌍 MENA News API</h1>
         <p class="subtitle">Comprehensive Middle East & North Africa News API</p>
-        
+
         <div class="api-links">
             <a href="/docs" class="api-link docs">
                 📚 API Documentation
                 <div class="description">Interactive documentation with live examples</div>
             </a>
-            
+
             <a href="/docs/info" class="api-link">
                 ℹ️ API Information
                 <div class="description">System status and build information</div>
             </a>
-            
+
             <a href="/docs/openapi.json" class="api-link">
                 📄 OpenAPI Specification (JSON)
                 <div class="description">Machine-readable API specification</div>
             </a>
-            
+
             <a href="/docs/openapi.yaml" class="api-link">
                 📄 OpenAPI Specification (YAML)
                 <div class="description">Human-readable API specification</div>
             </a>
-            
+
             <a href="/health" class="api-link">
                 ❤️ Health Check
                 <div class="description">API health status</div>
             </a>
         </div>
-        
+
         <div class="stats">
             <div class="stat">
                 <span class="stat-number" id="endpoints">25+</span>
@@ -173,7 +176,7 @@
                 <span class="stat-label">Documentation</span>
             </div>
         </div>
-        
+
         <div class="footer">
             <p>Built with Express.js, MongoDB, and Redocly</p>
             <p>Version 1.0.0 • <span id="timestamp">Loading...</span></p>
@@ -183,7 +186,7 @@
     <script>
         // Update timestamp
         document.getElementById('timestamp').textContent = new Date().toLocaleString();
-        
+
         // Fetch API info to get real stats
         fetch('/docs/info')
             .then(response => response.json())
@@ -201,4 +204,5 @@
             .catch(console.error);
     </script>
 </body>
+
 </html>
