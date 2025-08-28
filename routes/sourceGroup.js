@@ -18,16 +18,16 @@ router.get('/group/:groupName', async (req, res) => {
     console.log('  Raw groupName param:', JSON.stringify(groupName));
     console.log('  groupName length:', groupName.length);
     console.log('  groupName type:', typeof groupName);
-    
+
     try {
         const sources = await Source.find({ groupName });
         console.log(`  Found ${sources.length} sources for groupName: "${groupName}"`);
-        
+
         if (!sources.length) {
             // Let's also check what groups exist similar to this one
             const allGroups = await Source.distinct('groupName');
-            const similarGroups = allGroups.filter(g => 
-                g.toLowerCase().includes('gulf') || 
+            const similarGroups = allGroups.filter(g =>
+                g.toLowerCase().includes('gulf') ||
                 g.toLowerCase().includes('news')
             );
             console.log('  Similar groups found:', similarGroups);
