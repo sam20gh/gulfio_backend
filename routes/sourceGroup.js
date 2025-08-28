@@ -13,9 +13,26 @@ router.get('/group/:groupName', async (req, res) => {
     const authHeader = req.headers['x-access-token'];
     let userFollowing = false;
 
+    // Debug logging
+    console.log('🔍 SOURCE GROUP DEBUG:');
+    console.log('  Raw groupName param:', JSON.stringify(groupName));
+    console.log('  groupName length:', groupName.length);
+    console.log('  groupName type:', typeof groupName);
+    
     try {
         const sources = await Source.find({ groupName });
-        if (!sources.length) return res.status(404).json({ message: 'No sources found for this group' });
+        console.log(`  Found ${sources.length} sources for groupName: "${groupName}"`);
+        
+        if (!sources.length) {
+            // Let's also check what groups exist similar to this one
+            const allGroups = await Source.distinct('groupName');
+            const similarGroups = allGroups.filter(g => 
+                g.toLowerCase().includes('gulf') || 
+                g.toLowerCase().includes('news')
+            );
+            console.log('  Similar groups found:', similarGroups);
+            return res.status(404).json({ message: 'No sources found for this group' });
+        }
 
         const mainSource = sources[0];
         const sourceIds = sources.map(source => source._id);
