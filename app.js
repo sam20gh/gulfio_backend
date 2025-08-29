@@ -25,6 +25,7 @@ const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
 const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const { recommendationIndex } = require('./recommendation/fastIndex');
+const cacheWarmer = require('./services/cacheWarmer');
 require('dotenv').config();
 const app = express();
 
@@ -37,6 +38,19 @@ const createIndexes = async () => {
     } catch (error) {
         console.error('❌ Failed to create indexes:', error);
     }
+};
+
+// Initialize cache warmer after successful MongoDB connection
+const initializeCacheWarmer = () => {
+    setTimeout(() => {
+        if (mongoose.connection.readyState === 1) {
+            console.log('🔥 Starting Cache Warmer service...');
+            cacheWarmer.start();
+        } else {
+            console.log('⏳ Waiting for MongoDB connection before starting Cache Warmer...');
+            initializeCacheWarmer();
+        }
+    }, 5000); // Wait 5 seconds to ensure everything is ready
 };
 
 app.use(cors({
@@ -73,6 +87,9 @@ mongoose.connect(process.env.MONGO_URI, {
                 console.error('⚠️ Failed to initialize recommendation system:', error);
             }
         }, 5000); // Wait 5 seconds after startup
+
+        // Initialize cache warmer service
+        initializeCacheWarmer();
     })
     .catch(err => {
         console.error('❌ Failed to connect to MongoDB Atlas:', err);

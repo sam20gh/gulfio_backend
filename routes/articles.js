@@ -12,6 +12,7 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 const { redis } = require('../utils/redis');
 const { getFaissIndexStatus, searchFaissIndex } = require('../recommendation/faissIndex');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const cacheWarmer = require('../services/cacheWarmer');
 
 const articleRouter = express.Router();
 
@@ -169,6 +170,9 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
 
     console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}`);
+
+    // Mark user as active for cache warming
+    cacheWarmer.markUserActive(userId);
 
     // Check warm cache first
     const cacheKey = `articles_warm_${userId}_${language}`;
@@ -364,7 +368,13 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
   const timings = {};
   const mark = (k) => timings[k] = Date.now() - startTime;
 
-  console.log('🔥 PERSONALIZED ENDPOINT START:', new Date().toISOString());
+  try {
+    const userId = req.mongoUser.supabase_id;
+    
+    // Mark user as active for cache warming
+    cacheWarmer.markUserActive(userId);
+
+    console.log('🔥 PERSONALIZED ENDPOINT START:', new Date().toISOString());
   console.log(`📏 E2E: Request received at ${requestStartTime}ms`);
 
   // Override res.json to measure JSON serialization time
@@ -1681,3 +1691,35 @@ Performance Knobs:
 - DIVERSITY_RATIO: Diversity injection percentage (0.15 = 15%)
 - TRENDING_RATIO: Trending injection percentage (0.10 = 10%)
 */
+
+// Cache Warmer Admin Endpoints
+articleRouter.get('/cache-warmer/stats', (req, res) => {
+  try {
+    const stats = cacheWarmer.getStats();
+    res.json({
+      status: 'success',
+      cacheWarmer: stats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Cache warmer stats error:', error);
+    res.status(500).json({ error: 'Failed to get cache warmer stats' });
+  }
+});
+
+articleRouter.post('/cache-warmer/force-warm/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    await cacheWarmer.forceWarmUser(userId);
+    res.json({
+      status: 'success',
+      message: `Cache warming forced for user ${userId}`,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Force warm error:', error);
+    res.status(500).json({ error: 'Failed to force warm user cache' });
+  }
+});
+
+module.exports = articleRouter;
