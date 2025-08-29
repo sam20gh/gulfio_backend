@@ -160,6 +160,67 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 });
 
 // GET: Fast personalized fallback (simplified algorithm)
+// GET: Ultra-fast personalized articles with source population (for first page)
+articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const userId = req.mongoUser.supabase_id;
+    const language = req.query.language || 'english';
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+
+    console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}`);
+
+    // Check warm cache first
+    const cacheKey = `articles_warm_${userId}_${language}`;
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+      if (cached && !req.query.noCache) {
+        const result = JSON.parse(cached);
+        console.log(`🚀 Light cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
+        return res.json(result);
+      }
+    } catch (err) {
+      console.error('⚠️ Redis get error:', err.message);
+    }
+
+    // Fast query with source population - crucial for preventing "Unknown Source"
+    const articles = await Article.find({
+      language,
+      publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } // Last 48 hours
+    })
+    .populate('sourceId', 'name icon groupName') // Populate source data immediately
+    .sort({ publishedAt: -1, viewCount: -1 })
+    .limit(limit)
+    .lean();
+
+    // Transform articles with pre-populated source data
+    const response = articles.map(article => ({
+      ...article,
+      fetchId: new mongoose.Types.ObjectId().toString(),
+      isLight: true,
+      // Extract source info from populated data
+      sourceName: article.sourceId?.name || 'Unknown Source',
+      sourceIcon: article.sourceId?.icon || null,
+      sourceGroupName: article.sourceId?.groupName || null
+    }));
+
+    // Cache for 5 minutes only (fresh content)
+    try {
+      await redis.set(cacheKey, JSON.stringify(response), 'EX', 300);
+    } catch (err) {
+      console.error('⚠️ Redis set error:', err.message);
+    }
+
+    console.log(`🚀 Light personalized complete in ${Date.now() - startTime}ms - ${response.length} articles`);
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Light personalized error:', error);
+    res.status(500).json({ error: 'Light personalized error', message: error.message });
+  }
+});
+
 articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
   try {
@@ -523,6 +584,22 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
             }
           },
           { $addFields: { similarity: { $meta: "vectorSearchScore" } } },
+          // Add source population to prevent "Unknown Source"
+          {
+            $lookup: {
+              from: 'sources',
+              localField: 'sourceId',
+              foreignField: '_id', 
+              as: 'sourceData'
+            }
+          },
+          {
+            $addFields: {
+              sourceName: { $arrayElemAt: ['$sourceData.name', 0] },
+              sourceIcon: { $arrayElemAt: ['$sourceData.icon', 0] },
+              sourceGroupName: { $arrayElemAt: ['$sourceData.groupName', 0] }
+            }
+          },
           {
             $project: {
               _id: 1,
@@ -531,6 +608,9 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
               image: 1,
               sourceId: 1,
               source: 1,
+              sourceName: 1,
+              sourceIcon: 1,
+              sourceGroupName: 1,
               publishedAt: 1,
               viewCount: 1,
               category: 1,
