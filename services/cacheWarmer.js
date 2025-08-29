@@ -1,5 +1,7 @@
-const { User, Article } = require('../models');
-const redis = require('../config/redis');
+const User = require('../models/User');
+const Article = require('../models/Article');
+const Source = require('../models/Source');
+const { redis } = require('../utils/redis');
 
 class CacheWarmer {
     constructor() {
@@ -22,18 +24,37 @@ class CacheWarmer {
      * Start background cache warming service
      */
     start() {
-        console.log('🔥 Starting Cache Warmer service...');
-        this.warmActiveUsers();
-        
-        // Schedule regular warming
-        setInterval(() => {
-            this.warmActiveUsers();
-        }, this.WARM_INTERVAL);
+        try {
+            console.log('🔥 Starting Cache Warmer service...');
+            this.startTime = Date.now();
+            
+            // Don't start warming immediately - wait until server is fully up
+            setTimeout(() => {
+                console.log('🔥 Cache Warmer: Delayed initialization starting...');
+                this.warmActiveUsers().catch(err => {
+                    console.error('⚠️ Initial cache warming failed:', err.message);
+                });
+            }, 30000); // Wait 30 seconds after server start
+            
+            // Schedule regular warming (less frequent for stability)
+            setInterval(() => {
+                this.warmActiveUsers().catch(err => {
+                    console.error('⚠️ Scheduled cache warming failed:', err.message);
+                });
+            }, this.WARM_INTERVAL * 2); // 30 minutes instead of 15
 
-        // Clean up inactive users every hour
-        setInterval(() => {
-            this.cleanupInactiveUsers();
-        }, 60 * 60 * 1000);
+            // Clean up inactive users every 2 hours (less frequent)
+            setInterval(() => {
+                this.cleanupInactiveUsers().catch(err => {
+                    console.error('⚠️ Cache cleanup failed:', err.message);
+                });
+            }, 120 * 60 * 1000); // 2 hours
+            
+            console.log('✅ Cache Warmer service started successfully (delayed mode)');
+        } catch (error) {
+            console.error('❌ Failed to start Cache Warmer service:', error.message);
+            // Don't throw - let the app continue without cache warming
+        }
     }
 
     /**
@@ -232,7 +253,6 @@ class CacheWarmer {
      * Pre-warm user sources cache
      */
     async warmUserSources(userId, user) {
-        const { Source } = require('../models');
         const cacheKey = `sources_all_cached`;
 
         try {

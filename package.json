@@ -43,7 +43,7 @@
     "docs:serve": "redocly preview-docs openapi.yaml",
     "docs:lint": "redocly lint openapi.yaml",
     "docs:watch": "redocly preview-docs openapi.yaml --watch",
-    "start": "node server.js",
+    "start": "node server-working.js",
     "postinstall": "npx puppeteer browsers install chrome"
   },
   "devDependencies": {

@@ -25,7 +25,7 @@ const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
 const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const { recommendationIndex } = require('./recommendation/fastIndex');
-const cacheWarmer = require('./services/cacheWarmer');
+// const cacheWarmer = require('./services/cacheWarmer'); // Temporarily disabled for deployment
 require('dotenv').config();
 const app = express();
 
@@ -40,17 +40,17 @@ const createIndexes = async () => {
     }
 };
 
-// Initialize cache warmer after successful MongoDB connection
+// Initialize cache warmer after successful MongoDB connection (temporarily disabled)
 const initializeCacheWarmer = () => {
-    setTimeout(() => {
-        if (mongoose.connection.readyState === 1) {
-            console.log('🔥 Starting Cache Warmer service...');
-            cacheWarmer.start();
-        } else {
-            console.log('⏳ Waiting for MongoDB connection before starting Cache Warmer...');
-            initializeCacheWarmer();
-        }
-    }, 5000); // Wait 5 seconds to ensure everything is ready
+    // setTimeout(() => {
+    //     if (mongoose.connection.readyState === 1) {
+    //         console.log('🔥 Starting Cache Warmer service...');
+    //         cacheWarmer.start();
+    //     } else {
+    //         console.log('⏳ Waiting for MongoDB connection before starting Cache Warmer...');
+    //         initializeCacheWarmer();
+    //     }
+    // }, 15000); // Wait 15 seconds to ensure everything is ready
 };
 
 app.use(cors({
@@ -59,23 +59,34 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'], // ✅ crucial
 }));
 
+// Light logging for production (removed header logging to improve performance)
 app.use((req, res, next) => {
-    console.log('🔐 Incoming Request Headers:', req.headers);
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`${req.method} ${req.path}`);
+    }
     next();
 });
 
 mongoose.connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for Cloud Run
+    serverSelectionTimeoutMS: 10000, // Reduced to 10 seconds for Cloud Run
     socketTimeoutMS: 0, // No socket timeout for Cloud Run
-    connectTimeoutMS: 30000, // 30 seconds to establish connection
+    connectTimeoutMS: 10000, // 10 seconds to establish connection
     bufferCommands: false, // Disable buffering to fail fast
-    maxPoolSize: 10, // Maintain up to 10 socket connections
+    maxPoolSize: 5, // Reduced pool size for Cloud Run
     minPoolSize: 1, // Maintain at least 1 socket connection
 })
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
         console.log('📊 MongoDB Connection State:', mongoose.connection.readyState);
-        await createIndexes(); // 👈 Run after DB connection
+        
+        // Create indexes in background to avoid blocking startup
+        setTimeout(async () => {
+            try {
+                await createIndexes();
+            } catch (error) {
+                console.error('⚠️ Failed to create indexes (non-critical):', error.message);
+            }
+        }, 5000);
 
         // Initialize recommendation system in background
         setTimeout(async () => {
@@ -84,20 +95,24 @@ mongoose.connect(process.env.MONGO_URI, {
                 await recommendationIndex.buildIndex();
                 console.log('✅ Recommendation system ready');
             } catch (error) {
-                console.error('⚠️ Failed to initialize recommendation system:', error);
+                console.error('⚠️ Failed to initialize recommendation system (non-critical):', error.message);
             }
-        }, 5000); // Wait 5 seconds after startup
+        }, 10000); // Wait 10 seconds after startup
 
         // Initialize cache warmer service
-        initializeCacheWarmer();
+        setTimeout(() => {
+            initializeCacheWarmer();
+        }, 30000); // Start after 30 seconds
     })
     .catch(err => {
-        console.error('❌ Failed to connect to MongoDB Atlas:', err);
+        console.error('❌ Failed to connect to MongoDB Atlas:', err.message);
         console.error('📊 Connection details:', {
             readyState: mongoose.connection.readyState,
             host: mongoose.connection.host,
             name: mongoose.connection.name,
         });
+        // Don't exit the process - let the app serve with degraded functionality
+        console.log('⚠️ Continuing without MongoDB connection...');
     });
 
 // Monitor connection status
@@ -118,14 +133,10 @@ app.use(express.json());
 // Serve static files from public directory
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
-// Middleware to check MongoDB connection for API routes
+// Middleware to log MongoDB connection status (removed blocking check)
 app.use('/api', (req, res, next) => {
-    if (mongoose.connection.readyState !== 1) {
-        return res.status(503).json({
-            error: 'Database not ready',
-            message: 'MongoDB connection not established yet. Please try again in a moment.',
-            readyState: mongoose.connection.readyState
-        });
+    if (mongoose.connection.readyState !== 1 && process.env.NODE_ENV !== 'production') {
+        console.log(`⚠️ API route ${req.path} accessed with MongoDB readyState: ${mongoose.connection.readyState}`);
     }
     next();
 });
@@ -135,28 +146,26 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// Root endpoint - API welcome page
+// Root endpoint - API information
 app.get('/', (req, res) => {
-    const path = require('path');
-    const indexPath = path.join(__dirname, 'public', 'index.html');
-    const fs = require('fs');
-
-    if (fs.existsSync(indexPath)) {
-        res.sendFile(indexPath);
-    } else {
-        res.json({
-            message: 'Welcome to MENA News API',
-            version: '1.0.0',
-            documentation: '/docs',
-            endpoints: {
-                health: '/health',
-                database_test: '/db-test',
-                api_docs: '/docs',
-                openapi_spec: '/docs/openapi.json'
-            },
-            timestamp: new Date().toISOString()
-        });
-    }
+    res.json({
+        message: 'MENA News API',
+        version: '1.0.0',
+        status: 'running',
+        features: ['Phase 3 Performance Optimizations'],
+        documentation: '/docs',
+        mongodb_status: mongoose.connection.readyState === 1 ? 'connected' : 'connecting',
+        endpoints: {
+            health: '/health',
+            database_test: '/db-test',
+            api_docs: '/docs',
+            openapi_spec: '/docs/openapi.json',
+            articles: '/api/articles',
+            sources: '/api/sources',
+            users: '/api/users'
+        },
+        timestamp: new Date().toISOString()
+    });
 });
 
 // Database connectivity test endpoint

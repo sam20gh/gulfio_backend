@@ -171,8 +171,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}`);
 
-    // Mark user as active for cache warming
-    cacheWarmer.markUserActive(userId);
+    // Mark user as active for cache warming (temporarily disabled)
+    // cacheWarmer.markUserActive(userId);
 
     // Check warm cache first
     const cacheKey = `articles_warm_${userId}_${language}`;
@@ -193,10 +193,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       language,
       publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } // Last 48 hours
     })
-    .populate('sourceId', 'name icon groupName') // Populate source data immediately
-    .sort({ publishedAt: -1, viewCount: -1 })
-    .limit(limit)
-    .lean();
+      .populate('sourceId', 'name icon groupName') // Populate source data immediately
+      .sort({ publishedAt: -1, viewCount: -1 })
+      .limit(limit)
+      .lean();
 
     // Transform articles with pre-populated source data
     const response = articles.map(article => ({
@@ -370,38 +370,36 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
   try {
     const userId = req.mongoUser.supabase_id;
-    
-    // Mark user as active for cache warming
-    cacheWarmer.markUserActive(userId);
+
+    // Mark user as active for cache warming (temporarily disabled)
+    // cacheWarmer.markUserActive(userId);
 
     console.log('🔥 PERSONALIZED ENDPOINT START:', new Date().toISOString());
-  console.log(`📏 E2E: Request received at ${requestStartTime}ms`);
+    console.log(`📏 E2E: Request received at ${requestStartTime}ms`);
 
-  // Override res.json to measure JSON serialization time
-  const originalJson = res.json;
-  res.json = function (data) {
-    const jsonStartTime = Date.now();
-    console.log(`📏 E2E: Starting JSON serialization at ${jsonStartTime - requestStartTime}ms`);
+    // Override res.json to measure JSON serialization time
+    const originalJson = res.json;
+    res.json = function (data) {
+      const jsonStartTime = Date.now();
+      console.log(`📏 E2E: Starting JSON serialization at ${jsonStartTime - requestStartTime}ms`);
 
-    const result = originalJson.call(this, data);
+      const result = originalJson.call(this, data);
 
-    const jsonEndTime = Date.now();
-    const totalE2ETime = jsonEndTime - requestStartTime;
-    const jsonSerializationTime = jsonEndTime - jsonStartTime;
+      const jsonEndTime = Date.now();
+      const totalE2ETime = jsonEndTime - requestStartTime;
+      const jsonSerializationTime = jsonEndTime - jsonStartTime;
 
-    console.log(`📏 E2E: JSON serialization took ${jsonSerializationTime}ms`);
-    console.log(`📏 E2E: TOTAL REQUEST-TO-JSON time: ${totalE2ETime}ms`);
-    console.log(`📏 E2E: Response sent at ${jsonEndTime}ms`);
+      console.log(`📏 E2E: JSON serialization took ${jsonSerializationTime}ms`);
+      console.log(`📏 E2E: TOTAL REQUEST-TO-JSON time: ${totalE2ETime}ms`);
+      console.log(`📏 E2E: Response sent at ${jsonEndTime}ms`);
 
-    return result;
-  };
+      return result;
+    };
 
-  try {
     // Input validation and clamping
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
     const language = req.query.language || 'english';
-    const userId = req.mongoUser.supabase_id;
     const resetServed = req.query.resetServed === '1';
 
     // Day-based keys for non-repetition
@@ -599,7 +597,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
             $lookup: {
               from: 'sources',
               localField: 'sourceId',
-              foreignField: '_id', 
+              foreignField: '_id',
               as: 'sourceData'
             }
           },
@@ -1468,23 +1466,20 @@ articleRouter.post('/', auth, async (req, res) => {
     if (!title || !content || !url || !sourceId || !category || !image) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
-    try {
-      const embeddingInput = `${title}\n\n${content?.slice(0, 512) || ''}`;
-      let embedding = [];
-      try {
-        embedding = await getDeepSeekEmbedding(embeddingInput);
-      } catch (embeddingError) {
-        console.warn('DeepSeek embedding error (article will save without embedding):', embeddingError.message);
-      }
 
-      const newArticle = new Article({
-        title, content, url, sourceId, category, publishedAt, image, embedding,
-      });
-      const savedArticle = await newArticle.save();
-      res.status(201).json(savedArticle);
-    } catch (error) {
-      res.status(400).json({ message: 'Error creating article', error: error.message });
+    const embeddingInput = `${title}\n\n${content?.slice(0, 512) || ''}`;
+    let embedding = [];
+    try {
+      embedding = await getDeepSeekEmbedding(embeddingInput);
+    } catch (embeddingError) {
+      console.warn('DeepSeek embedding error (article will save without embedding):', embeddingError.message);
     }
+
+    const newArticle = new Article({
+      title, content, url, sourceId, category, publishedAt, image, embedding,
+    });
+    const savedArticle = await newArticle.save();
+    res.status(201).json(savedArticle);
   } catch (error) {
     res.status(400).json({ message: 'Error creating article', error: error.message });
   }
@@ -1692,7 +1687,8 @@ Performance Knobs:
 - TRENDING_RATIO: Trending injection percentage (0.10 = 10%)
 */
 
-// Cache Warmer Admin Endpoints
+// Cache Warmer Admin Endpoints (temporarily disabled)
+/*
 articleRouter.get('/cache-warmer/stats', (req, res) => {
   try {
     const stats = cacheWarmer.getStats();
@@ -1721,5 +1717,6 @@ articleRouter.post('/cache-warmer/force-warm/:userId', async (req, res) => {
     res.status(500).json({ error: 'Failed to force warm user cache' });
   }
 });
+*/
 
 module.exports = articleRouter;
