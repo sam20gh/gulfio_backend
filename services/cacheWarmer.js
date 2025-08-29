@@ -27,7 +27,7 @@ class CacheWarmer {
         try {
             console.log('🔥 Starting Cache Warmer service...');
             this.startTime = Date.now();
-            
+
             // Don't start warming immediately - wait until server is fully up
             setTimeout(() => {
                 console.log('🔥 Cache Warmer: Delayed initialization starting...');
@@ -35,7 +35,7 @@ class CacheWarmer {
                     console.error('⚠️ Initial cache warming failed:', err.message);
                 });
             }, 30000); // Wait 30 seconds after server start
-            
+
             // Schedule regular warming (less frequent for stability)
             setInterval(() => {
                 this.warmActiveUsers().catch(err => {
@@ -49,7 +49,7 @@ class CacheWarmer {
                     console.error('⚠️ Cache cleanup failed:', err.message);
                 });
             }, 120 * 60 * 1000); // 2 hours
-            
+
             console.log('✅ Cache Warmer service started successfully (delayed mode)');
         } catch (error) {
             console.error('❌ Failed to start Cache Warmer service:', error.message);
@@ -66,10 +66,10 @@ class CacheWarmer {
 
         const promises = activeUsersList.map(userId => this.warmUserCache(userId));
         const results = await Promise.allSettled(promises);
-        
+
         const successful = results.filter(r => r.status === 'fulfilled').length;
         const failed = results.filter(r => r.status === 'rejected').length;
-        
+
         console.log(`🔥 Cache Warmer: Warm cycle complete. Success: ${successful}, Failed: ${failed}`);
     }
 
@@ -129,7 +129,7 @@ class CacheWarmer {
         const language = 'english';
         const limit = 20;
         const page = 1;
-        
+
         const dayKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
         const noveltySeed = this.simpleHash(`${userId}:${page}:${dayKey}`);
         const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${dayKey}_${noveltySeed}`;
@@ -157,7 +157,7 @@ class CacheWarmer {
             {
                 $match: {
                     language,
-                    publishedAt: { 
+                    publishedAt: {
                         $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
                     }
                 }
@@ -223,14 +223,14 @@ class CacheWarmer {
         const articles = await Article.find({
             language,
             _id: { $nin: excludeIds },
-            publishedAt: { 
+            publishedAt: {
                 $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) // Last 48 hours
             }
         })
-        .populate('sourceId', 'name icon groupName')
-        .sort({ publishedAt: -1, viewCount: -1 })
-        .limit(limit)
-        .lean();
+            .populate('sourceId', 'name icon groupName')
+            .sort({ publishedAt: -1, viewCount: -1 })
+            .limit(limit)
+            .lean();
 
         if (articles.length > 0) {
             const response = articles.map(article => ({
@@ -281,12 +281,12 @@ class CacheWarmer {
      */
     async cleanupInactiveUsers() {
         const before = this.activeUsers.size;
-        
+
         // In a real implementation, you'd check user activity from database
         // For now, just remove users who haven't been warmed recently
         const now = Date.now();
         const inactiveUsers = [];
-        
+
         for (const userId of this.activeUsers) {
             const lastWarm = this.lastWarmTime.get(userId);
             if (!lastWarm || (now - lastWarm) > this.USER_ACTIVITY_THRESHOLD) {

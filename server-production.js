@@ -20,8 +20,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'healthy', 
+    res.status(200).json({
+        status: 'healthy',
         timestamp: new Date().toISOString(),
         port: process.env.PORT || 8080
     });
@@ -49,7 +49,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const server = app.listen(PORT, HOST, () => {
     console.log(`✅ Server running on ${HOST}:${PORT}`);
-    
+
     // Initialize database and routes after server starts
     initializeApp().catch(error => {
         console.error('⚠️ Non-critical initialization error:', error.message);
@@ -60,7 +60,7 @@ async function initializeApp() {
     try {
         console.log('🔗 Connecting to MongoDB...');
         const mongoose = require('mongoose');
-        
+
         await mongoose.connect(process.env.MONGO_URI, {
             serverSelectionTimeoutMS: 10000,
             connectTimeoutMS: 10000,
@@ -68,17 +68,17 @@ async function initializeApp() {
             maxPoolSize: 5,
             minPoolSize: 1,
         });
-        
+
         console.log('✅ MongoDB connected');
-        
+
         // Load and register routes
         await loadRoutes();
-        
+
         // Initialize Phase 3 optimizations (cache warmer ready)
         await initializeOptimizations();
-        
+
         console.log('🎉 API fully initialized and ready!');
-        
+
     } catch (error) {
         console.error('❌ Initialization failed:', error.message);
         console.log('🔄 Server continues with basic functionality...');
@@ -88,14 +88,14 @@ async function initializeApp() {
 async function loadRoutes() {
     try {
         console.log('📡 Loading API routes...');
-        
+
         // Load routes safely with error handling
         const routes = [
             { path: '/api/articles', module: './routes/articles' },
             { path: '/api/sources', module: './routes/sources' },
             { path: '/api/users', module: './routes/user' },
         ];
-        
+
         for (const route of routes) {
             try {
                 const routeModule = require(route.module);
@@ -105,7 +105,7 @@ async function loadRoutes() {
                 console.error(`⚠️ Failed to load ${route.path}:`, error.message);
             }
         }
-        
+
     } catch (error) {
         console.error('❌ Route loading failed:', error.message);
     }
@@ -114,7 +114,7 @@ async function loadRoutes() {
 async function initializeOptimizations() {
     try {
         console.log('🚀 Initializing Phase 3 optimizations...');
-        
+
         // Initialize recommendation system
         const { recommendationIndex } = require('./recommendation/fastIndex');
         setTimeout(async () => {
@@ -125,7 +125,7 @@ async function initializeOptimizations() {
                 console.error('⚠️ Recommendation system failed:', error.message);
             }
         }, 5000);
-        
+
         // Initialize safe cache warmer (when ready)
         setTimeout(() => {
             try {
@@ -136,7 +136,7 @@ async function initializeOptimizations() {
                 console.error('⚠️ Cache warmer failed:', error.message);
             }
         }, 10000);
-        
+
     } catch (error) {
         console.error('⚠️ Optimization initialization failed:', error.message);
     }

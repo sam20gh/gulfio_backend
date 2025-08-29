@@ -10,8 +10,8 @@ app.use(express.json({ limit: '50mb' }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'healthy', 
+    res.status(200).json({
+        status: 'healthy',
         timestamp: new Date().toISOString(),
         port: process.env.PORT || 8080
     });

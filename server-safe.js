@@ -21,8 +21,8 @@ try {
 
     // Health check endpoint
     app.get('/health', (req, res) => {
-        res.status(200).json({ 
-            status: 'healthy', 
+        res.status(200).json({
+            status: 'healthy',
             timestamp: new Date().toISOString(),
             port: process.env.PORT || 8080
         });
@@ -56,7 +56,7 @@ try {
 
     const server = app.listen(PORT, HOST, () => {
         console.log(`✅ Server is running on ${HOST}:${PORT}`);
-        
+
         // Initialize heavy components AFTER server starts
         setTimeout(() => {
             initializeDatabase();
@@ -68,7 +68,7 @@ try {
         try {
             console.log('🔗 Initializing database connection...');
             const mongoose = require('mongoose');
-            
+
             await mongoose.connect(process.env.MONGO_URI, {
                 serverSelectionTimeoutMS: 10000,
                 connectTimeoutMS: 10000,
@@ -76,14 +76,14 @@ try {
                 maxPoolSize: 5,
                 minPoolSize: 1,
             });
-            
+
             console.log('✅ MongoDB connected');
-            
+
             // Add API routes after DB connection
             setTimeout(() => {
                 addApiRoutes(app);
             }, 1000);
-            
+
         } catch (error) {
             console.error('⚠️ Database connection failed:', error.message);
             console.log('🔄 Server will continue without database...');
@@ -94,22 +94,22 @@ try {
     function addApiRoutes(app) {
         try {
             console.log('📡 Loading API routes...');
-            
+
             // Load routes one by one to avoid import issues
             const articles = require('./routes/articles');
             app.use('/api/articles', articles);
             console.log('✅ Articles routes loaded');
-            
+
             const sources = require('./routes/sources');
             app.use('/api/sources', sources);
             console.log('✅ Sources routes loaded');
-            
+
             const userRoutes = require('./routes/user');
             app.use('/api/users', userRoutes);
             console.log('✅ User routes loaded');
-            
+
             console.log('✅ All API routes loaded successfully');
-            
+
         } catch (error) {
             console.error('⚠️ Failed to load some routes:', error.message);
             console.log('🔄 Server will continue with basic functionality...');

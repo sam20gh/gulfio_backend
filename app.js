@@ -78,7 +78,7 @@ mongoose.connect(process.env.MONGO_URI, {
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
         console.log('📊 MongoDB Connection State:', mongoose.connection.readyState);
-        
+
         // Create indexes in background to avoid blocking startup
         setTimeout(async () => {
             try {

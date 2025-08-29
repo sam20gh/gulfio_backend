@@ -7,7 +7,7 @@ try {
 
     const express = require('express');
     console.log('✅ express loaded');
-    
+
     const cors = require('cors');
     console.log('✅ cors loaded');
 
@@ -21,8 +21,8 @@ try {
 
     // Health check endpoint
     app.get('/health', (req, res) => {
-        res.status(200).json({ 
-            status: 'healthy', 
+        res.status(200).json({
+            status: 'healthy',
             timestamp: new Date().toISOString(),
             port: process.env.PORT || 8080
         });
@@ -45,7 +45,7 @@ try {
     const HOST = process.env.HOST || '0.0.0.0';
 
     console.log(`🚀 Starting server on ${HOST}:${PORT}...`);
-    
+
     const server = app.listen(PORT, HOST, () => {
         console.log(`✅ Server is running on ${HOST}:${PORT}`);
         console.log(`📅 Started at: ${new Date().toISOString()}`);

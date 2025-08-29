@@ -20,8 +20,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'healthy', 
+    res.status(200).json({
+        status: 'healthy',
         timestamp: new Date().toISOString(),
         port: process.env.PORT || 8080,
         mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
@@ -43,33 +43,33 @@ app.get('/', (req, res) => {
             database_test: '/db-test',
             api_docs: '/docs',
             openapi_spec: '/docs/openapi.json',
-            
+
             // Articles
             articles: '/api/articles',
             articles_personalized: '/api/articles/personalized',
             articles_fast: '/api/articles/personalized-fast',
             articles_light: '/api/articles/personalized-light',
             articles_by_category: '/api/articles/category/{category}',
-            
+
             // Sources & Content
             sources: '/api/sources',
             source_groups: '/api/source',
             videos: '/api/videos',
             youtube: '/api/youtube',
             lotto: '/api/lotto',
-            
+
             // User Management
             users: '/api/users',
             user_actions: '/api/user',
             engagement: '/api/engagement',
             recommendations: '/api/recommendations',
             recommend: '/api/recommend',
-            
+
             // Content Management
             comments: '/api/comments',
             thumbnails: '/api/thumbnails',
             ads: '/api/ads',
-            
+
             // Admin & Tools
             admin: '/api/admin',
             scrape: '/api/scrape',
@@ -117,7 +117,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const server = app.listen(PORT, HOST, () => {
     console.log(`✅ Server running on ${HOST}:${PORT}`);
-    
+
     // Initialize everything after server starts
     setTimeout(initializeApp, 1000);
 });
@@ -125,7 +125,7 @@ const server = app.listen(PORT, HOST, () => {
 async function initializeApp() {
     try {
         console.log('🔗 Connecting to MongoDB...');
-        
+
         await mongoose.connect(process.env.MONGO_URI, {
             serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for Cloud Run
             connectTimeoutMS: 30000,
@@ -135,15 +135,15 @@ async function initializeApp() {
             retryWrites: true,
             retryReads: true,
         });
-        
+
         console.log('✅ MongoDB connected');
-        
+
         // Load routes after DB connection
         loadRoutes();
-        
+
         // Initialize optimizations
         setTimeout(initializeOptimizations, 5000);
-        
+
     } catch (error) {
         console.error('❌ MongoDB connection failed:', error.message);
         console.log('🔄 Loading routes anyway with degraded functionality...');
@@ -154,7 +154,7 @@ async function initializeApp() {
 function loadRoutes() {
     try {
         console.log('📡 Loading API routes...');
-        
+
         // Add middleware to log MongoDB connection status (removed blocking check)
         app.use('/api', (req, res, next) => {
             if (mongoose.connection.readyState !== 1 && process.env.NODE_ENV !== 'production') {
@@ -162,17 +162,17 @@ function loadRoutes() {
             }
             next();
         });
-        
+
         // Load articles routes
         const articles = require('./routes/articles');
         app.use('/api/articles', articles);
         console.log('✅ Articles routes loaded');
-        
+
         // Load other essential routes
         const sources = require('./routes/sources');
         app.use('/api/sources', sources);
         console.log('✅ Sources routes loaded');
-        
+
         const userRoutes = require('./routes/user');
         app.use('/api/users', userRoutes);
         console.log('✅ User routes loaded');
@@ -211,9 +211,9 @@ function loadRoutes() {
         app.use('/docs', docsRouter);
         app.use('/api', recommendationRoutes);
         app.use('/api/ads', adsRoutes);
-        
+
         console.log('🎉 All API routes loaded successfully!');
-        
+
     } catch (error) {
         console.error('❌ Failed to load routes:', error.message);
         console.error('❌ Stack:', error.stack);
@@ -223,7 +223,7 @@ function loadRoutes() {
 async function initializeOptimizations() {
     try {
         console.log('🚀 Initializing optimizations...');
-        
+
         // Initialize recommendation system
         setTimeout(async () => {
             try {
@@ -234,7 +234,7 @@ async function initializeOptimizations() {
                 console.error('⚠️ Recommendation system failed:', error.message);
             }
         }, 5000);
-        
+
         // Initialize safe cache warmer
         setTimeout(() => {
             try {
@@ -245,7 +245,7 @@ async function initializeOptimizations() {
                 console.error('⚠️ Cache warmer failed:', error.message);
             }
         }, 10000);
-        
+
     } catch (error) {
         console.error('⚠️ Optimization initialization failed:', error.message);
     }

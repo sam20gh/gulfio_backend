@@ -20,13 +20,13 @@ class SafeCacheWarmer {
             // Dynamically import dependencies to avoid startup issues
             const { User, Article, Source } = require('../models');
             const { redis } = require('../utils/redis');
-            
+
             this.User = User;
             this.Article = Article;
             this.Source = Source;
             this.redis = redis;
             this.isInitialized = true;
-            
+
             console.log('✅ Cache warmer initialized successfully');
             return true;
         } catch (error) {
@@ -66,7 +66,7 @@ class SafeCacheWarmer {
         try {
             console.log('🔥 Starting Safe Cache Warmer service...');
             this.isStarted = true;
-            
+
             // Initial warm cycle (delayed)
             setTimeout(() => {
                 this.warmActiveUsers().catch(error => {
@@ -101,17 +101,17 @@ class SafeCacheWarmer {
     stop() {
         console.log('🛑 Stopping Cache Warmer service...');
         this.isStarted = false;
-        
+
         if (this.intervalId) {
             clearInterval(this.intervalId);
             this.intervalId = null;
         }
-        
+
         if (this.cleanupIntervalId) {
             clearInterval(this.cleanupIntervalId);
             this.cleanupIntervalId = null;
         }
-        
+
         console.log('✅ Cache Warmer stopped');
     }
 
@@ -132,17 +132,17 @@ class SafeCacheWarmer {
 
         console.log(`🔥 Cache Warmer: Starting warm cycle for ${activeUsersList.length} active users`);
 
-        const promises = activeUsersList.slice(0, 10).map(userId => 
+        const promises = activeUsersList.slice(0, 10).map(userId =>
             this.warmUserCache(userId).catch(error => {
                 console.error(`❌ Error warming user ${userId}:`, error.message);
                 return null;
             })
         );
-        
+
         const results = await Promise.allSettled(promises);
         const successful = results.filter(r => r.status === 'fulfilled' && r.value !== null).length;
         const failed = results.filter(r => r.status === 'rejected' || r.value === null).length;
-        
+
         console.log(`🔥 Cache Warmer: Warm cycle complete. Success: ${successful}, Failed: ${failed}`);
     }
 
@@ -176,7 +176,7 @@ class SafeCacheWarmer {
             // Get user data with timeout
             const user = await Promise.race([
                 this.User.findOne({ supabase_id: userId }).lean(),
-                new Promise((_, reject) => 
+                new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('User query timeout')), 5000)
                 )
             ]);
@@ -224,15 +224,15 @@ class SafeCacheWarmer {
                 this.Article.find({
                     language,
                     _id: { $nin: excludeIds },
-                    publishedAt: { 
+                    publishedAt: {
                         $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) // Last 48 hours
                     }
                 })
-                .populate('sourceId', 'name icon groupName')
-                .sort({ publishedAt: -1, viewCount: -1 })
-                .limit(limit)
-                .lean(),
-                new Promise((_, reject) => 
+                    .populate('sourceId', 'name icon groupName')
+                    .sort({ publishedAt: -1, viewCount: -1 })
+                    .limit(limit)
+                    .lean(),
+                new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('Article query timeout')), 8000)
                 )
             ]);
@@ -260,7 +260,7 @@ class SafeCacheWarmer {
         const before = this.activeUsers.size;
         const now = Date.now();
         const inactiveUsers = [];
-        
+
         for (const userId of this.activeUsers) {
             const lastWarm = this.lastWarmTime.get(userId);
             if (!lastWarm || (now - lastWarm) > this.USER_ACTIVITY_THRESHOLD) {
@@ -301,14 +301,14 @@ class SafeCacheWarmer {
     async forceWarmUser(userId) {
         console.log(`🔥 Cache Warmer: Force warming user ${userId}`);
         this.markUserActive(userId);
-        
+
         if (!this.isInitialized) {
             const initialized = await this.initialize();
             if (!initialized) {
                 throw new Error('Cache warmer not initialized');
             }
         }
-        
+
         await this.warmUserCache(userId);
     }
 }
