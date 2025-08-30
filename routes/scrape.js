@@ -22,23 +22,45 @@ const validateApiKey = (req, res, next) => {
     next();
 };
 
-// GET endpoint for daily scraping (for Render Cron Job)
+// GET endpoint for hourly scraping (for Cloud Run Cron Job)
 router.get('/hourly', validateApiKey, async (req, res) => {
     try {
-        await scrapeAllSources('hourly');
-        res.send('✅ Hourly scrape complete');
+        console.log('🚀 Starting hourly scrape...');
+        
+        // Send immediate response to prevent Cloud Run timeout
+        res.send('✅ Hourly scrape started');
+        
+        // Run scraping in background (non-blocking)
+        scrapeAllSources('hourly').then(() => {
+            console.log('✅ Hourly scrape completed successfully');
+        }).catch(err => {
+            console.error('❌ Hourly scrape error:', err.message);
+        });
+        
     } catch (err) {
-        console.error('❌ Daily scrape error:', err);
-        res.status(500).send('❌ Daily scrape failed');
+        console.error('❌ Hourly scrape startup error:', err);
+        res.status(500).send('❌ Hourly scrape failed to start');
     }
 });
+
+// GET endpoint for daily scraping (for Cloud Run Cron Job)
 router.get('/daily', validateApiKey, async (req, res) => {
     try {
-        await scrapeAllSources('daily');
-        res.send('✅ Daily scrape complete');
+        console.log('🚀 Starting daily scrape...');
+        
+        // Send immediate response to prevent Cloud Run timeout
+        res.send('✅ Daily scrape started');
+        
+        // Run scraping in background (non-blocking)
+        scrapeAllSources('daily').then(() => {
+            console.log('✅ Daily scrape completed successfully');
+        }).catch(err => {
+            console.error('❌ Daily scrape error:', err.message);
+        });
+        
     } catch (err) {
-        console.error('❌ Daily scrape error:', err);
-        res.status(500).send('❌ Daily scrape failed');
+        console.error('❌ Daily scrape startup error:', err);
+        res.status(500).send('❌ Daily scrape failed to start');
     }
 });
 // GET endpoint for weekly scraping (for Render Cron Job)

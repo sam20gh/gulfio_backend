@@ -121,6 +121,10 @@ async function scrapeAllSources(frequency = null) {
     console.log(`🌐 MONGO_URI exists: ${!!process.env.MONGO_URI}`);
     console.log(`🌐 MONGO_URI (masked): ${process.env.MONGO_URI ? process.env.MONGO_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@') : 'undefined'}`);
 
+    // Set maximum execution time to prevent Cloud Run timeouts
+    const MAX_EXECUTION_TIME = 8 * 60 * 1000; // 8 minutes (Cloud Run allows 9 min max)
+    const startTime = Date.now();
+
     if (mongoose.connection.readyState !== 1) {
         console.log('⚠️ MongoDB not connected inside scraper. Connecting now...');
         try {
@@ -151,7 +155,14 @@ async function scrapeAllSources(frequency = null) {
 
     for (const source of sources) {
         try {
-            console.log(`Scraping ${source.name}`);
+            // Check if we're approaching timeout
+            const elapsed = Date.now() - startTime;
+            if (elapsed > MAX_EXECUTION_TIME - 60000) { // Stop 1 minute before timeout
+                console.log(`⏰ Approaching timeout limit, stopping scraping. Processed ${totalNew} articles so far.`);
+                break;
+            }
+            
+            console.log(`Scraping ${source.name} (${elapsed}ms elapsed)`);
             let html;
             let usedPuppeteer = false;
 
