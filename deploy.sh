@@ -56,9 +56,9 @@ gcloud run deploy $SERVICE_NAME \
     --region $REGION \
     --project $PROJECT_ID \
     --allow-unauthenticated \
-    --memory 2Gi \
+    --memory 4Gi \
     --cpu 1 \
-    --min-instances 0 \
+    --min-instances 1 \
     --max-instances 10 \
     --port 8080 \
     --set-env-vars MONGO_URI="${MONGO_URI}" \
