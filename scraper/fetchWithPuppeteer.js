@@ -87,8 +87,7 @@ async function fetchWithPuppeteer(url, options = {}) {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
         console.log(`[Puppeteer] Navigating to: ${url}`);
-        // Reduced timeout for Cloud Run compatibility (was 30000)
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
         // Return early if the caller wants to interact before closing
         if (options.returnPage) {
