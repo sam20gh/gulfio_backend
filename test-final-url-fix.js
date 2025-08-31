@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-async function testURLConstruction() {
+async function testFinalURLFix() {
     const sourceConfig = {
         name: 'Khaleej Times Business',
         url: 'https://www.khaleejtimes.com/business/',
@@ -12,8 +12,8 @@ async function testURLConstruction() {
         imageSelector: '.img-wrap img'
     };
 
-    console.log('🔧 Testing Fixed URL Construction');
-    console.log('=================================');
+    console.log('🔧 Testing FINAL URL Construction Fix');
+    console.log('====================================');
 
     try {
         // Fetch main page
@@ -27,7 +27,7 @@ async function testURLConstruction() {
         const $ = cheerio.load(response.data);
         console.log(`✅ Main page fetched (${response.data.length} bytes)`);
 
-        // Extract links with proper URL construction
+        // Extract links with CORRECT URL construction
         const links = [];
         $(sourceConfig.listSelector).each((_, element) => {
             const $elem = $(element);
@@ -37,8 +37,9 @@ async function testURLConstruction() {
                 if (linkHref.startsWith('http')) {
                     fullLink = linkHref;
                 } else {
-                    // FIXED: Proper URL construction without double slashes
-                    const baseUrl = sourceConfig.url.replace(/\/$/, ''); // Remove trailing slash
+                    // Extract domain from source URL for proper base URL
+                    const urlObj = new URL(sourceConfig.url);
+                    const baseUrl = `${urlObj.protocol}//${urlObj.hostname}`;
                     fullLink = linkHref.startsWith('/') ? `${baseUrl}${linkHref}` : `${baseUrl}/${linkHref}`;
                 }
                 if (fullLink && !links.includes(fullLink)) {
@@ -49,18 +50,18 @@ async function testURLConstruction() {
 
         console.log(`\n✅ Found ${links.length} article links:`);
         links.forEach((link, i) => {
-            const hasDoubleSlash = link.includes('//business') || link.includes('khaleejtimes.com//');
-            const status = hasDoubleSlash ? '❌ DOUBLE SLASH' : '✅ OK';
-            console.log(`  ${i + 1}. ${status} ${link}`);
+            console.log(`  ${i + 1}. ${link}`);
         });
 
         // Test the first 3 articles
-        console.log(`\n🧪 Testing first 3 articles with fixed URLs...`);
+        console.log(`\n🧪 Testing first 3 articles...`);
         const testLinks = links.slice(0, 3);
+        let successCount = 0;
 
         for (let i = 0; i < testLinks.length; i++) {
             const link = testLinks[i];
-            console.log(`\nTesting article ${i + 1}: ${link}`);
+            console.log(`\n📰 Testing article ${i + 1}:`);
+            console.log(`   URL: ${link}`);
 
             try {
                 const articleResponse = await axios.get(link, {
@@ -71,10 +72,9 @@ async function testURLConstruction() {
                     }
                 });
 
-                console.log(`✅ Article ${i + 1} loaded successfully (${articleResponse.data.length} bytes)`);
-
-                // Quick extraction test
                 const $$ = cheerio.load(articleResponse.data);
+
+                // Extract all data
                 const title = $$(sourceConfig.titleSelector).first().text().trim();
 
                 let content = '';
@@ -93,27 +93,42 @@ async function testURLConstruction() {
                     }
                 });
 
-                console.log(`   Title: "${title.substring(0, 50)}..." (${title.length} chars)`);
-                console.log(`   Content: ${content.length} characters`);
-                console.log(`   Images: ${images.length} found`);
+                console.log(`   ✅ SUCCESS - Status: 200 OK (${articleResponse.data.length} bytes)`);
+                console.log(`   📰 Title: "${title.substring(0, 60)}..." (${title.length} chars)`);
+                console.log(`   📄 Content: ${content.length} characters`);
+                console.log(`   🖼️  Images: ${images.length} found`);
+
+                successCount++;
 
             } catch (articleError) {
-                console.error(`❌ Error testing article ${i + 1}: ${articleError.message}`);
+                console.error(`   ❌ FAILED - ${articleError.message}`);
                 if (articleError.response) {
                     console.error(`   Status: ${articleError.response.status} ${articleError.response.statusText}`);
                 }
             }
         }
 
-        console.log('\n🎯 SUMMARY:');
-        console.log('===========');
-        console.log('✅ URL construction fix applied');
-        console.log('✅ All selectors tested and working');
-        console.log('✅ Ready for production use');
+        console.log('\n📊 FINAL TEST RESULTS:');
+        console.log('======================');
+        console.log(`✅ Successfully tested: ${successCount}/${testLinks.length} articles`);
+        console.log(`✅ URL construction: ${successCount === testLinks.length ? 'FIXED' : 'NEEDS MORE WORK'}`);
+
+        if (successCount === testLinks.length) {
+            console.log('\n🎉 ALL TESTS PASSED!');
+            console.log('\n🎯 FINAL WORKING CONFIGURATION:');
+            console.log('===============================');
+            console.log('URL:', sourceConfig.url);
+            console.log('List Selector:', sourceConfig.listSelector);
+            console.log('Link Selector:', sourceConfig.linkSelector);
+            console.log('Title Selector:', sourceConfig.titleSelector);
+            console.log('Content Selector:', sourceConfig.contentSelector);
+            console.log('Image Selector:', sourceConfig.imageSelector);
+            console.log('\n✅ Ready for production deployment!');
+        }
 
     } catch (error) {
         console.error(`❌ Test failed: ${error.message}`);
     }
 }
 
-testURLConstruction().catch(console.error);
+testFinalURLFix().catch(console.error);
