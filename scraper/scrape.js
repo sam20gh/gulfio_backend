@@ -168,8 +168,14 @@ async function scrapeAllSources(frequency = null) {
 
             if (needsPuppeteer) {
                 console.log(`🤖 Using Puppeteer for ${source.name} (bot protection/special handling)`);
-                ({ html } = await fetchWithPuppeteer(source.url));
-                usedPuppeteer = true;
+                try {
+                    ({ html } = await fetchWithPuppeteer(source.url));
+                    usedPuppeteer = true;
+                } catch (puppeteerError) {
+                    console.error(`❌ Puppeteer failed for ${source.name}:`, puppeteerError.message);
+                    console.log(`⚠️ Skipping ${source.name} due to Puppeteer Chrome installation issues`);
+                    continue; // Skip this source and move to the next
+                }
             } else {
                 // Try regular request first, fallback to Puppeteer if 403
                 try {
@@ -221,8 +227,8 @@ async function scrapeAllSources(frequency = null) {
                             console.log(`✅ Puppeteer successfully bypassed bot protection for ${source.name}`);
                         } catch (puppeteerError) {
                             console.error(`❌ Puppeteer failed for bot-protected ${source.name}:`, puppeteerError.message);
-                            console.log(`⚠️ Bot protection bypass failed - ${source.name} may not scrape correctly`);
-                            throw new Error(`Both standard fetch and Puppeteer failed: ${puppeteerError.message}`);
+                            console.log(`⚠️ Skipping ${source.name} - both standard fetch and Puppeteer failed`);
+                            continue; // Skip this source instead of throwing
                         }
                     } else {
                         throw fetchError;
@@ -237,9 +243,25 @@ async function scrapeAllSources(frequency = null) {
             $(listSel).each((_, el) => {
                 const href = $(el).find(linkSel).attr('href');
                 if (href && href !== ':' && href !== '') {
-                    const url = href.startsWith('http')
-                        ? href
-                        : `${(source.baseUrl || source.url).replace(/\/$/, '')}${href.startsWith('/') ? href : '/' + href}`;
+                    let url;
+                    if (href.startsWith('http')) {
+                        url = href;
+                    } else {
+                        // Get base URL for link construction
+                        let baseUrl = source.baseUrl;
+                        if (!baseUrl) {
+                            try {
+                                // Extract domain from source URL if baseUrl is not set
+                                const urlObj = new URL(source.url);
+                                baseUrl = `${urlObj.protocol}//${urlObj.hostname}`;
+                            } catch {
+                                baseUrl = source.url.replace(/\/$/, '');
+                            }
+                        } else {
+                            baseUrl = baseUrl.replace(/\/$/, '');
+                        }
+                        url = href.startsWith('/') ? `${baseUrl}${href}` : `${baseUrl}/${href}`;
+                    }
                     links.push(url);
                 } else {
                     console.warn(`Skipped invalid href: "${href}" for source: ${source.name}`);
@@ -294,7 +316,11 @@ async function scrapeAllSources(frequency = null) {
                                 pageHtml = (await axios.get(link, {
                                     timeout: 10000,
                                     headers: {
-                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                        "Accept-Language": "en-US,en;q=0.9",
+                                        "Referer": "https://www.google.com/",
+                                        "Cache-Control": "no-cache",
                                     }
                                 })).data;
                             } catch (fallbackError) {

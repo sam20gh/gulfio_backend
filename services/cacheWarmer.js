@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const Article = require('../models/Article');
 const Source = require('../models/Source');
-const { redis } = require('../utils/redis');
+const redis = require('../utils/redis');
 
 class CacheWarmer {
     constructor() {

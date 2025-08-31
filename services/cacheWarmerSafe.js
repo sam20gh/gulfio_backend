@@ -19,7 +19,7 @@ class SafeCacheWarmer {
         try {
             // Dynamically import dependencies to avoid startup issues
             const { User, Article, Source } = require('../models');
-            const { redis } = require('../utils/redis');
+            const redis = require('../utils/redis');
 
             this.User = User;
             this.Article = Article;

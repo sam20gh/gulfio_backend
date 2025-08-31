@@ -184,7 +184,21 @@ async function testSingleSource(sourceId) {
             const $elem = $(element);
             const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
             if (linkHref) {
-                const fullLink = linkHref.startsWith('http') ? linkHref : `${source.baseUrl || source.url}${linkHref}`;
+                let fullLink;
+                if (linkHref.startsWith('http')) {
+                    fullLink = linkHref;
+                } else {
+                    // Extract domain from source URL for proper base URL
+                    const baseUrl = source.baseUrl || (() => {
+                        try {
+                            const urlObj = new URL(source.url);
+                            return `${urlObj.protocol}//${urlObj.hostname}`;
+                        } catch {
+                            return source.url.replace(/\/$/, '');
+                        }
+                    })();
+                    fullLink = linkHref.startsWith('/') ? `${baseUrl}${linkHref}` : `${baseUrl}/${linkHref}`;
+                }
                 if (fullLink && !links.includes(fullLink)) {
                     links.push(fullLink);
                 }
