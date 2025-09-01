@@ -444,6 +444,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     console.log('🔥 PERSONALIZED ENDPOINT START:', new Date().toISOString());
     console.log(`📏 E2E: Request received at ${requestStartTime}ms`);
+    console.log(`👤 USER INFO: userId=${userId}, mongoUser exists=${!!req.mongoUser}`);
 
     // Override res.json to measure JSON serialization time
     const originalJson = res.json;
@@ -570,6 +571,8 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     // Fast fallback path for various conditions
     const isSlowRequest = (Date.now() - startTime) > deadlineMs;
     const shouldUseFastFallback = !canUseVectorSearch || !quickProbeOk || (isSlowRequest && page === 1);
+
+    console.log(`🔍 PERSONALIZATION DECISION: canUseVectorSearch=${canUseVectorSearch}, quickProbeOk=${quickProbeOk}, isSlowRequest=${isSlowRequest}, shouldUseFastFallback=${shouldUseFastFallback}`);
 
     // Fallback path (no embedding OR slow request OR vector unavailable)
     if (shouldUseFastFallback) {
@@ -1353,13 +1356,19 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
   }
 });
 
-// GET: Generic (guest) feed with recency-aware sort
+// GET: Generic (guest) feed with recency-aware sort and source group limiting
 articleRouter.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const language = req.query.language || 'english';
     const category = req.query.category;
+
+    console.log(`🌍 PUBLIC/GUEST ROUTE CALLED: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}`);
+    console.log(`🌍 Request headers:`, {
+      authorization: req.headers.authorization ? 'present' : 'missing',
+      'user-agent': req.headers['user-agent']?.substring(0, 50) + '...'
+    });
 
     const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}`;
 
@@ -1374,8 +1383,6 @@ articleRouter.get('/', async (req, res) => {
       return res.json(JSON.parse(cached));
     }
 
-    const skip = (page - 1) * limit;
-
     // Build query filter
     const filter = { language };
     if (category) {
@@ -1383,12 +1390,14 @@ articleRouter.get('/', async (req, res) => {
       console.log('🏷️ Filtering articles by category:', category);
     }
 
-    // Fetch newest first
+    // Fetch more articles to allow for source group filtering and pagination
     const raw = await Article.find(filter)
+      .populate('sourceId', 'name icon groupName') // Populate source data
       .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit)
+      .limit(limit * 5) // Get more articles for source filtering and pagination
       .lean();
+
+    console.log(`📊 Found ${raw.length} raw articles from database`);
 
     // Re-rank by page-aware recency+engagement for better first page feel
     const freshRatio =
@@ -1408,17 +1417,51 @@ articleRouter.get('/', async (req, res) => {
           fetchId: new mongoose.Types.ObjectId().toString(),
           engagementScore: engagement,
           finalScore,
+          // Extract source info from populated data
+          sourceName: a.sourceId?.name || 'Unknown Source',
+          sourceIcon: a.sourceId?.icon || null,
+          sourceGroupName: a.sourceId?.groupName || null
         };
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
 
+    // Apply pagination with source group limiting (max 2 per source group per page)
+    const startIndex = (page - 1) * limit;
+    let skipped = 0;
+    let finalArticles = [];
+    const sourceGroupCounts = {};
+
+    console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}`);
+
+    for (let i = 0; i < enhancedArticles.length && finalArticles.length < limit; i++) {
+      const article = enhancedArticles[i];
+      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+
+      // Skip articles until we reach the start index for this page
+      if (skipped < startIndex) {
+        skipped++;
+        continue;
+      }
+
+      // Check if adding this article would exceed the source group limit for this page
+      const currentCount = sourceGroupCounts[sourceGroup] || 0;
+      if (currentCount < 2) {
+        finalArticles.push(article);
+        sourceGroupCounts[sourceGroup] = currentCount + 1;
+      }
+      // If source group limit reached, continue looking for articles from other sources
+    }
+
+    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${enhancedArticles.length} candidates (max 2 per source group)`);
+    console.log(`📊 Source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
+
     try {
-      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300);
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 300);
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
 
-    res.json(enhancedArticles);
+    res.json(finalArticles);
   } catch (error) {
     console.error('❌ Error fetching articles:', error);
     res.status(500).json({ error: 'Error fetching articles', message: error.message });
