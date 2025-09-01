@@ -168,8 +168,22 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const userId = req.mongoUser.supabase_id;
     const language = req.query.language || 'english';
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const forceRefresh = req.query.noCache === 'true';
 
-    console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}`);
+    console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+
+    // If force refresh is requested, clear this user's cache first
+    if (forceRefresh) {
+      try {
+        const userCacheKeys = await redis.keys(`articles_*${userId}*`);
+        if (userCacheKeys.length > 0) {
+          await redis.del(userCacheKeys);
+          console.log(`🧹 Force refresh: cleared ${userCacheKeys.length} cache keys for user ${userId}`);
+        }
+      } catch (cacheError) {
+        console.error('⚠️ Error clearing user cache:', cacheError.message);
+      }
+    }
 
     // Mark user as active for cache warming (temporarily disabled)
     // cacheWarmer.markUserActive(userId);
@@ -203,6 +217,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       ...article,
       fetchId: new mongoose.Types.ObjectId().toString(),
       isLight: true,
+      fetchedAt: new Date().toISOString(), // Add timestamp to track freshness
+      isRefreshed: forceRefresh, // Flag to indicate if this was a forced refresh
       // Extract source info from populated data
       sourceName: article.sourceId?.name || 'Unknown Source',
       sourceIcon: article.sourceId?.icon || null,
