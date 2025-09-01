@@ -207,8 +207,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     // Mark user as active for cache warming (temporarily disabled)
     // cacheWarmer.markUserActive(userId);
 
-    // Check warm cache first
-    const cacheKey = `articles_warm_${userId}_${language}`;
+    // Check warm cache first (extend cache time for better performance)
+    const cacheKey = `articles_light_${language}_${limit}`;
     let cached;
     try {
       cached = await redis.get(cacheKey);
@@ -221,15 +221,20 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       console.error('⚠️ Redis get error:', err.message);
     }
 
-    // Fast query with source population - crucial for preventing "Unknown Source"
+    console.log(`🔍 Light endpoint: Starting DB query for ${language} language`);
+    const queryStart = Date.now();
+
+    // Fast query with source population - reduced to 24 hours for better performance
     const articles = await Article.find({
       language,
-      publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } // Last 48 hours
+      publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours (reduced from 48)
     })
       .populate('sourceId', 'name icon groupName') // Populate source data immediately
-      .sort({ publishedAt: -1, viewCount: -1 })
-      .limit(limit * 3) // Get more articles to allow for source group filtering
+      .sort({ publishedAt: -1 }) // Remove viewCount from sort for better performance 
+      .limit(limit * 2) // Reduce multiplier from 3 to 2
       .lean();
+
+    console.log(`⏱️ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
 
     // Transform articles with pre-populated source data
     const response = articles.map(article => ({
