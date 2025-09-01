@@ -116,8 +116,21 @@ router.patch('/:id', auth, async (req, res) => {
 // DELETE /comments/:id — Delete a comment
 router.delete('/:id', auth, async (req, res) => {
     try {
+        const userId = req.user.sub; // Get userId from JWT token
+
+        // First, find the comment to check ownership
+        const comment = await Comment.findById(req.params.id);
+        if (!comment) {
+            return res.status(404).json({ message: 'Comment not found' });
+        }
+
+        // Check if the user owns this comment
+        if (comment.userId !== userId) {
+            return res.status(403).json({ message: 'You can only delete your own comments' });
+        }
+
+        // Delete the comment
         const deleted = await Comment.findByIdAndDelete(req.params.id);
-        if (!deleted) return res.status(404).json({ message: 'Comment not found' });
 
         // Update user embedding after deleting comment
         try {
