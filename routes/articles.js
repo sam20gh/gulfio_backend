@@ -228,7 +228,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     })
       .populate('sourceId', 'name icon groupName') // Populate source data immediately
       .sort({ publishedAt: -1, viewCount: -1 })
-      .limit(limit)
+      .limit(limit * 3) // Get more articles to allow for source group filtering
       .lean();
 
     // Transform articles with pre-populated source data
@@ -245,7 +245,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     }));
 
     // Limit to max 2 articles per source group
-    const limitedResponse = limitArticlesPerSourceGroup(response, 2);
+    const limitedResponse = limitArticlesPerSourceGroup(response, 2).slice(0, limit);
     console.log(`🔀 Limited from ${response.length} to ${limitedResponse.length} articles (max 2 per source group)`);
 
     // Cache for 5 minutes only (fresh content)
@@ -291,7 +291,6 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
 
     // Get user preferences quickly
     const user = await User.findOne({ supabase_id: userId }, 'liked_articles disliked_articles').lean();
-    const skip = (page - 1) * limit;
 
     // Fast query: recent articles, exclude dislikes - populate source data
     const excludeIds = user?.disliked_articles || [];
@@ -302,8 +301,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     })
       .populate('sourceId', 'name icon groupName') // Populate source data
       .sort({ publishedAt: -1, viewCount: -1 })
-      .skip(skip)
-      .limit(limit * 3) // Get more articles to allow for source group filtering
+      .limit(limit * 5) // Get more articles to allow for source group filtering and pagination
       .lean();
 
     // Simple enhancement with source data
@@ -318,9 +316,31 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       sourceGroupName: article.sourceId?.groupName || null
     }));
 
-    // Limit to max 2 articles per source group and then apply pagination limit
-    const limitedArticles = limitArticlesPerSourceGroup(enhancedArticles, 2).slice(0, limit);
-    console.log(`⚡ Limited from ${enhancedArticles.length} to ${limitedArticles.length} articles (max 2 per source group)`);
+    // Apply pagination with source group limiting
+    const startIndex = (page - 1) * limit;
+    let skipped = 0;
+    let limitedArticles = [];
+    const sourceGroupCounts = {};
+
+    for (let i = 0; i < enhancedArticles.length && limitedArticles.length < limit; i++) {
+      const article = enhancedArticles[i];
+      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+
+      // Skip articles until we reach the start index for this page
+      if (skipped < startIndex) {
+        skipped++;
+        continue;
+      }
+
+      // Check if adding this article would exceed the source group limit for this page
+      const currentCount = sourceGroupCounts[sourceGroup] || 0;
+      if (currentCount < 2) {
+        limitedArticles.push(article);
+        sourceGroupCounts[sourceGroup] = currentCount + 1;
+      }
+    }
+
+    console.log(`⚡ Fast personalized: Selected ${limitedArticles.length} articles from ${enhancedArticles.length} candidates (max 2 per source group)`);
 
     // Cache for 10 minutes
     try {
@@ -570,11 +590,10 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       })
         .populate('sourceId', 'name icon groupName') // Populate source data
         .sort({ publishedAt: -1, viewCount: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit * 3) // Get more articles to allow for source group filtering
+        .limit(limit * 5) // Get more articles to allow for source group filtering and pagination
         .lean();
 
-      const fastResponse = fallbackArticles.map(article => ({
+      const enhancedFallbackArticles = fallbackArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFast: true,
@@ -588,9 +607,31 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         sourceGroupName: article.sourceId?.groupName || null
       }));
 
-      // Apply source group limiting and then pagination limit
-      const limitedFastResponse = limitArticlesPerSourceGroup(fastResponse, 2).slice(0, limit);
-      console.log(`⚡ FAST FALLBACK: Limited from ${fastResponse.length} to ${limitedFastResponse.length} articles (max 2 per source group)`);
+      // Apply pagination with source group limiting for fallback
+      const startIndex = (page - 1) * limit;
+      let skipped = 0;
+      let limitedFastResponse = [];
+      const sourceGroupCounts = {};
+
+      for (let i = 0; i < enhancedFallbackArticles.length && limitedFastResponse.length < limit; i++) {
+        const article = enhancedFallbackArticles[i];
+        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+
+        // Skip articles until we reach the start index for this page
+        if (skipped < startIndex) {
+          skipped++;
+          continue;
+        }
+
+        // Check if adding this article would exceed the source group limit for this page
+        const currentCount = sourceGroupCounts[sourceGroup] || 0;
+        if (currentCount < 2) {
+          limitedFastResponse.push(article);
+          sourceGroupCounts[sourceGroup] = currentCount + 1;
+        }
+      }
+
+      console.log(`⚡ FAST FALLBACK: Selected ${limitedFastResponse.length} articles from ${enhancedFallbackArticles.length} candidates (max 2 per source group)`);
 
       // Track served articles
       if (limitedFastResponse.length > 0) {
@@ -801,11 +842,10 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       })
         .populate('sourceId', 'name icon groupName') // Populate source data
         .sort({ publishedAt: -1, viewCount: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit * 3) // Get more articles to allow for source group filtering
+        .limit(limit * 5) // Get more articles to allow for source group filtering and pagination
         .lean();
 
-      const fastResponse = fastFallbackArticles.map(article => ({
+      const enhancedFastResponse = fastFallbackArticles.map(article => ({
         ...article,
         fetchId: new mongoose.Types.ObjectId().toString(),
         isFast: true,
@@ -819,9 +859,31 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         sourceGroupName: article.sourceId?.groupName || null
       }));
 
-      // Apply source group limiting and then pagination limit
-      const limitedFastResponse = limitArticlesPerSourceGroup(fastResponse, 2).slice(0, limit);
-      console.log(`⚡ OVER-BUDGET FALLBACK: Limited from ${fastResponse.length} to ${limitedFastResponse.length} articles (max 2 per source group)`);
+      // Apply pagination with source group limiting for over-budget fallback
+      const startIndex = (page - 1) * limit;
+      let skipped = 0;
+      let limitedFastResponse = [];
+      const sourceGroupCounts = {};
+
+      for (let i = 0; i < enhancedFastResponse.length && limitedFastResponse.length < limit; i++) {
+        const article = enhancedFastResponse[i];
+        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+
+        // Skip articles until we reach the start index for this page
+        if (skipped < startIndex) {
+          skipped++;
+          continue;
+        }
+
+        // Check if adding this article would exceed the source group limit for this page
+        const currentCount = sourceGroupCounts[sourceGroup] || 0;
+        if (currentCount < 2) {
+          limitedFastResponse.push(article);
+          sourceGroupCounts[sourceGroup] = currentCount + 1;
+        }
+      }
+
+      console.log(`⚡ OVER-BUDGET FALLBACK: Selected ${limitedFastResponse.length} articles from ${enhancedFastResponse.length} candidates (max 2 per source group)`);
 
       if (limitedFastResponse.length > 0) {
         try {
@@ -992,38 +1054,36 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
     mark('interleave');
 
-    // Apply pagination AFTER scoring, diversity, and source shuffling
+    // Apply pagination with source group limiting
+    // Instead of slicing first then limiting, we iterate through and select articles that satisfy both pagination and source constraints
     const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
-    let paginatedArticles = interleaved.slice(startIndex, endIndex);
+    let skipped = 0;
+    let finalArticles = [];
+    const sourceGroupCounts = {};
 
-    // Apply source group limit (max 2 per group) to the paginated results
-    let finalArticles = limitArticlesPerSourceGroup(paginatedArticles, 2);
+    console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}`);
 
-    // If we have fewer articles than requested due to source limiting, try to fill from remaining pool
-    if (finalArticles.length < limit && interleaved.length > endIndex) {
-      const remainingArticles = interleaved.slice(endIndex);
-      const additionalArticles = limitArticlesPerSourceGroup(remainingArticles, 2);
+    for (let i = 0; i < interleaved.length && finalArticles.length < limit; i++) {
+      const article = interleaved[i];
+      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
 
-      // Add additional articles while respecting the source group limit globally
-      const currentSourceCounts = {};
-      finalArticles.forEach(article => {
-        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-        currentSourceCounts[sourceGroup] = (currentSourceCounts[sourceGroup] || 0) + 1;
-      });
-
-      for (const article of additionalArticles) {
-        if (finalArticles.length >= limit) break;
-
-        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-        if ((currentSourceCounts[sourceGroup] || 0) < 2) {
-          finalArticles.push(article);
-          currentSourceCounts[sourceGroup] = (currentSourceCounts[sourceGroup] || 0) + 1;
-        }
+      // Skip articles until we reach the start index for this page
+      if (skipped < startIndex) {
+        skipped++;
+        continue;
       }
+
+      // Check if adding this article would exceed the source group limit for this page
+      const currentCount = sourceGroupCounts[sourceGroup] || 0;
+      if (currentCount < 2) {
+        finalArticles.push(article);
+        sourceGroupCounts[sourceGroup] = currentCount + 1;
+      }
+      // If source group limit reached, continue looking for articles from other sources
     }
 
-    console.log(`🔀 Applied source group limiting: ${paginatedArticles.length} → ${finalArticles.length} articles (max 2 per source group)`);
+    console.log(`🔀 Pagination and source limiting complete: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
+    console.log(`📊 Source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
     mark('paginate');
 
