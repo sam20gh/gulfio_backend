@@ -279,9 +279,9 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
 
-    // Check cache first with better cache key
-    const hourSlot = Math.floor(Date.now() / (60 * 60 * 1000)); // Hourly cache slots
-    const cacheKey = `articles_light_optimized_${language}_${limit}_${hourSlot}`;
+    // Check cache first with ultra-aggressive cache key (every 30 minutes)
+    const thirtyMinSlot = Math.floor(Date.now() / (30 * 60 * 1000)); // 30-minute cache slots
+    const cacheKey = `articles_ultrafast_${language}_${limit}_${thirtyMinSlot}`;
 
     let cached;
     if (!forceRefresh) {
@@ -301,56 +301,38 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const queryStart = Date.now();
 
     // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
-    // OPTIMIZATION 2: Reduce time window to 12 hours for ultra-speed
-    // OPTIMIZATION 3: Use $lookup only when needed and optimize it
+    // OPTIMIZATION 2: Reduce time window to 8 hours for ultra-speed
+    // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
 
-    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+    const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
 
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
         $match: {
           language: language,
-          publishedAt: { $gte: twelveHoursAgo }
+          publishedAt: { $gte: eightHoursAgo }
         }
       },
       {
-        // Stage 2: Sort BEFORE lookup for better performance
+        // Stage 2: Sort BEFORE limiting for better performance
         $sort: { publishedAt: -1 }
       },
       {
-        // Stage 3: Limit early to reduce lookup operations
-        $limit: limit * 2
+        // Stage 3: Early limit for maximum speed - skip source lookup entirely
+        $limit: limit
       },
       {
-        // Stage 4: Optimized lookup with only required fields
-        $lookup: {
-          from: 'sources',
-          localField: 'sourceId',
-          foreignField: '_id',
-          as: 'sourceData',
-          pipeline: [
-            {
-              $project: {
-                name: 1,
-                icon: 1,
-                groupName: 1
-              }
-            }
-          ]
-        }
-      },
-      {
-        // Stage 5: Unwind and add source fields directly
+        // Stage 4: Add performance markers without source lookup
         $addFields: {
-          sourceInfo: { $arrayElemAt: ['$sourceData', 0] },
-          sourceName: { $arrayElemAt: ['$sourceData.name', 0] },
-          sourceIcon: { $arrayElemAt: ['$sourceData.icon', 0] },
-          sourceGroupName: { $arrayElemAt: ['$sourceData.groupName', 0] }
+          isLight: { $literal: true },
+          fetchedAt: { $literal: new Date() },
+          isRefreshed: { $literal: forceRefresh },
+          fetchId: { $literal: new mongoose.Types.ObjectId().toString() }
         }
       },
       {
-        // Stage 6: Project final fields (remove unnecessary data)
+        // Stage 5: Project only essential fields for maximum speed
         $project: {
           title: 1,
           content: 1,
@@ -363,55 +345,34 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           dislikes: 1,
           likedBy: 1,
           dislikedBy: 1,
-          sourceId: 1,
-          sourceName: 1,
-          sourceIcon: 1,
-          sourceGroupName: 1,
-          // Add performance markers
-          isLight: { $literal: true },
-          fetchedAt: { $literal: new Date() },
-          isRefreshed: { $literal: forceRefresh },
-          fetchId: { $literal: new mongoose.Types.ObjectId().toString() }
+          sourceId: 1, // Let client handle source resolution for speed
+          isLight: 1,
+          fetchedAt: 1,
+          isRefreshed: 1,
+          fetchId: 1
         }
       }
     ]);
 
-    console.log(`⚡ OPTIMIZED DB aggregation completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+    console.log(`⚡ ULTRA-FAST DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
 
-    // OPTIMIZATION 4: Simple source group limiting (faster than complex grouping)
-    const limitedResponse = [];
-    const sourceGroupCounts = new Map();
+    // OPTIMIZATION 4: Skip source grouping for ultra-speed - return articles directly
+    const totalTime = Date.now() - startTime;
+    console.log(`🚀 ULTRA-FAST Light personalized complete in ${totalTime}ms - ${articles.length} articles (no source grouping)`);
 
-    for (const article of articles) {
-      const sourceGroup = article.sourceGroupName || 'unknown';
-      const count = sourceGroupCounts.get(sourceGroup) || 0;
-
-      if (count < 2 && limitedResponse.length < limit) {
-        limitedResponse.push(article);
-        sourceGroupCounts.set(sourceGroup, count + 1);
-      }
-
-      if (limitedResponse.length >= limit) break;
-    }
-
-    console.log(`🔀 OPTIMIZED: Limited from ${articles.length} to ${limitedResponse.length} articles (max 2 per source group)`);
-
-    // OPTIMIZATION 5: Longer cache with hourly slots
+    // OPTIMIZATION 5: Shorter cache for fresher content at ultra-speed
     try {
-      await redis.set(cacheKey, JSON.stringify(limitedResponse), 'EX', 1800); // 30 min cache
+      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 900); // 15 min cache for speed
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
 
-    const totalTime = Date.now() - startTime;
-    console.log(`🚀 OPTIMIZED Light personalized complete in ${totalTime}ms - ${limitedResponse.length} articles`);
-
     // Add performance headers for monitoring
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
-    res.setHeader('X-Optimization-Applied', 'aggregation-pipeline');
+    res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup');
 
-    res.json(limitedResponse);
+    res.json(articles);
 
   } catch (error) {
     const errorTime = Date.now() - startTime;
