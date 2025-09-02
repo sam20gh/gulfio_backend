@@ -100,13 +100,8 @@ async function clearArticlesCache() {
 /** Recompute the user's profile embedding after an interaction */
 async function updateUserProfileEmbedding(userMongoId) {
   try {
-    // Project-specific: you already have this logic in your codebase
-    // Call into your existing function to rebuild user embedding and store
-    // For illustration only:
-    const user = await User.findById(userMongoId).lean();
-    if (!user) return;
-    // ... compute new embedding (e.g., from recent likes/dislikes/text) ...
-    // await User.updateOne({ _id: userMongoId }, { $set: { embedding_pca: newEmbeddingPCA }});
+    const { updateUserProfileEmbedding: updateEmbedding } = require('../utils/userEmbedding');
+    await updateEmbedding(userMongoId);
   } catch (e) {
     console.warn('Embedding refresh failed (non-fatal):', e.message);
   }
@@ -181,93 +176,7 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 
 // GET: Fast personalized fallback (simplified algorithm)
 // GET: Ultra-fast personalized articles with source population (for first page)
-// articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
-//   const startTime = Date.now();
-//   try {
-//     const userId = req.mongoUser.supabase_id;
-//     const language = req.query.language || 'english';
-//     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
-//     const forceRefresh = req.query.noCache === 'true';
 
-//     console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
-
-//     // If force refresh is requested, clear this user's cache first
-//     if (forceRefresh) {
-//       try {
-//         const userCacheKeys = await redis.keys(`articles_*${userId}*`);
-//         if (userCacheKeys.length > 0) {
-//           await redis.del(userCacheKeys);
-//           console.log(`🧹 Force refresh: cleared ${userCacheKeys.length} cache keys for user ${userId}`);
-//         }
-//       } catch (cacheError) {
-//         console.error('⚠️ Error clearing user cache:', cacheError.message);
-//       }
-//     }
-
-//     // Mark user as active for cache warming (temporarily disabled)
-//     // cacheWarmer.markUserActive(userId);
-
-//     // Check warm cache first (extend cache time for better performance)
-//     const cacheKey = `articles_light_${language}_${limit}`;
-//     let cached;
-//     try {
-//       cached = await redis.get(cacheKey);
-//       if (cached && !req.query.noCache) {
-//         const result = JSON.parse(cached);
-//         console.log(`🚀 Light cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
-//         return res.json(result);
-//       }
-//     } catch (err) {
-//       console.error('⚠️ Redis get error:', err.message);
-//     }
-
-//     console.log(`🔍 Light endpoint: Starting DB query for ${language} language`);
-//     const queryStart = Date.now();
-
-//     // Fast query with source population - reduced to 24 hours for better performance
-//     const articles = await Article.find({
-//       language,
-//       publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours (reduced from 48)
-//     })
-//       .populate('sourceId', 'name icon groupName') // Populate source data immediately
-//       .sort({ publishedAt: -1 }) // Remove viewCount from sort for better performance 
-//       .limit(limit * 2) // Reduce multiplier from 3 to 2
-//       .lean();
-
-//     console.log(`⏱️ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
-
-//     // Transform articles with pre-populated source data
-//     const response = articles.map(article => ({
-//       ...article,
-//       fetchId: new mongoose.Types.ObjectId().toString(),
-//       isLight: true,
-//       fetchedAt: new Date().toISOString(), // Add timestamp to track freshness
-//       isRefreshed: forceRefresh, // Flag to indicate if this was a forced refresh
-//       // Extract source info from populated data
-//       sourceName: article.sourceId?.name || 'Unknown Source',
-//       sourceIcon: article.sourceId?.icon || null,
-//       sourceGroupName: article.sourceId?.groupName || null
-//     }));
-
-//     // Limit to max 2 articles per source group
-//     const limitedResponse = limitArticlesPerSourceGroup(response, 2).slice(0, limit);
-//     console.log(`🔀 Limited from ${response.length} to ${limitedResponse.length} articles (max 2 per source group)`);
-
-//     // Cache for 5 minutes only (fresh content)
-//     try {
-//       await redis.set(cacheKey, JSON.stringify(limitedResponse), 'EX', 300);
-//     } catch (err) {
-//       console.error('⚠️ Redis set error:', err.message);
-//     }
-
-//     console.log(`🚀 Light personalized complete in ${Date.now() - startTime}ms - ${limitedResponse.length} articles`);
-//     res.json(limitedResponse);
-
-//   } catch (error) {
-//     console.error('❌ Light personalized error:', error);
-//     res.status(500).json({ error: 'Light personalized error', message: error.message });
-//   }
-// });
 articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
 

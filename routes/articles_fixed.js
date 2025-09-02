@@ -66,20 +66,13 @@ async function clearArticlesCache() {
 
 /** Recompute the user's profile embedding after an interaction */
 async function updateUserProfileEmbedding(userMongoId) {
-    try {
-        // Project-specific: you already have this logic in your codebase
-        // Call into your existing function to rebuild user embedding and store
-        // For illustration only:
-        const user = await User.findById(userMongoId).lean();
-        if (!user) return;
-        // ... compute new embedding (e.g., from recent likes/dislikes/text) ...
-        // await User.updateOne({ _id: userMongoId }, { $set: { embedding_pca: newEmbeddingPCA }});
-    } catch (e) {
-        console.warn('Embedding refresh failed (non-fatal):', e.message);
-    }
-}
-
-/** Deterministic LCG for stable pseudo-randomness */
+  try {
+    const { updateUserProfileEmbedding: updateEmbedding } = require('../utils/userEmbedding');
+    await updateEmbedding(userMongoId);
+  } catch (e) {
+    console.warn('Embedding refresh failed (non-fatal):', e.message);
+  }
+}/** Deterministic LCG for stable pseudo-randomness */
 function lcg(seed) {
     let s = seed >>> 0;
     return () => ((s = (1103515245 * s + 12345) >>> 0) / 4294967296);
