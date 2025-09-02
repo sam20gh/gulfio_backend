@@ -301,17 +301,17 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const queryStart = Date.now();
 
     // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
-    // OPTIMIZATION 2: Reduce time window to 8 hours for ultra-speed
+    // OPTIMIZATION 2: Reduce time window to 24 hours for good content variety
     // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
 
-    const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
         $match: {
           language: language,
-          publishedAt: { $gte: eightHoursAgo }
+          publishedAt: { $gte: twentyFourHoursAgo }
         }
       },
       {
@@ -406,90 +406,137 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
     const language = req.query.language || 'english';
     const userId = req.mongoUser.supabase_id;
+    const forceRefresh = req.query.noCache === 'true';
 
-    console.log(`⚡ Fast personalized for user ${userId}, page ${page}, limit ${limit}`);
+    console.log(`⚡ ULTRA-FAST personalized-fast for user ${userId}, page ${page}, limit ${limit}, forceRefresh: ${forceRefresh}`);
 
-    // Simple cache key
-    const cacheKey = `articles_fast_${userId}_page_${page}_limit_${limit}_lang_${language}`;
+    // Ultra-aggressive cache key with 15-minute slots for consistency with personalized-light
+    const fifteenMinSlot = Math.floor(Date.now() / (15 * 60 * 1000)); // 15-minute cache slots
+    const cacheKey = `articles_ultrafast_page_${language}_${page}_${limit}_${fifteenMinSlot}`;
 
     // Cache check
     let cached;
-    try {
-      cached = await redis.get(cacheKey);
-      if (!req.query.noCache && cached) {
-        console.log(`⚡ Fast cache hit in ${Date.now() - startTime}ms`);
-        return res.json(JSON.parse(cached));
-      }
-    } catch (err) {
-      console.error('⚠️ Redis get error:', err.message);
-    }
-
-    // Get user preferences quickly
-    const user = await User.findOne({ supabase_id: userId }, 'liked_articles disliked_articles').lean();
-
-    // Fast query: recent articles, exclude dislikes - populate source data
-    const excludeIds = user?.disliked_articles || [];
-    const articles = await Article.find({
-      language,
-      _id: { $nin: excludeIds },
-      publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
-    })
-      .populate('sourceId', 'name icon groupName') // Populate source data
-      .sort({ publishedAt: -1, viewCount: -1 })
-      .limit(limit * 5) // Get more articles to allow for source group filtering and pagination
-      .lean();
-
-    // Simple enhancement with source data
-    const enhancedArticles = articles.map(article => ({
-      ...article,
-      fetchId: new mongoose.Types.ObjectId().toString(),
-      isFast: true,
-      engagementScore: calculateEngagementScore(article),
-      // Extract source info from populated data
-      sourceName: article.sourceId?.name || 'Unknown Source',
-      sourceIcon: article.sourceId?.icon || null,
-      sourceGroupName: article.sourceId?.groupName || null
-    }));
-
-    // Apply pagination with source group limiting
-    const startIndex = (page - 1) * limit;
-    let skipped = 0;
-    let limitedArticles = [];
-    const sourceGroupCounts = {};
-
-    for (let i = 0; i < enhancedArticles.length && limitedArticles.length < limit; i++) {
-      const article = enhancedArticles[i];
-      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-
-      // Skip articles until we reach the start index for this page
-      if (skipped < startIndex) {
-        skipped++;
-        continue;
-      }
-
-      // Check if adding this article would exceed the source group limit for this page
-      const currentCount = sourceGroupCounts[sourceGroup] || 0;
-      if (currentCount < 2) {
-        limitedArticles.push(article);
-        sourceGroupCounts[sourceGroup] = currentCount + 1;
+    if (!forceRefresh) {
+      try {
+        cached = await redis.get(cacheKey);
+        if (cached) {
+          console.log(`⚡ ULTRA-FAST cache hit in ${Date.now() - startTime}ms`);
+          return res.json(JSON.parse(cached));
+        }
+      } catch (err) {
+        console.error('⚠️ Redis get error:', err.message);
       }
     }
 
-    console.log(`⚡ Fast personalized: Selected ${limitedArticles.length} articles from ${enhancedArticles.length} candidates (max 2 per source group)`);
+    console.log(`🔍 ULTRA-FAST: Starting aggregation query for page ${page}, ${language} language`);
+    const queryStart = Date.now();
 
-    // Cache for 10 minutes
+    // OPTIMIZATION 1: Use same ultra-fast aggregation as personalized-light
+    // OPTIMIZATION 2: Use 24-hour window for good content variety
+    // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
+
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const skip = (page - 1) * limit;
+
+    const articles = await Article.aggregate([
+      {
+        // Stage 1: Match with optimized filter (use compound index)
+        $match: {
+          language: language,
+          publishedAt: { $gte: twentyFourHoursAgo }
+        }
+      },
+      {
+        // Stage 2: Sort BEFORE limiting for better performance
+        $sort: { publishedAt: -1 }
+      },
+      {
+        // Stage 3: Skip for pagination
+        $skip: skip
+      },
+      {
+        // Stage 4: Limit for this page
+        $limit: limit
+      },
+      {
+        // Stage 5: Add performance markers without source lookup
+        $addFields: {
+          isFast: { $literal: true },
+          fetchedAt: { $literal: new Date() },
+          isRefreshed: { $literal: forceRefresh },
+          fetchId: { $literal: new mongoose.Types.ObjectId().toString() },
+          page: { $literal: page }
+        }
+      },
+      {
+        // Stage 6: Project only essential fields for maximum speed
+        $project: {
+          title: 1,
+          content: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          likedBy: 1,
+          dislikedBy: 1,
+          sourceId: 1, // Let client handle source resolution for speed
+          isFast: 1,
+          fetchedAt: 1,
+          isRefreshed: 1,
+          fetchId: 1,
+          page: 1
+        }
+      }
+    ]);
+
+    console.log(`⚡ ULTRA-FAST DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles for page ${page}`);
+
+    // OPTIMIZATION 4: Skip source grouping for ultra-speed - return articles directly
+    const totalTime = Date.now() - startTime;
+    console.log(`🚀 ULTRA-FAST personalized-fast complete in ${totalTime}ms - ${articles.length} articles (page ${page}, no source grouping for speed)`);
+
+    // OPTIMIZATION 5: 15-minute cache for consistency with personalized-light
     try {
-      await redis.set(cacheKey, JSON.stringify(limitedArticles), 'EX', 600);
+      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 900); // 15 min cache
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
 
-    console.log(`⚡ Fast personalized complete in ${Date.now() - startTime}ms - ${limitedArticles.length} articles`);
-    res.json(limitedArticles);
+    // Add performance headers for monitoring
+    res.setHeader('X-Performance-Time', totalTime);
+    res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
+    res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup-pagination');
+    res.setHeader('X-Page', page);
+
+    res.json(articles);
 
   } catch (error) {
-    console.error('❌ Fast personalized error:', error);
-    res.status(500).json({ error: 'Fast personalized error', message: error.message });
+    const errorTime = Date.now() - startTime;
+    console.error(`❌ ULTRA-FAST personalized-fast error in ${errorTime}ms:`, error);
+
+    // Fallback to basic query if aggregation fails
+    console.log(`🔄 Fallback query for page ${page}...`);
+    try {
+      const skip = (page - 1) * limit;
+      const fallbackArticles = await Article.find({
+        language: language,
+        publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
+      })
+        .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+        .sort({ publishedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+      console.log(`🔄 Fallback completed with ${fallbackArticles.length} articles for page ${page}`);
+      res.json(fallbackArticles);
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+      res.status(500).json({ error: 'Ultra-fast personalized-fast error', message: error.message });
+    }
   }
 });
 
