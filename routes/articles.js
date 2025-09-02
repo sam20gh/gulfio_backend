@@ -181,91 +181,260 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 
 // GET: Fast personalized fallback (simplified algorithm)
 // GET: Ultra-fast personalized articles with source population (for first page)
+// articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
+//   const startTime = Date.now();
+//   try {
+//     const userId = req.mongoUser.supabase_id;
+//     const language = req.query.language || 'english';
+//     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+//     const forceRefresh = req.query.noCache === 'true';
+
+//     console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+
+//     // If force refresh is requested, clear this user's cache first
+//     if (forceRefresh) {
+//       try {
+//         const userCacheKeys = await redis.keys(`articles_*${userId}*`);
+//         if (userCacheKeys.length > 0) {
+//           await redis.del(userCacheKeys);
+//           console.log(`🧹 Force refresh: cleared ${userCacheKeys.length} cache keys for user ${userId}`);
+//         }
+//       } catch (cacheError) {
+//         console.error('⚠️ Error clearing user cache:', cacheError.message);
+//       }
+//     }
+
+//     // Mark user as active for cache warming (temporarily disabled)
+//     // cacheWarmer.markUserActive(userId);
+
+//     // Check warm cache first (extend cache time for better performance)
+//     const cacheKey = `articles_light_${language}_${limit}`;
+//     let cached;
+//     try {
+//       cached = await redis.get(cacheKey);
+//       if (cached && !req.query.noCache) {
+//         const result = JSON.parse(cached);
+//         console.log(`🚀 Light cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
+//         return res.json(result);
+//       }
+//     } catch (err) {
+//       console.error('⚠️ Redis get error:', err.message);
+//     }
+
+//     console.log(`🔍 Light endpoint: Starting DB query for ${language} language`);
+//     const queryStart = Date.now();
+
+//     // Fast query with source population - reduced to 24 hours for better performance
+//     const articles = await Article.find({
+//       language,
+//       publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours (reduced from 48)
+//     })
+//       .populate('sourceId', 'name icon groupName') // Populate source data immediately
+//       .sort({ publishedAt: -1 }) // Remove viewCount from sort for better performance 
+//       .limit(limit * 2) // Reduce multiplier from 3 to 2
+//       .lean();
+
+//     console.log(`⏱️ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+
+//     // Transform articles with pre-populated source data
+//     const response = articles.map(article => ({
+//       ...article,
+//       fetchId: new mongoose.Types.ObjectId().toString(),
+//       isLight: true,
+//       fetchedAt: new Date().toISOString(), // Add timestamp to track freshness
+//       isRefreshed: forceRefresh, // Flag to indicate if this was a forced refresh
+//       // Extract source info from populated data
+//       sourceName: article.sourceId?.name || 'Unknown Source',
+//       sourceIcon: article.sourceId?.icon || null,
+//       sourceGroupName: article.sourceId?.groupName || null
+//     }));
+
+//     // Limit to max 2 articles per source group
+//     const limitedResponse = limitArticlesPerSourceGroup(response, 2).slice(0, limit);
+//     console.log(`🔀 Limited from ${response.length} to ${limitedResponse.length} articles (max 2 per source group)`);
+
+//     // Cache for 5 minutes only (fresh content)
+//     try {
+//       await redis.set(cacheKey, JSON.stringify(limitedResponse), 'EX', 300);
+//     } catch (err) {
+//       console.error('⚠️ Redis set error:', err.message);
+//     }
+
+//     console.log(`🚀 Light personalized complete in ${Date.now() - startTime}ms - ${limitedResponse.length} articles`);
+//     res.json(limitedResponse);
+
+//   } catch (error) {
+//     console.error('❌ Light personalized error:', error);
+//     res.status(500).json({ error: 'Light personalized error', message: error.message });
+//   }
+// });
 articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
+
   try {
     const userId = req.mongoUser.supabase_id;
     const language = req.query.language || 'english';
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
     const forceRefresh = req.query.noCache === 'true';
 
-    console.log(`🚀 Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+    console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
 
-    // If force refresh is requested, clear this user's cache first
-    if (forceRefresh) {
-      try {
-        const userCacheKeys = await redis.keys(`articles_*${userId}*`);
-        if (userCacheKeys.length > 0) {
-          await redis.del(userCacheKeys);
-          console.log(`🧹 Force refresh: cleared ${userCacheKeys.length} cache keys for user ${userId}`);
-        }
-      } catch (cacheError) {
-        console.error('⚠️ Error clearing user cache:', cacheError.message);
-      }
-    }
+    // Check cache first with better cache key
+    const hourSlot = Math.floor(Date.now() / (60 * 60 * 1000)); // Hourly cache slots
+    const cacheKey = `articles_light_optimized_${language}_${limit}_${hourSlot}`;
 
-    // Mark user as active for cache warming (temporarily disabled)
-    // cacheWarmer.markUserActive(userId);
-
-    // Check warm cache first (extend cache time for better performance)
-    const cacheKey = `articles_light_${language}_${limit}`;
     let cached;
-    try {
-      cached = await redis.get(cacheKey);
-      if (cached && !req.query.noCache) {
-        const result = JSON.parse(cached);
-        console.log(`🚀 Light cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
-        return res.json(result);
+    if (!forceRefresh) {
+      try {
+        cached = await redis.get(cacheKey);
+        if (cached) {
+          const result = JSON.parse(cached);
+          console.log(`⚡ OPTIMIZED cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
+          return res.json(result);
+        }
+      } catch (err) {
+        console.error('⚠️ Redis get error:', err.message);
       }
-    } catch (err) {
-      console.error('⚠️ Redis get error:', err.message);
     }
 
-    console.log(`🔍 Light endpoint: Starting DB query for ${language} language`);
+    console.log(`🔍 OPTIMIZED: Starting aggregation query for ${language} language`);
     const queryStart = Date.now();
 
-    // Fast query with source population - reduced to 24 hours for better performance
-    const articles = await Article.find({
-      language,
-      publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours (reduced from 48)
-    })
-      .populate('sourceId', 'name icon groupName') // Populate source data immediately
-      .sort({ publishedAt: -1 }) // Remove viewCount from sort for better performance 
-      .limit(limit * 2) // Reduce multiplier from 3 to 2
-      .lean();
+    // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
+    // OPTIMIZATION 2: Reduce time window to 12 hours for ultra-speed
+    // OPTIMIZATION 3: Use $lookup only when needed and optimize it
 
-    console.log(`⏱️ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
 
-    // Transform articles with pre-populated source data
-    const response = articles.map(article => ({
-      ...article,
-      fetchId: new mongoose.Types.ObjectId().toString(),
-      isLight: true,
-      fetchedAt: new Date().toISOString(), // Add timestamp to track freshness
-      isRefreshed: forceRefresh, // Flag to indicate if this was a forced refresh
-      // Extract source info from populated data
-      sourceName: article.sourceId?.name || 'Unknown Source',
-      sourceIcon: article.sourceId?.icon || null,
-      sourceGroupName: article.sourceId?.groupName || null
-    }));
+    const articles = await Article.aggregate([
+      {
+        // Stage 1: Match with optimized filter (use compound index)
+        $match: {
+          language: language,
+          publishedAt: { $gte: twelveHoursAgo }
+        }
+      },
+      {
+        // Stage 2: Sort BEFORE lookup for better performance
+        $sort: { publishedAt: -1 }
+      },
+      {
+        // Stage 3: Limit early to reduce lookup operations
+        $limit: limit * 2
+      },
+      {
+        // Stage 4: Optimized lookup with only required fields
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'sourceData',
+          pipeline: [
+            {
+              $project: {
+                name: 1,
+                icon: 1,
+                groupName: 1
+              }
+            }
+          ]
+        }
+      },
+      {
+        // Stage 5: Unwind and add source fields directly
+        $addFields: {
+          sourceInfo: { $arrayElemAt: ['$sourceData', 0] },
+          sourceName: { $arrayElemAt: ['$sourceData.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$sourceData.icon', 0] },
+          sourceGroupName: { $arrayElemAt: ['$sourceData.groupName', 0] }
+        }
+      },
+      {
+        // Stage 6: Project final fields (remove unnecessary data)
+        $project: {
+          title: 1,
+          content: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          likedBy: 1,
+          dislikedBy: 1,
+          sourceId: 1,
+          sourceName: 1,
+          sourceIcon: 1,
+          sourceGroupName: 1,
+          // Add performance markers
+          isLight: { $literal: true },
+          fetchedAt: { $literal: new Date() },
+          isRefreshed: { $literal: forceRefresh },
+          fetchId: { $literal: new mongoose.Types.ObjectId().toString() }
+        }
+      }
+    ]);
 
-    // Limit to max 2 articles per source group
-    const limitedResponse = limitArticlesPerSourceGroup(response, 2).slice(0, limit);
-    console.log(`🔀 Limited from ${response.length} to ${limitedResponse.length} articles (max 2 per source group)`);
+    console.log(`⚡ OPTIMIZED DB aggregation completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
 
-    // Cache for 5 minutes only (fresh content)
+    // OPTIMIZATION 4: Simple source group limiting (faster than complex grouping)
+    const limitedResponse = [];
+    const sourceGroupCounts = new Map();
+
+    for (const article of articles) {
+      const sourceGroup = article.sourceGroupName || 'unknown';
+      const count = sourceGroupCounts.get(sourceGroup) || 0;
+
+      if (count < 2 && limitedResponse.length < limit) {
+        limitedResponse.push(article);
+        sourceGroupCounts.set(sourceGroup, count + 1);
+      }
+
+      if (limitedResponse.length >= limit) break;
+    }
+
+    console.log(`🔀 OPTIMIZED: Limited from ${articles.length} to ${limitedResponse.length} articles (max 2 per source group)`);
+
+    // OPTIMIZATION 5: Longer cache with hourly slots
     try {
-      await redis.set(cacheKey, JSON.stringify(limitedResponse), 'EX', 300);
+      await redis.set(cacheKey, JSON.stringify(limitedResponse), 'EX', 1800); // 30 min cache
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
 
-    console.log(`🚀 Light personalized complete in ${Date.now() - startTime}ms - ${limitedResponse.length} articles`);
+    const totalTime = Date.now() - startTime;
+    console.log(`🚀 OPTIMIZED Light personalized complete in ${totalTime}ms - ${limitedResponse.length} articles`);
+
+    // Add performance headers for monitoring
+    res.setHeader('X-Performance-Time', totalTime);
+    res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
+    res.setHeader('X-Optimization-Applied', 'aggregation-pipeline');
+
     res.json(limitedResponse);
 
   } catch (error) {
-    console.error('❌ Light personalized error:', error);
-    res.status(500).json({ error: 'Light personalized error', message: error.message });
+    const errorTime = Date.now() - startTime;
+    console.error(`❌ OPTIMIZED Light personalized error in ${errorTime}ms:`, error);
+
+    // Fallback to basic query if aggregation fails
+    console.log('🔄 Falling back to basic query...');
+    try {
+      const fallbackArticles = await Article.find({
+        language: req.query.language || 'english',
+        publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
+      })
+        .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+        .sort({ publishedAt: -1 })
+        .limit(limit)
+        .lean();
+
+      console.log(`🔄 Fallback completed with ${fallbackArticles.length} articles`);
+      res.json(fallbackArticles);
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+      res.status(500).json({ error: 'Optimized light personalized error', message: error.message });
+    }
   }
 });
 
