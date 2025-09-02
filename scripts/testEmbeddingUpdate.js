@@ -46,14 +46,14 @@ async function testEmbeddingUpdate() {
         // Test the embedding update
         console.log('\n🔄 Running embedding update...');
         const startTime = Date.now();
-        
+
         await updateUserProfileEmbedding(testUser._id);
-        
+
         const duration = Date.now() - startTime;
 
         // Check the results
         const updatedUser = await User.findById(testUser._id).select('embedding embedding_pca updatedAt');
-        
+
         const afterEmbedding = updatedUser.embedding?.length || 0;
         const afterPCA = updatedUser.embedding_pca?.length || 0;
 

@@ -11,7 +11,7 @@ const { Matrix } = require('ml-matrix');
 
 async function updateUserPCAEmbeddingsSimple() {
     let pcaModel = null;
-    
+
     try {
         console.log('🔌 Connecting to MongoDB...');
         await mongoose.connect(process.env.MONGO_URI, {
@@ -27,9 +27,9 @@ async function updateUserPCAEmbeddingsSimple() {
         const sampleArticles = await Article.find({
             embedding: { $exists: true, $ne: null, $size: 1536 }
         })
-        .select('embedding')
-        .limit(500) // Much smaller dataset for stability
-        .lean();
+            .select('embedding')
+            .limit(500) // Much smaller dataset for stability
+            .lean();
 
         if (sampleArticles.length < 50) {
             throw new Error('Not enough articles with embeddings for PCA');
@@ -40,7 +40,7 @@ async function updateUserPCAEmbeddingsSimple() {
         // Create matrix from embeddings
         const embeddings = sampleArticles.map(a => a.embedding);
         const matrix = new Matrix(embeddings);
-        
+
         // Train PCA model
         pcaModel = new PCA(matrix, { center: true, scale: false });
         console.log('✅ PCA model trained successfully');
@@ -68,7 +68,7 @@ async function updateUserPCAEmbeddingsSimple() {
         for (const user of usersWithEmbeddings) {
             try {
                 console.log(`🔄 Processing ${user.email || user._id}...`);
-                
+
                 // Convert embedding to PCA using our trained model
                 const inputMatrix = new Matrix([user.embedding]);
                 const pcaResult = pcaModel.predict(inputMatrix, { nComponents: 128 });
@@ -77,11 +77,11 @@ async function updateUserPCAEmbeddingsSimple() {
                 // Update user in database
                 await User.updateOne(
                     { _id: user._id },
-                    { 
-                        $set: { 
+                    {
+                        $set: {
                             embedding_pca: pcaEmbedding,
                             updatedAt: new Date()
-                        } 
+                        }
                     }
                 );
 

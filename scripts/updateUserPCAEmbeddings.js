@@ -36,22 +36,22 @@ async function updateUserPCAEmbeddings() {
         for (const user of usersWithEmbeddings) {
             try {
                 console.log(`\n🔄 Processing user ${successCount + errorCount + 1}/${usersWithEmbeddings.length}: ${user.email}`);
-                
+
                 // Convert embedding to PCA
                 const embedding_pca = await convertToPCAEmbedding(user.embedding);
-                
+
                 if (embedding_pca && embedding_pca.length > 0) {
                     // Update user with PCA embedding
                     await User.updateOne(
                         { _id: user._id },
-                        { 
-                            $set: { 
+                        {
+                            $set: {
                                 embedding_pca: embedding_pca,
                                 updatedAt: new Date()
-                            } 
+                            }
                         }
                     );
-                    
+
                     console.log(`✅ Successfully converted to ${embedding_pca.length}D PCA embedding`);
                     successCount++;
                 } else {

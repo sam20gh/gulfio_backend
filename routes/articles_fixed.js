@@ -66,12 +66,12 @@ async function clearArticlesCache() {
 
 /** Recompute the user's profile embedding after an interaction */
 async function updateUserProfileEmbedding(userMongoId) {
-  try {
-    const { updateUserProfileEmbedding: updateEmbedding } = require('../utils/userEmbedding');
-    await updateEmbedding(userMongoId);
-  } catch (e) {
-    console.warn('Embedding refresh failed (non-fatal):', e.message);
-  }
+    try {
+        const { updateUserProfileEmbedding: updateEmbedding } = require('../utils/userEmbedding');
+        await updateEmbedding(userMongoId);
+    } catch (e) {
+        console.warn('Embedding refresh failed (non-fatal):', e.message);
+    }
 }/** Deterministic LCG for stable pseudo-randomness */
 function lcg(seed) {
     let s = seed >>> 0;

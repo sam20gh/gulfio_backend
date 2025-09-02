@@ -13,7 +13,7 @@ const { initializePCAModel, convertToPCAEmbedding } = require('../utils/pcaEmbed
 async function updateUserEmbeddingFromActivities(userId) {
     try {
         console.log(`📊 Processing user: ${userId}`);
-        
+
         // Fetch the user
         const user = await User.findById(userId);
         if (!user) {
@@ -23,7 +23,7 @@ async function updateUserEmbeddingFromActivities(userId) {
 
         // Get all article IDs from user activities with weights
         const activityMap = new Map();
-        
+
         // Weight different activities differently
         const weights = {
             liked: 3.0,     // Strongest signal
@@ -61,10 +61,10 @@ async function updateUserEmbeddingFromActivities(userId) {
         // Handle disliked articles separately - we'll avoid these categories
         const dislikedCategories = new Set();
         if (user.disliked_articles && user.disliked_articles.length > 0) {
-            const dislikedArticles = await Article.find({ 
+            const dislikedArticles = await Article.find({
                 _id: { $in: user.disliked_articles }
             }).select('category').lean();
-            
+
             dislikedArticles.forEach(article => {
                 if (article.category) {
                     dislikedCategories.add(article.category);
@@ -77,12 +77,12 @@ async function updateUserEmbeddingFromActivities(userId) {
             console.log(`ℹ️ No positive activities found for user ${user.email || userId}`);
             await User.updateOne(
                 { _id: userId },
-                { 
-                    $set: { 
-                        embedding: [], 
+                {
+                    $set: {
+                        embedding: [],
                         embedding_pca: [],
                         disliked_categories: Array.from(dislikedCategories)
-                    } 
+                    }
                 }
             );
             return;
@@ -90,18 +90,18 @@ async function updateUserEmbeddingFromActivities(userId) {
 
         // Get articles with highest engagement scores (limit to most recent 30)
         const sortedActivities = Array.from(activityMap.entries())
-            .sort(([,a], [,b]) => b - a)
+            .sort(([, a], [, b]) => b - a)
             .slice(0, 30);
 
         const articleIds = sortedActivities.map(([id]) => new mongoose.Types.ObjectId(id));
 
         // Fetch articles
-        const articles = await Article.find({ 
+        const articles = await Article.find({
             _id: { $in: articleIds }
         })
-        .select('title content category publishedAt')
-        .sort({ publishedAt: -1 })
-        .lean();
+            .select('title content category publishedAt')
+            .sort({ publishedAt: -1 })
+            .lean();
 
         if (articles.length === 0) {
             console.log(`⚠️ No articles found for user activities: ${user.email || userId}`);
@@ -113,9 +113,9 @@ async function updateUserEmbeddingFromActivities(userId) {
         for (const article of articles) {
             const weight = activityMap.get(article._id.toString()) || 1.0;
             const importance = Math.max(1, Math.floor(weight));
-            
+
             const text = `${article.title} - ${article.content?.slice(0, 200) || ''}`;
-            
+
             // Repeat text based on weight for emphasis
             for (let i = 0; i < importance; i++) {
                 weightedTexts.push(text);
@@ -152,13 +152,13 @@ async function updateUserEmbeddingFromActivities(userId) {
         // Update user with both embeddings
         await User.updateOne(
             { _id: userId },
-            { 
-                $set: { 
+            {
+                $set: {
                     embedding: embedding,
                     embedding_pca: embedding_pca || [],
                     disliked_categories: Array.from(dislikedCategories),
                     updatedAt: new Date()
-                } 
+                }
             }
         );
 
@@ -205,7 +205,7 @@ async function updateAllUserEmbeddings() {
             try {
                 console.log(`\n🔄 Processing user ${successCount + errorCount + 1}/${usersWithEmptyEmbeddings.length}`);
                 const result = await updateUserEmbeddingFromActivities(user._id);
-                
+
                 if (result) {
                     successCount++;
                     console.log(`✅ Success: ${result.embedding}D embedding, ${result.embedding_pca}D PCA`);
