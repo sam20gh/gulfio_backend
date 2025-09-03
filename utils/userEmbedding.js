@@ -30,7 +30,7 @@ async function updateUserProfileEmbedding(userId) {
         };
 
         // 1. COLLECT FROM DIRECT USER ARRAYS (existing behavior)
-        
+
         // Collect liked articles (positive signal)
         if (user.liked_articles && user.liked_articles.length > 0) {
             for (const articleId of user.liked_articles) {
@@ -63,18 +63,18 @@ async function updateUserProfileEmbedding(userId) {
         }
 
         // 2. COLLECT FROM UserActivity RECORDS (new behavior)
-        
+
         // Get recent user activities from UserActivity collection
         const recentActivities = await UserActivity.find({
             userId: user.supabase_id, // UserActivity uses supabase_id
             articleId: { $exists: true, $ne: null },
-            timestamp: { 
+            timestamp: {
                 $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
             }
         })
-        .sort({ timestamp: -1 })
-        .limit(500) // Limit to most recent 500 activities
-        .lean();
+            .sort({ timestamp: -1 })
+            .limit(500) // Limit to most recent 500 activities
+            .lean();
 
         console.log(`📈 Found ${recentActivities.length} recent activities from UserActivity collection`);
 
@@ -82,7 +82,7 @@ async function updateUserProfileEmbedding(userId) {
         for (const activity of recentActivities) {
             const articleId = activity.articleId.toString();
             const currentWeight = activityMap.get(articleId) || 0;
-            
+
             let activityWeight = 0;
             switch (activity.eventType) {
                 case 'view':
@@ -106,7 +106,7 @@ async function updateUserProfileEmbedding(userId) {
                 default:
                     continue;
             }
-            
+
             // Use the highest weight for each article
             activityMap.set(articleId, Math.max(currentWeight, activityWeight));
         }
@@ -116,10 +116,10 @@ async function updateUserProfileEmbedding(userId) {
         // Track disliked categories for future filtering
         const dislikedCategories = new Set(user.disliked_categories || []);
         if (user.disliked_articles && user.disliked_articles.length > 0) {
-            const dislikedArticles = await Article.find({ 
+            const dislikedArticles = await Article.find({
                 _id: { $in: user.disliked_articles }
             }).select('category').lean();
-            
+
             dislikedArticles.forEach(article => {
                 if (article.category) {
                     dislikedCategories.add(article.category);
@@ -132,13 +132,13 @@ async function updateUserProfileEmbedding(userId) {
             console.log(`ℹ️ No activities found for user ${user.email || userId}, resetting embeddings`);
             await User.updateOne(
                 { _id: user._id },
-                { 
-                    $set: { 
-                        embedding: [], 
+                {
+                    $set: {
+                        embedding: [],
                         embedding_pca: [],
                         disliked_categories: Array.from(dislikedCategories),
                         updatedAt: new Date()
-                    } 
+                    }
                 }
             );
             return;
@@ -146,7 +146,7 @@ async function updateUserProfileEmbedding(userId) {
 
         // Get top activities (most recent 30 with highest weights)
         const sortedActivities = Array.from(activityMap.entries())
-            .sort(([,a], [,b]) => b - a)
+            .sort(([, a], [, b]) => b - a)
             .slice(0, 30);
 
         const articleIds = sortedActivities.map(([id]) => new mongoose.Types.ObjectId(id));
@@ -169,9 +169,9 @@ async function updateUserProfileEmbedding(userId) {
         for (const article of articles) {
             const weight = activityMap.get(article._id.toString()) || 1.0;
             const importance = Math.max(1, Math.floor(weight));
-            
+
             const text = `${article.title} - ${article.content?.slice(0, 200) || ''}`;
-            
+
             // Repeat text based on weight for emphasis
             for (let i = 0; i < importance; i++) {
                 weightedTexts.push(text);
@@ -206,18 +206,18 @@ async function updateUserProfileEmbedding(userId) {
         // Update user with both embeddings
         await User.updateOne(
             { _id: user._id },
-            { 
-                $set: { 
+            {
+                $set: {
                     embedding: embedding,
                     embedding_pca: embedding_pca || [],
                     disliked_categories: Array.from(dislikedCategories),
                     updatedAt: new Date()
-                } 
+                }
             }
         );
 
         console.log(`✅ Updated embeddings for user ${user.email || userId}`);
-        
+
     } catch (error) {
         console.error(`❌ Error updating embedding for user ${userId}:`, error);
         throw error;
