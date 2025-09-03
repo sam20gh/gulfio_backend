@@ -177,6 +177,136 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 // GET: Fast personalized fallback (simplified algorithm)
 // GET: Ultra-fast personalized articles with source population (for first page)
 
+// articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
+//   const startTime = Date.now();
+
+//   try {
+//     const userId = req.mongoUser.supabase_id;
+//     const language = req.query.language || 'english';
+//     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+//     const forceRefresh = req.query.noCache === 'true';
+
+//     console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+
+//     // Check cache first with ultra-aggressive cache key (every 30 minutes)
+//     const thirtyMinSlot = Math.floor(Date.now() / (30 * 60 * 1000)); // 30-minute cache slots
+//     const cacheKey = `articles_ultrafast_${language}_${limit}_${thirtyMinSlot}`;
+
+//     let cached;
+//     if (!forceRefresh) {
+//       try {
+//         cached = await redis.get(cacheKey);
+//         if (cached) {
+//           const result = JSON.parse(cached);
+//           console.log(`⚡ OPTIMIZED cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
+//           return res.json(result);
+//         }
+//       } catch (err) {
+//         console.error('⚠️ Redis get error:', err.message);
+//       }
+//     }
+
+//     console.log(`🔍 OPTIMIZED: Starting aggregation query for ${language} language`);
+//     const queryStart = Date.now();
+
+//     // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
+//     // OPTIMIZATION 2: Reduce time window to 24 hours for good content variety
+//     // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
+
+//     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+//     const articles = await Article.aggregate([
+//       {
+//         // Stage 1: Match with optimized filter (use compound index)
+//         $match: {
+//           language: language,
+//           publishedAt: { $gte: twentyFourHoursAgo }
+//         }
+//       },
+//       {
+//         // Stage 2: Sort BEFORE limiting for better performance
+//         $sort: { publishedAt: -1 }
+//       },
+//       {
+//         // Stage 3: Early limit for maximum speed - skip source lookup entirely
+//         $limit: limit
+//       },
+//       {
+//         // Stage 4: Add performance markers without source lookup
+//         $addFields: {
+//           isLight: { $literal: true },
+//           fetchedAt: { $literal: new Date() },
+//           isRefreshed: { $literal: forceRefresh },
+//           fetchId: { $literal: new mongoose.Types.ObjectId().toString() }
+//         }
+//       },
+//       {
+//         // Stage 5: Project only essential fields for maximum speed
+//         $project: {
+//           title: 1,
+//           content: 1,
+//           url: 1,
+//           category: 1,
+//           publishedAt: 1,
+//           image: 1,
+//           viewCount: 1,
+//           likes: 1,
+//           dislikes: 1,
+//           likedBy: 1,
+//           dislikedBy: 1,
+//           sourceId: 1, // Let client handle source resolution for speed
+//           isLight: 1,
+//           fetchedAt: 1,
+//           isRefreshed: 1,
+//           fetchId: 1
+//         }
+//       }
+//     ]);
+
+//     console.log(`⚡ ULTRA-FAST DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+
+//     // OPTIMIZATION 4: Skip source grouping for ultra-speed - return articles directly
+//     const totalTime = Date.now() - startTime;
+//     console.log(`🚀 ULTRA-FAST Light personalized complete in ${totalTime}ms - ${articles.length} articles (no source grouping)`);
+
+//     // OPTIMIZATION 5: Shorter cache for fresher content at ultra-speed
+//     try {
+//       await redis.set(cacheKey, JSON.stringify(articles), 'EX', 900); // 15 min cache for speed
+//     } catch (err) {
+//       console.error('⚠️ Redis set error:', err.message);
+//     }
+
+//     // Add performance headers for monitoring
+//     res.setHeader('X-Performance-Time', totalTime);
+//     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
+//     res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup');
+
+//     res.json(articles);
+
+//   } catch (error) {
+//     const errorTime = Date.now() - startTime;
+//     console.error(`❌ OPTIMIZED Light personalized error in ${errorTime}ms:`, error);
+
+//     // Fallback to basic query if aggregation fails
+//     console.log('🔄 Falling back to basic query...');
+//     try {
+//       const fallbackArticles = await Article.find({
+//         language: req.query.language || 'english',
+//         publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
+//       })
+//         .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+//         .sort({ publishedAt: -1 })
+//         .limit(limit)
+//         .lean();
+
+//       console.log(`🔄 Fallback completed with ${fallbackArticles.length} articles`);
+//       res.json(fallbackArticles);
+//     } catch (fallbackError) {
+//       console.error('❌ Fallback also failed:', fallbackError);
+//       res.status(500).json({ error: 'Optimized light personalized error', message: error.message });
+//     }
+//   }
+// });
 articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
 
@@ -188,9 +318,15 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
 
-    // Check cache first with ultra-aggressive cache key (every 30 minutes)
+    // Fetch user's preferred categories/sources for semi-personalization
+    const user = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
+    const preferredCategories = user?.preferred_categories || [];
+    const preferredSources = user?.preferred_sources || []; // Assuming this field exists or add it to User model
+
+    // Enhanced cache key: now user-specific with preferences hash for invalidation
+    const prefsHash = simpleHash(JSON.stringify({ cats: preferredCategories, srcs: preferredSources }));
     const thirtyMinSlot = Math.floor(Date.now() / (30 * 60 * 1000)); // 30-minute cache slots
-    const cacheKey = `articles_ultrafast_${language}_${limit}_${thirtyMinSlot}`;
+    const cacheKey = `articles_ultrafast_${userId}_${language}_${limit}_${prefsHash}_${thirtyMinSlot}`;
 
     let cached;
     if (!forceRefresh) {
@@ -206,22 +342,32 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       }
     }
 
-    console.log(`🔍 OPTIMIZED: Starting aggregation query for ${language} language`);
+    console.log(`🔍 OPTIMIZED: Starting aggregation query for ${language} language with prefs: cats=${preferredCategories.length}, srcs=${preferredSources.length}`);
     const queryStart = Date.now();
 
     // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
     // OPTIMIZATION 2: Reduce time window to 24 hours for good content variety
     // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
+    // NEW: Semi-personalization via preferred categories/sources in match stage
 
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const matchFilter = {
+      language: language,
+      publishedAt: { $gte: twentyFourHoursAgo }
+    };
+
+    // Add personalization filters if preferences exist
+    if (preferredCategories.length > 0) {
+      matchFilter.category = { $in: preferredCategories.slice(0, 5) }; // Limit to top 5 for speed
+    }
+    if (preferredSources.length > 0) {
+      matchFilter.sourceId = { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) }; // Assuming source IDs are ObjectIds
+    }
 
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
-        $match: {
-          language: language,
-          publishedAt: { $gte: twentyFourHoursAgo }
-        }
+        $match: matchFilter
       },
       {
         // Stage 2: Sort BEFORE limiting for better performance
@@ -237,7 +383,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           isLight: { $literal: true },
           fetchedAt: { $literal: new Date() },
           isRefreshed: { $literal: forceRefresh },
-          fetchId: { $literal: new mongoose.Types.ObjectId().toString() }
+          fetchId: { $literal: new mongoose.Types.ObjectId().toString() },
+          isPersonalized: { $literal: preferredCategories.length > 0 || preferredSources.length > 0 }
         }
       },
       {
@@ -258,7 +405,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           isLight: 1,
           fetchedAt: 1,
           isRefreshed: 1,
-          fetchId: 1
+          fetchId: 1,
+          isPersonalized: 1
         }
       }
     ]);
@@ -280,6 +428,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
     res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup');
+    res.setHeader('X-Personalized', preferredCategories.length > 0 || preferredSources.length > 0 ? 'semi' : 'none');
 
     res.json(articles);
 
@@ -287,7 +436,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const errorTime = Date.now() - startTime;
     console.error(`❌ OPTIMIZED Light personalized error in ${errorTime}ms:`, error);
 
-    // Fallback to basic query if aggregation fails
+    // Fallback to basic query if aggregation fails (without personalization for speed)
     console.log('🔄 Falling back to basic query...');
     try {
       const fallbackArticles = await Article.find({
