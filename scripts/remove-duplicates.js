@@ -5,17 +5,14 @@
  * This should be run after updating the scraper to fix duplicate issues
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const mongoose = require('mongoose');
 const Article = require('../models/Article');
 
 async function removeDuplicates() {
     try {
         console.log('🔗 Connecting to MongoDB...');
-        await mongoose.connect(process.env.MONGO_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true
-        });
+        await mongoose.connect(process.env.MONGO_URI);
         console.log('✅ Connected to MongoDB');
 
         console.log('🔍 Finding duplicate URLs...');
