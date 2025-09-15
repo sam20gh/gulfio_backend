@@ -32,9 +32,21 @@ const app = express();
 
 const createIndexes = async () => {
     try {
+        // Core indexes for article queries
         await Article.collection.createIndex({ category: 1, publishedAt: -1 });
         await Article.collection.createIndex({ publishedAt: -1 });
-        console.log('✅ MongoDB indexes created');
+        await Article.collection.createIndex({ language: 1, publishedAt: -1 });
+
+        // Compound indexes for personalized queries
+        await Article.collection.createIndex({ language: 1, category: 1, publishedAt: -1 });
+        await Article.collection.createIndex({ language: 1, sourceId: 1, publishedAt: -1 });
+        await Article.collection.createIndex({ sourceId: 1, publishedAt: -1 });
+
+        // Additional performance indexes
+        await Article.collection.createIndex({ url: 1 }, { unique: true });
+        await Article.collection.createIndex({ viewCount: -1 });
+
+        console.log('✅ MongoDB indexes created successfully');
     } catch (error) {
         console.error('❌ Failed to create indexes:', error);
     }
@@ -68,12 +80,16 @@ app.use((req, res, next) => {
 });
 
 mongoose.connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 10000, // Reduced to 10 seconds for Cloud Run
-    socketTimeoutMS: 0, // No socket timeout for Cloud Run
-    connectTimeoutMS: 10000, // 10 seconds to establish connection
+    serverSelectionTimeoutMS: 30000, // Increased for dedicated cluster
+    socketTimeoutMS: 45000, // 45 seconds socket timeout for dedicated cluster
+    connectTimeoutMS: 30000, // 30 seconds to establish connection
     bufferCommands: false, // Disable buffering to fail fast
-    maxPoolSize: 5, // Reduced pool size for Cloud Run
-    minPoolSize: 1, // Maintain at least 1 socket connection
+    maxPoolSize: 10, // Increased pool size for dedicated cluster
+    minPoolSize: 2, // Maintain at least 2 socket connections
+    maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+    retryWrites: true, // Enable retry writes for better reliability
+    retryReads: true, // Enable retry reads for better reliability
+    heartbeatFrequencyMS: 10000, // Check server status every 10 seconds
 })
     .then(async () => {
         console.log('✅ Connected to MongoDB Atlas');
