@@ -79,12 +79,21 @@ async function clearArticlesCache() {
     // Clear all article-related caches
     const articleKeys = await redis.keys('articles_*');
     const servedKeys = await redis.keys('served_personalized_*');
-    const allKeys = [...articleKeys, ...servedKeys];
+    
+    // Also specifically target the main articles endpoint cache that QuickStartContent uses
+    const pageKeys = await redis.keys('articles_page_*');
+    
+    const allKeys = [...articleKeys, ...servedKeys, ...pageKeys];
+
+    console.log('🔍 Cache clear debug - Article keys found:', articleKeys.slice(0, 5), articleKeys.length > 5 ? `... and ${articleKeys.length - 5} more` : '');
+    console.log('🔍 Cache clear debug - Page keys found:', pageKeys.slice(0, 3), pageKeys.length > 3 ? `... and ${pageKeys.length - 3} more` : '');
+    console.log('🔍 Cache clear debug - Served keys found:', servedKeys.slice(0, 3), servedKeys.length > 3 ? `... and ${servedKeys.length - 3} more` : '');
 
     if (allKeys.length > 0) {
       await redis.del(allKeys);
       console.log('🧹 Cleared article caches:', allKeys.length, 'keys');
       console.log('🧹 Article keys cleared:', articleKeys.length);
+      console.log('🧹 Page keys cleared:', pageKeys.length);
       console.log('🧹 Served keys cleared:', servedKeys.length);
     } else {
       console.log('🧹 No article caches to clear');
@@ -2025,18 +2034,12 @@ articleRouter.get('/related/:id', async (req, res) => {
   }
 });
 
-// GET one - Must be last to avoid conflicts with specific routes
-articleRouter.get('/:id', async (req, res) => {
-  try {
-    const article = await Article.findById(req.params.id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
-    res.json(article);
-  } catch (err) {
-    console.error('GET /:id error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
+// Test endpoint to verify router is working
+articleRouter.get('/test-route', (req, res) => {
+  res.json({ message: 'Articles router is working!', timestamp: new Date().toISOString() });
 });
-// Cache clear endpoint - add this near the end of the file, before module.exports
+
+// Cache clear endpoint - MUST be before the generic /:id route
 articleRouter.post('/cache/clear', async (req, res) => {
   try {
     console.log('🧹 Manual cache clear requested');
@@ -2053,6 +2056,18 @@ articleRouter.post('/cache/clear', async (req, res) => {
       error: 'Failed to clear cache',
       message: error.message
     });
+  }
+});
+
+// GET one - Must be last to avoid conflicts with specific routes
+articleRouter.get('/:id', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+    res.json(article);
+  } catch (err) {
+    console.error('GET /:id error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
