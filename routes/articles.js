@@ -2036,6 +2036,25 @@ articleRouter.get('/:id', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+// Cache clear endpoint - add this near the end of the file, before module.exports
+articleRouter.post('/cache/clear', async (req, res) => {
+  try {
+    console.log('🧹 Manual cache clear requested');
+    await clearArticlesCache();
+    res.json({
+      success: true,
+      message: 'Article caches cleared successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Manual cache clear failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clear cache',
+      message: error.message
+    });
+  }
+});
 
 module.exports = articleRouter;
 
