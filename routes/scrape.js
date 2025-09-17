@@ -28,10 +28,55 @@ router.get('/hourly', validateApiKey, async (req, res) => {
         await scrapeAllSources('hourly');
         res.send('✅ Hourly scrape complete');
     } catch (err) {
-        console.error('❌ Daily scrape error:', err);
-        res.status(500).send('❌ Daily scrape failed');
+        console.error('❌ Hourly scrape error:', err);
+        res.status(500).send('❌ Hourly scrape failed');
     }
 });
+
+// GET endpoint for 3-hour scraping
+router.get('/3hours', validateApiKey, async (req, res) => {
+    try {
+        await scrapeAllSources('3hours');
+        res.send('✅ 3-hour scrape complete');
+    } catch (err) {
+        console.error('❌ 3-hour scrape error:', err);
+        res.status(500).send('❌ 3-hour scrape failed');
+    }
+});
+
+// GET endpoint for 6-hour scraping
+router.get('/6hours', validateApiKey, async (req, res) => {
+    try {
+        await scrapeAllSources('6hours');
+        res.send('✅ 6-hour scrape complete');
+    } catch (err) {
+        console.error('❌ 6-hour scrape error:', err);
+        res.status(500).send('❌ 6-hour scrape failed');
+    }
+});
+
+// GET endpoint for 9-hour scraping
+router.get('/9hours', validateApiKey, async (req, res) => {
+    try {
+        await scrapeAllSources('9hours');
+        res.send('✅ 9-hour scrape complete');
+    } catch (err) {
+        console.error('❌ 9-hour scrape error:', err);
+        res.status(500).send('❌ 9-hour scrape failed');
+    }
+});
+
+// GET endpoint for 12-hour scraping
+router.get('/12hours', validateApiKey, async (req, res) => {
+    try {
+        await scrapeAllSources('12hours');
+        res.send('✅ 12-hour scrape complete');
+    } catch (err) {
+        console.error('❌ 12-hour scrape error:', err);
+        res.status(500).send('❌ 12-hour scrape failed');
+    }
+});
+
 router.get('/daily', validateApiKey, async (req, res) => {
     try {
         await scrapeAllSources('daily');

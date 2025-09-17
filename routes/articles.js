@@ -79,10 +79,10 @@ async function clearArticlesCache() {
     // Clear all article-related caches
     const articleKeys = await redis.keys('articles_*');
     const servedKeys = await redis.keys('served_personalized_*');
-    
+
     // Also specifically target the main articles endpoint cache that QuickStartContent uses
     const pageKeys = await redis.keys('articles_page_*');
-    
+
     const allKeys = [...articleKeys, ...servedKeys, ...pageKeys];
 
     console.log('🔍 Cache clear debug - Article keys found:', articleKeys.slice(0, 5), articleKeys.length > 5 ? `... and ${articleKeys.length - 5} more` : '');
