@@ -44,6 +44,7 @@
     "docs:lint": "redocly lint openapi.yaml",
     "docs:watch": "redocly preview-docs openapi.yaml --watch",
     "start": "node server-working.js",
+    "test-source": "node test-source-types.js",
     "postinstall": "npx puppeteer browsers install chrome --path /usr/src/app/.cache/puppeteer || npx puppeteer browsers install chrome"
   },
   "devDependencies": {

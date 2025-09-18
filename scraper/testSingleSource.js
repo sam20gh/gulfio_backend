@@ -1,5 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
 const { fetchWithPuppeteer } = require('./fetchWithPuppeteer');
@@ -84,6 +85,188 @@ function normalizeImages(imgs, baseUrl) {
 }
 
 /**
+ * Test RSS feed parsing for a single RSS source
+ * @param {Object} source - Source document from MongoDB
+ * @returns {Object} Test results including extracted RSS data and any errors
+ */
+async function testRSSSource(source) {
+    console.log(`📡 Testing RSS feed: ${source.name}`);
+    console.log(`🔗 RSS URL: ${source.url}`);
+
+    const testResults = {
+        source: {
+            name: source.name,
+            url: source.url,
+            type: 'rss'
+        },
+        steps: [],
+        articles: [],
+        errors: [],
+        success: false
+    };
+
+    try {
+        // Step 1: Fetch RSS feed
+        testResults.steps.push('Fetching RSS feed...');
+        console.log('📥 Fetching RSS feed...');
+
+        const response = await axios.get(source.url, {
+            timeout: 15000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; RSS-Reader/1.0)',
+                'Accept': 'application/rss+xml, application/xml, text/xml'
+            }
+        });
+
+        testResults.steps.push(`✅ RSS feed fetched (${response.data.length} bytes)`);
+        console.log(`✅ RSS feed fetched (${response.data.length} bytes)`);
+
+        // Step 2: Parse XML
+        testResults.steps.push('Parsing XML content...');
+        console.log('🔍 Parsing XML content...');
+
+        const parser = new xml2js.Parser({
+            explicitArray: false,
+            ignoreAttrs: false,
+            mergeAttrs: true
+        });
+
+        const result = await parser.parseStringPromise(response.data);
+
+        // Support both RSS and Atom feeds
+        const feedType = result.rss ? 'RSS' : result.feed ? 'Atom' : 'Unknown';
+        testResults.steps.push(`✅ ${feedType} feed parsed successfully`);
+        console.log(`✅ ${feedType} feed parsed successfully`);
+
+        let items = [];
+        if (result.rss && result.rss.channel && result.rss.channel.item) {
+            items = Array.isArray(result.rss.channel.item) ? result.rss.channel.item : [result.rss.channel.item];
+        } else if (result.feed && result.feed.entry) {
+            items = Array.isArray(result.feed.entry) ? result.feed.entry : [result.feed.entry];
+        }
+
+        testResults.steps.push(`✅ Found ${items.length} items in feed`);
+        console.log(`✅ Found ${items.length} items in feed`);
+
+        if (items.length === 0) {
+            testResults.errors.push('No items found in RSS feed');
+            testResults.steps.push('❌ No items found in feed');
+            return testResults;
+        }
+
+        // Step 3: Process first 3 items
+        const testItems = items.slice(0, 3);
+        testResults.steps.push(`Processing first ${testItems.length} items...`);
+
+        for (let i = 0; i < testItems.length; i++) {
+            const item = testItems[i];
+            console.log(`🧪 Testing RSS item ${i + 1}`);
+
+            try {
+                // Extract title
+                let title = '';
+                if (feedType === 'RSS') {
+                    title = item.title || '';
+                } else if (feedType === 'Atom') {
+                    title = typeof item.title === 'object' ? item.title._ || item.title : item.title || '';
+                }
+                title = title.replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1').trim();
+
+                // Extract content
+                let content = '';
+                if (feedType === 'RSS') {
+                    content = item.description || item['content:encoded'] || '';
+                } else if (feedType === 'Atom') {
+                    content = item.content ? (typeof item.content === 'object' ? item.content._ || item.content : item.content) : item.summary || '';
+                }
+                content = content.replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1');
+
+                // Strip HTML tags from content for text length calculation
+                const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+                // Extract URL
+                let url = '';
+                if (feedType === 'RSS') {
+                    url = item.link || item.guid || '';
+                } else if (feedType === 'Atom') {
+                    url = typeof item.link === 'object' ? item.link.href : item.link || item.id || '';
+                }
+
+                // Extract publication date
+                let pubDate = '';
+                if (feedType === 'RSS') {
+                    pubDate = item.pubDate || item['dc:date'] || '';
+                } else if (feedType === 'Atom') {
+                    pubDate = item.published || item.updated || '';
+                }
+
+                // Extract images
+                let images = [];
+                if (feedType === 'RSS') {
+                    // Check for media:content, media:thumbnail, enclosure
+                    if (item['media:content']) {
+                        const mediaContent = Array.isArray(item['media:content']) ? item['media:content'] : [item['media:content']];
+                        images = images.concat(mediaContent.filter(m => m.url && m.medium === 'image').map(m => m.url));
+                    }
+                    if (item['media:thumbnail']) {
+                        const mediaThumbnail = Array.isArray(item['media:thumbnail']) ? item['media:thumbnail'] : [item['media:thumbnail']];
+                        images = images.concat(mediaThumbnail.filter(m => m.url).map(m => m.url));
+                    }
+                    if (item.enclosure && item.enclosure.type && item.enclosure.type.startsWith('image/')) {
+                        images.push(item.enclosure.url);
+                    }
+                }
+
+                // Look for images in content
+                const imgRegex = /<img[^>]+src="([^"]+)"/gi;
+                let match;
+                while ((match = imgRegex.exec(content)) !== null) {
+                    images.push(match[1]);
+                }
+
+                // Remove duplicates and clean images
+                const baseUrl = new URL(source.url).origin;
+                images = normalizeImages([...new Set(images)], baseUrl);
+
+                const articleData = {
+                    url: url || 'No URL found',
+                    title: title || 'No title found',
+                    content: textContent || 'No content found',
+                    htmlContent: content,
+                    images: images,
+                    pubDate: pubDate,
+                    contentLength: textContent.length,
+                    titleLength: title.length,
+                    imageCount: images.length
+                };
+
+                testResults.articles.push(articleData);
+                console.log(`📊 RSS Item ${i + 1} - Title: "${title.slice(0, 50)}...", Content: ${textContent.length} chars, Images: ${images.length}`);
+
+            } catch (itemError) {
+                const errorMsg = `Error processing RSS item ${i + 1}: ${itemError.message}`;
+                testResults.errors.push(errorMsg);
+                console.error(`❌ ${errorMsg}`);
+            }
+        }
+
+        testResults.steps.push(`✅ Completed processing ${testResults.articles.length} RSS items`);
+        testResults.success = testResults.articles.length > 0 && testResults.articles.some(a => a.title !== 'No title found');
+
+        console.log(`🏁 RSS test completed for ${source.name}`);
+        console.log(`📊 Results: ${testResults.articles.length} items processed, ${testResults.errors.length} errors`);
+
+        return testResults;
+
+    } catch (error) {
+        console.error(`❌ RSS test failed for ${source.name}:`, error);
+        testResults.errors.push(`RSS parsing failed: ${error.message}`);
+        testResults.steps.push('❌ RSS test failed during processing');
+        return testResults;
+    }
+}
+
+/**
  * Test scraping functionality for a single source
  * @param {string} sourceId - MongoDB ObjectId of the source to test
  * @returns {Object} Test results including extracted data and any errors
@@ -115,12 +298,21 @@ async function testSingleSource(sourceId) {
 
         console.log(`🎯 Testing source: ${source.name}`);
         console.log(`🔗 URL: ${source.url}`);
+        console.log(`📊 Type: ${source.type || 'html'}`);
+
+        // Check if this is an RSS source
+        if (source.type === 'rss') {
+            console.log('📡 RSS source detected, using RSS testing function...');
+            return await testRSSSource(source);
+        }
+
         console.log(`📊 Selectors - List: "${source.listSelector}", Link: "${source.linkSelector}", Title: "${source.titleSelector}", Content: "${source.contentSelector}"`);
 
         const testResults = {
             source: {
                 name: source.name,
                 url: source.url,
+                type: source.type || 'html',
                 selectors: {
                     listSelector: source.listSelector,
                     linkSelector: source.linkSelector,
