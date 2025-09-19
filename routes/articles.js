@@ -1846,7 +1846,7 @@ articleRouter.get('/feature', auth, async (req, res) => {
   }
 });
 
-// Headline (unchanged)
+// Breaking (unchanged)
 articleRouter.get('/headline', auth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -1868,12 +1868,12 @@ articleRouter.get('/headline', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find({ category: 'headline', language })
+    const articles = await Article.find({ category: 'breaking', language })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const totalHeadlineArticles = await Article.countDocuments({ category: 'headline', language });
+    const totalHeadlineArticles = await Article.countDocuments({ category: 'breaking', language });
 
     const response = {
       articles,
