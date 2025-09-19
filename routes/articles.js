@@ -1710,7 +1710,7 @@ articleRouter.get('/', async (req, res) => {
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   // Set a timeout for this specific route to prevent hanging
   req.setTimeout(10000); // 10 second timeout
-  
+
   try {
     const startTime = Date.now();
     const { action } = req.body;
@@ -1729,7 +1729,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
     // Use MongoDB transactions for atomic updates or fallback to sequential operations
     let updatedArticle;
-    
+
     try {
       // Use bulkWrite for better performance - combine pull and push in single operation
       const articleUpdate = await Article.bulkWrite([
@@ -1742,7 +1742,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
         {
           updateOne: {
             filter: { _id: articleId },
-            update: action === 'like' 
+            update: action === 'like'
               ? { $push: { likedBy: userId } }
               : { $push: { dislikedBy: userId } }
           }
@@ -1768,10 +1768,10 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
       // Get the updated article with current reaction counts
       updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy likes dislikes').lean();
-      
+
     } catch (bulkError) {
       console.error('Bulk write failed, falling back to individual operations:', bulkError);
-      
+
       // Fallback to individual operations if bulk write fails
       await Article.updateOne(
         { _id: articleId },
@@ -1780,7 +1780,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
       await Article.updateOne(
         { _id: articleId },
-        action === 'like' 
+        action === 'like'
           ? { $push: { likedBy: userId } }
           : { $push: { dislikedBy: userId } }
       );
@@ -1820,9 +1820,9 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     }
 
     // Respond immediately with the reaction data
-    res.json({ 
-      userReact: action, 
-      likes, 
+    res.json({
+      userReact: action,
+      likes,
       dislikes,
       processingTime // Include timing for debugging
     });
@@ -1832,7 +1832,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       try {
         // Clear cache asynchronously
         await clearArticlesCache();
-        
+
         // Recompute user embedding asynchronously (this is expensive)
         await updateUserProfileEmbedding(mongoUser._id);
       } catch (asyncError) {
@@ -1851,10 +1851,10 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       errorMessage: error.message,
       errorStack: error.stack?.split('\n').slice(0, 3).join('\n') // First 3 lines of stack trace
     });
-    
+
     // Don't leak internal error details in production
-    res.status(500).json({ 
-      message: 'Error reacting to article', 
+    res.status(500).json({
+      message: 'Error reacting to article',
       error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message,
       processingTime
     });
