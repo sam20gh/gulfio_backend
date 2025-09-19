@@ -1811,12 +1811,16 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     const processingTime = Date.now() - startTime;
     console.log(`✅ Like/dislike processed in ${processingTime}ms for user ${userId} on article ${articleId}`);
 
-    // Update the cached counts in the article document
-    if (updatedArticle.likes !== likes || updatedArticle.dislikes !== dislikes) {
-      Article.updateOne(
+    // Update the cached counts in the article document IMMEDIATELY (not fire-and-forget)
+    try {
+      await Article.updateOne(
         { _id: articleId },
         { $set: { likes, dislikes } }
-      ).exec(); // Fire and forget - don't wait for this
+      );
+      console.log(`✅ Article counts updated in database: likes=${likes}, dislikes=${dislikes}`);
+    } catch (updateError) {
+      console.error('⚠️ Failed to update article counts in database:', updateError);
+      // Don't fail the request, but log the error
     }
 
     // Respond immediately with the reaction data
