@@ -234,4 +234,52 @@ app.use('/api/puppeteer', puppeteerDebugRoutes);
 app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
 app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
+
+// Image proxy endpoint for SSL certificate issues
+app.get('/api/proxy-image', async (req, res) => {
+    try {
+        const { url } = req.query;
+        
+        if (!url) {
+            return res.status(400).json({ error: 'URL parameter is required' });
+        }
+        
+        // Security check: only allow specific domains
+        const allowedDomains = ['timesofdubai.ae', 'whatson.ae', 'khaleejtimes.com'];
+        const urlObj = new URL(url);
+        const isAllowed = allowedDomains.some(domain => urlObj.hostname.includes(domain));
+        
+        if (!isAllowed) {
+            return res.status(403).json({ error: 'Domain not allowed' });
+        }
+        
+        console.log('🔄 Proxying image request for:', url);
+        
+        const fetch = require('node-fetch');
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            timeout: 10000
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        // Set appropriate headers
+        res.set({
+            'Content-Type': response.headers.get('content-type') || 'image/jpeg',
+            'Cache-Control': 'public, max-age=3600',
+            'Access-Control-Allow-Origin': '*'
+        });
+        
+        // Pipe the image data
+        response.body.pipe(res);
+        
+    } catch (error) {
+        console.error('❌ Proxy image error:', error.message);
+        res.status(500).json({ error: 'Failed to proxy image', details: error.message });
+    }
+});
 module.exports = app;
