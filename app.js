@@ -239,22 +239,22 @@ app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
 app.get('/api/proxy-image', async (req, res) => {
     try {
         const { url } = req.query;
-        
+
         if (!url) {
             return res.status(400).json({ error: 'URL parameter is required' });
         }
-        
+
         // Security check: only allow specific domains
         const allowedDomains = ['timesofdubai.ae', 'whatson.ae', 'khaleejtimes.com'];
         const urlObj = new URL(url);
         const isAllowed = allowedDomains.some(domain => urlObj.hostname.includes(domain));
-        
+
         if (!isAllowed) {
             return res.status(403).json({ error: 'Domain not allowed' });
         }
-        
+
         console.log('🔄 Proxying image request for:', url);
-        
+
         const fetch = require('node-fetch');
         const response = await fetch(url, {
             headers: {
@@ -262,21 +262,21 @@ app.get('/api/proxy-image', async (req, res) => {
             },
             timeout: 10000
         });
-        
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-        
+
         // Set appropriate headers
         res.set({
             'Content-Type': response.headers.get('content-type') || 'image/jpeg',
             'Cache-Control': 'public, max-age=3600',
             'Access-Control-Allow-Origin': '*'
         });
-        
+
         // Pipe the image data
         response.body.pipe(res);
-        
+
     } catch (error) {
         console.error('❌ Proxy image error:', error.message);
         res.status(500).json({ error: 'Failed to proxy image', details: error.message });
