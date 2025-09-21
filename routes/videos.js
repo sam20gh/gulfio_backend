@@ -38,6 +38,9 @@ const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
 const { igdl } = require('btch-downloader');// Adjust the path as needed
 const NodeCache = require('node-cache');
+const redis = require('../utils/redis'); // Ensure Redis is set up
+const crypto = require('crypto');
+const mongoose = require('mongoose');
 const router = express.Router();
 
 // You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
@@ -94,6 +97,37 @@ function intelligentShuffle(reels, seed = Date.now()) {
     }
 
     return result;
+}
+
+// Add completion rate to scoring
+async function scoreReel(reel, userPrefs, isFresh = false) {
+    const now = new Date();
+    const userEmbedding = userPrefs.averageEmbedding;
+    const reelEmbedding = reel.embedding_pca || reel.embedding;
+
+    let similarity = 0;
+    if (userEmbedding && reelEmbedding) {
+        similarity = reel._searchScore || cosineSimilarity(userEmbedding, reelEmbedding);
+    }
+
+    const reelAge = now - new Date(reel.scrapedAt || reel.publishedAt);
+    const hoursAge = reelAge / (1000 * 60 * 60);
+    const freshnessBonus = hoursAge < 1 ? 0.5 : hoursAge < 24 ? 0.3 : hoursAge < 72 ? 0.1 : 0;
+    const recencyScore = Math.max(0, 1 - (hoursAge / 168));
+
+    const maxViews = 10000;
+    const engagementScore = Math.min(1, (reel.viewCount || 0) / maxViews) * 0.3 +
+        Math.min(1, (reel.likes || 0) / 1000) * 0.2 +
+        (reel.completionRate || 0) * 0.5; // New: completion rate
+
+    const finalScore = (
+        similarity * 0.3 +
+        recencyScore * 0.3 +
+        engagementScore * 0.3 +
+        (isFresh ? freshnessBonus : 0) * 0.1
+    );
+
+    return { ...reel, similarity, recencyScore, engagementScore, finalScore, isFresh };
 }
 
 // Helper: Get user preferences based on interaction history
@@ -186,279 +220,127 @@ async function getUserPreferences(userId) {
     }
 }
 
-// Helper: Get personalized reels for a user
+// Helper: Get personalized reels for a user with Atlas Search
 async function getPersonalizedReels(req, res, userId, limit, page, skip) {
     try {
         console.log(`🎯 Getting personalized reels for user ${userId}`);
+        const sessionId = req.query.sessionId || crypto.randomUUID(); // For dynamism
+        const cacheKey = `reels_personalized_${userId}_page_${page}_limit_${limit}_session_${sessionId}`;
+
+        // Check Redis cache
+        let cached;
+        try {
+            cached = await redis.get(cacheKey);
+        } catch (err) {
+            console.error('⚠️ Redis get error:', err.message);
+        }
+
+        if (cached) {
+            console.log('🧠 Returning cached reels');
+            return res.json(JSON.parse(cached));
+        }
 
         // Get user preferences
         const userPrefs = await getUserPreferences(userId);
-        console.log(`👤 User preferences: ${userPrefs.sourcePreferences.length} sources, ${userPrefs.categoryPreferences.length} categories, ${userPrefs.totalInteractions} interactions`);
-
-        // Get user's recently viewed reels to avoid duplicates
-        const recentlyViewedIds = await Reel.find({
-            viewedBy: userId
-        }).select('_id').sort({ updatedAt: -1 }).limit(50).lean().then(reels =>
-            reels.map(r => r._id)
-        );
-
-        const now = new Date();
-        const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-        // Strategy based on user interaction history
-        let strategy = 'discovery'; // Default for new users
-
-        if (userPrefs.totalInteractions > 10) {
-            strategy = 'balanced'; // Mix of personalized and discovery
-        }
-        if (userPrefs.totalInteractions > 50) {
-            strategy = 'personalized'; // Heavily personalized
-        }
-
-        console.log(`🎯 Using strategy: ${strategy} for user with ${userPrefs.totalInteractions} interactions`);
+        const userEmbedding = userPrefs.averageEmbedding?.slice(0, 128); // Ensure 128D
+        const lastSeenReelIds = await UserActivity.find({ userId, eventType: 'view' })
+            .sort({ timestamp: -1 })
+            .limit(100)
+            .distinct('articleId');
 
         let reels = [];
-
-        if (strategy === 'personalized' && userPrefs.averageEmbedding) {
-            // Use embedding-based recommendations for experienced users
-            const [personalizedReels, freshReels, trendingReels, randomReels] = await Promise.all([
-                // 50% Personalized based on user embedding
-                getEmbeddingBasedReels(userPrefs.averageEmbedding, Math.ceil(limit * 0.5), recentlyViewedIds),
-                // 25% Fresh content (last 24 hours)
-                Reel.find({
-                    scrapedAt: { $gte: oneDayAgo },
-                    _id: { $nin: recentlyViewedIds }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ scrapedAt: -1 })
-                    .limit(Math.ceil(limit * 0.25))
-                    .lean(),
-                // 15% Trending content
-                Reel.find({
-                    scrapedAt: { $gte: oneWeekAgo },
-                    _id: { $nin: recentlyViewedIds },
-                    $expr: { $gt: [{ $add: ['$likes', { $multiply: ['$viewCount', 0.1] }] }, 10] }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ likes: -1, viewCount: -1 })
-                    .limit(Math.ceil(limit * 0.15))
-                    .lean(),
-                // 10% Random for serendipity
-                Reel.aggregate([
-                    { $match: { _id: { $nin: recentlyViewedIds } } },
-                    { $sample: { size: Math.ceil(limit * 0.1) } },
-                    {
-                        $lookup: {
-                            from: 'sources',
-                            localField: 'source',
-                            foreignField: '_id',
-                            as: 'source'
-                        }
-                    },
-                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
-                ])
-            ]);
-
-            reels = [
-                ...personalizedReels.map(r => ({ ...r, contentType: 'personalized', weight: 1.0 })),
-                ...freshReels.map(r => ({ ...r, contentType: 'fresh', weight: 0.9 })),
-                ...trendingReels.map(r => ({ ...r, contentType: 'trending', weight: 0.8 })),
-                ...randomReels.map(r => ({ ...r, contentType: 'random', weight: 0.6 }))
-            ];
-        } else if (strategy === 'balanced') {
-            // Balanced approach for moderate users
-            const preferredSources = userPrefs.sourcePreferences.slice(0, 5).map(([name]) => name);
-
-            const [sourceBasedReels, freshReels, popularReels, randomReels] = await Promise.all([
-                // 40% From preferred sources
-                Reel.find({
-                    _id: { $nin: recentlyViewedIds }
-                })
-                    .populate('source', 'name icon favicon')
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .lean()
-                    .then(reels =>
-                        reels.filter(reel =>
-                            preferredSources.includes(reel.source?.name)
-                        ).sort((a, b) => new Date(b.scrapedAt) - new Date(a.scrapedAt))
-                            .slice(0, Math.ceil(limit * 0.4))
-                    ),
-                // 30% Fresh content
-                Reel.find({
-                    scrapedAt: { $gte: oneDayAgo },
-                    _id: { $nin: recentlyViewedIds }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ scrapedAt: -1 })
-                    .limit(Math.ceil(limit * 0.3))
-                    .lean(),
-                // 20% Popular content
-                Reel.find({
-                    _id: { $nin: recentlyViewedIds },
-                    viewCount: { $gt: 10 }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ viewCount: -1, likes: -1 })
-                    .limit(Math.ceil(limit * 0.2))
-                    .lean(),
-                // 10% Random
-                Reel.aggregate([
-                    { $match: { _id: { $nin: recentlyViewedIds } } },
-                    { $sample: { size: Math.ceil(limit * 0.1) } },
-                    {
-                        $lookup: {
-                            from: 'sources',
-                            localField: 'source',
-                            foreignField: '_id',
-                            as: 'source'
-                        }
-                    },
-                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
-                ])
-            ]);
-
-            reels = [
-                ...sourceBasedReels.map(r => ({ ...r, contentType: 'source-based', weight: 1.0 })),
-                ...freshReels.map(r => ({ ...r, contentType: 'fresh', weight: 0.9 })),
-                ...popularReels.map(r => ({ ...r, contentType: 'popular', weight: 0.8 })),
-                ...randomReels.map(r => ({ ...r, contentType: 'random', weight: 0.7 }))
-            ];
+        if (!userEmbedding || !Array.isArray(userEmbedding) || userEmbedding.length !== 128) {
+            console.warn('Falling back to engagement-based sorting');
+            reels = await Reel.find({
+                _id: { $nin: lastSeenReelIds.concat(userPrefs.disliked_videos || []) }
+            })
+                .populate('source')
+                .sort({ viewCount: -1, scrapedAt: -1 })
+                .skip(skip)
+                .limit(limit * 2)
+                .lean();
         } else {
-            // Discovery mode for new users
-            const [freshReels, popularReels, trendingReels, randomReels] = await Promise.all([
-                // 30% Fresh content
-                Reel.find({
-                    scrapedAt: { $gte: oneDayAgo },
-                    _id: { $nin: recentlyViewedIds }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ scrapedAt: -1 })
-                    .limit(Math.ceil(limit * 0.3))
-                    .lean(),
-                // 30% Popular content
-                Reel.find({
-                    _id: { $nin: recentlyViewedIds },
-                    viewCount: { $gt: 50 }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ viewCount: -1, likes: -1 })
-                    .limit(Math.ceil(limit * 0.3))
-                    .lean(),
-                // 25% Trending content
-                Reel.find({
-                    scrapedAt: { $gte: oneWeekAgo },
-                    _id: { $nin: recentlyViewedIds },
-                    $expr: { $gt: [{ $add: ['$likes', { $multiply: ['$viewCount', 0.1] }] }, 20] }
-                })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
-                    .populate('source', 'name icon favicon')
-                    .sort({ likes: -1, viewCount: -1 })
-                    .limit(Math.ceil(limit * 0.25))
-                    .lean(),
-                // 15% Random for discovery
-                Reel.aggregate([
-                    { $match: { _id: { $nin: recentlyViewedIds } } },
-                    { $sample: { size: Math.ceil(limit * 0.15) } },
-                    {
-                        $lookup: {
-                            from: 'sources',
-                            localField: 'source',
-                            foreignField: '_id',
-                            as: 'source'
+            // Atlas Search kNN query
+            reels = await Reel.aggregate([
+                {
+                    $search: {
+                        index: 'reel_vector_index',
+                        knnBeta: {
+                            vector: userEmbedding,
+                            path: 'embedding_pca',
+                            k: limit * 2,
+                            filter: {
+                                compound: {
+                                    mustNot: [{ terms: { path: '_id', value: lastSeenReelIds.concat(userPrefs.disliked_videos || []) } }]
+                                }
+                            }
                         }
-                    },
-                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
-                ])
+                    }
+                },
+                { $limit: limit * 2 },
+                { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
             ]);
 
-            reels = [
-                ...freshReels.map(r => ({ ...r, contentType: 'fresh', weight: 1.0 })),
-                ...popularReels.map(r => ({ ...r, contentType: 'popular', weight: 0.9 })),
-                ...trendingReels.map(r => ({ ...r, contentType: 'trending', weight: 0.8 })),
-                ...randomReels.map(r => ({ ...r, contentType: 'random', weight: 0.7 }))
-            ];
+            // Score reels
+            reels = reels.map(reel => scoreReel(reel, userPrefs, reel.scrapedAt > new Date(Date.now() - 24 * 60 * 60 * 1000)));
         }
 
-        // Remove duplicates and ensure variety
-        const uniqueReels = removeDuplicatesAndEnsureVariety(reels, limit);
+        // Inject trending reels (10%)
+        const trendingLimit = Math.ceil(limit * 0.1);
+        const trendingReels = await Reel.find({
+            _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) },
+            viewCount: { $exists: true },
+            scrapedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        })
+            .populate('source')
+            .sort({ viewCount: -1, scrapedAt: -1 })
+            .limit(trendingLimit)
+            .lean();
 
-        // Intelligent shuffle that maintains some structure
-        const shuffledReels = intelligentShuffle(uniqueReels, page + Date.now());
+        const trendingEnhanced = trendingReels.map(reel => ({
+            ...reel,
+            isTrending: true
+        }));
 
-        console.log(`🎯 Personalized reels for user ${userId}:`, {
-            strategy,
-            totalFound: reels.length,
-            uniqueCount: uniqueReels.length,
-            finalCount: shuffledReels.length,
-            contentMix: uniqueReels.reduce((acc, reel) => {
-                acc[reel.contentType] = (acc[reel.contentType] || 0) + 1;
-                return acc;
-            }, {}),
-            excludedCount: recentlyViewedIds.length
-        });
-
-        const totalPages = Math.ceil(Math.max(1000, uniqueReels.length) / limit);
-
-        return res.json(req.query.simple === 'true' ? shuffledReels : {
-            reels: shuffledReels,
-            personalization: {
-                strategy,
-                userInteractions: userPrefs.totalInteractions,
-                preferredSources: userPrefs.sourcePreferences.slice(0, 3),
-                contentMix: uniqueReels.reduce((acc, reel) => {
-                    acc[reel.contentType] = (acc[reel.contentType] || 0) + 1;
-                    return acc;
-                }, {})
-            },
-            pagination: {
-                currentPage: page,
-                totalPages,
-                totalCount: uniqueReels.length,
-                limit,
-                hasNextPage: page < totalPages,
-                hasPreviousPage: page > 1,
-                nextPage: page < totalPages ? page + 1 : null,
-                previousPage: page > 1 ? page - 1 : null
-            }
-        });
-
-    } catch (error) {
-        console.error('Error getting personalized reels:', error);
-        // Fallback to random content if personalization fails
-        const fallbackReels = await Reel.aggregate([
-            { $sample: { size: limit } },
-            {
-                $lookup: {
-                    from: 'sources',
-                    localField: 'source',
-                    foreignField: '_id',
-                    as: 'source'
-                }
-            },
+        // Inject exploratory reels (20%)
+        const exploratoryLimit = Math.ceil(limit * 0.2);
+        const exploratoryReels = await Reel.aggregate([
+            { $match: { _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) } } },
+            { $sample: { size: exploratoryLimit } },
+            { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
             { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
         ]);
 
-        return res.json(req.query.simple === 'true' ? fallbackReels : {
-            reels: fallbackReels,
-            personalization: { strategy: 'fallback', error: 'Personalization failed' },
-            pagination: {
-                currentPage: page,
-                totalPages: Math.ceil(100 / limit),
-                totalCount: fallbackReels.length,
-                limit,
-                hasNextPage: true,
-                hasPreviousPage: page > 1,
-                nextPage: page + 1,
-                previousPage: page > 1 ? page - 1 : null
-            }
+        const exploratoryEnhanced = exploratoryReels.map(reel => ({
+            ...reel,
+            isExploratory: true
+        }));
+
+        // Combine, sort, and shuffle for dynamism
+        let finalReels = [...reels.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0)).slice(0, limit - trendingLimit - exploratoryLimit), ...trendingEnhanced, ...exploratoryEnhanced];
+        finalReels = intelligentShuffle(finalReels, sessionId).slice(0, limit);
+
+        // Cache results
+        try {
+            await redis.set(cacheKey, JSON.stringify(finalReels), 'EX', 3600); // 1h TTL
+        } catch (err) {
+            console.error('⚠️ Redis set error:', err.message);
+        }
+
+        console.log(`🎯 Recommendations: ${finalReels.length} reels`, {
+            limit,
+            embeddingType: 'PCA (128d)',
+            excludedCount: lastSeenReelIds.length,
+            trendingCount: trendingEnhanced.length,
+            exploratoryCount: exploratoryEnhanced.length,
+            avgSimilarity: (finalReels.reduce((sum, r) => sum + (r.similarity || 0), 0) / finalReels.length).toFixed(3)
         });
+
+        res.json(finalReels);
+    } catch (err) {
+        console.error('Error fetching recommendations:', err.message);
+        res.status(500).json({ error: 'Failed to fetch recommendations' });
     }
 }
 
@@ -1214,6 +1096,40 @@ router.post('/reels/:reelId/save', async (req, res) => {
     }
 });
 
+// Add completion endpoint
+router.post('/reels/:id/completion', async (req, res) => {
+    try {
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        if (!authToken) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const { percent } = req.body;
+        const reelId = req.params.id;
+        if (!percent || percent < 0 || percent > 100) {
+            return res.status(400).json({ error: 'Invalid completion percent' });
+        }
+
+        await Reel.updateOne(
+            { _id: reelId },
+            {
+                $push: { completionRates: percent },
+                $set: {
+                    completionRate: await Reel.aggregate([
+                        { $match: { _id: new mongoose.Types.ObjectId(reelId) } },
+                        { $unwind: '$completionRates' },
+                        { $group: { _id: null, avg: { $avg: '$completionRates' } } }
+                    ]).then(res => res[0]?.avg || percent)
+                }
+            }
+        );
+        res.json({ message: 'Completion recorded' });
+    } catch (err) {
+        console.error('Error recording completion:', err.message);
+        res.status(500).json({ error: 'Failed to record completion' });
+    }
+});
+
 // ===================== USER PREFERENCES AND STATS ROUTES =====================
 router.get('/user/preferences', async (req, res) => {
     try {
@@ -1792,6 +1708,147 @@ router.post('/reels/refresh-urls', async (req, res) => {
     } catch (err) {
         console.error('❌ Failed to refresh reel URLs:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Precompute video recommendations for active users — for Google Cloud Scheduler
+router.post('/reels/precompute-recommendations', async (req, res) => {
+    try {
+        const secret = req.headers['x-api-key'];
+        if (secret !== process.env.ADMIN_API_KEY) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        console.log('🎯 Starting precomputation of video recommendations...');
+
+        // Get list of active users (users with recent activity in last 7 days)
+        const activeUsers = await UserActivity.distinct('userId', {
+            timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        });
+
+        console.log(`👥 Found ${activeUsers.length} active users`);
+
+        let processed = 0;
+        let cached = 0;
+        const batchSize = 10;
+
+        for (let i = 0; i < activeUsers.length; i += batchSize) {
+            const batch = activeUsers.slice(i, i + batchSize);
+
+            await Promise.all(batch.map(async (userId) => {
+                try {
+                    const sessionId = crypto.randomUUID();
+                    const cacheKey = `reels_personalized_${userId}_page_0_limit_20_session_${sessionId}`;
+
+                    // Get user preferences
+                    const userPrefs = await getUserPreferences(userId);
+                    const userEmbedding = userPrefs.averageEmbedding?.slice(0, 128);
+
+                    if (!userEmbedding || !Array.isArray(userEmbedding) || userEmbedding.length !== 128) {
+                        processed++;
+                        return;
+                    }
+
+                    // Get recently viewed reels to exclude
+                    const lastSeenReelIds = await UserActivity.find({
+                        userId,
+                        eventType: 'view'
+                    })
+                        .sort({ timestamp: -1 })
+                        .limit(100)
+                        .distinct('articleId');
+
+                    // Atlas Search kNN query
+                    const reels = await Reel.aggregate([
+                        {
+                            $search: {
+                                index: 'reel_vector_index',
+                                knnBeta: {
+                                    vector: userEmbedding,
+                                    path: 'embedding_pca',
+                                    k: 40,
+                                    filter: {
+                                        compound: {
+                                            mustNot: [{
+                                                terms: {
+                                                    path: '_id',
+                                                    value: lastSeenReelIds.concat(userPrefs.disliked_videos || [])
+                                                }
+                                            }]
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        { $limit: 40 },
+                        {
+                            $lookup: {
+                                from: 'sources',
+                                localField: 'source',
+                                foreignField: '_id',
+                                as: 'source'
+                            }
+                        },
+                        { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
+                    ]);
+
+                    // Score reels based on engagement
+                    const scoredReels = reels.map(reel => {
+                        const similarity = reel._searchScore || 0;
+                        const engagementScore = (reel.viewCount / 10000) * 0.3 +
+                            (reel.likes / 1000) * 0.2 +
+                            (reel.completionRate || 0) * 0.5;
+                        const recencyScore = reel.scrapedAt > new Date(Date.now() - 24 * 60 * 60 * 1000) ? 0.3 : 0.1;
+                        const finalScore = similarity * 0.3 + engagementScore * 0.3 + recencyScore * 0.4;
+
+                        return { ...reel, finalScore };
+                    });
+
+                    // Sort by score and shuffle for dynamism
+                    const finalReels = intelligentShuffle(
+                        scoredReels.sort((a, b) => b.finalScore - a.finalScore),
+                        crypto.randomUUID()
+                    ).slice(0, 20);
+
+                    // Cache results with 1 hour TTL
+                    try {
+                        await redis.set(cacheKey, JSON.stringify(finalReels), 'EX', 3600);
+                        cached++;
+                    } catch (redisErr) {
+                        console.warn('Redis cache failed:', redisErr.message);
+                    }
+
+                    processed++;
+
+                } catch (error) {
+                    console.error(`❌ Error processing user ${userId}:`, error.message);
+                    processed++;
+                }
+            }));
+
+            // Log progress every 50 users
+            if (processed % 50 === 0) {
+                console.log(`📊 Processed ${processed}/${activeUsers.length} users, ${cached} cached`);
+            }
+        }
+
+        const message = `✅ Precomputation completed! Processed ${processed} users, cached ${cached} recommendations`;
+        console.log(message);
+
+        res.json({
+            message,
+            totalUsers: activeUsers.length,
+            processed,
+            cached,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('❌ Precomputation failed:', error);
+        res.status(500).json({
+            error: 'Precomputation failed',
+            details: error.message
+        });
     }
 });
 

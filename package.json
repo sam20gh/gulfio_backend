@@ -6,6 +6,7 @@
     "btch-downloader": "^4.0.15",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^16.4.7",
     "expo-server-sdk": "^3.15.0",
     "express": "^5.1.0",
@@ -29,6 +30,7 @@
     "node-fetch": "^3.3.2",
     "puppeteer": "^24.10.1",
     "redis": "^5.6.1",
+    "seedrandom": "^3.0.5",
     "sharp": "^0.34.3",
     "xml2js": "^0.6.2",
     "ytdl-core": "^4.11.5"
