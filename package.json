@@ -45,7 +45,11 @@
     "docs:watch": "redocly preview-docs openapi.yaml --watch",
     "start": "node server-working.js",
     "test-source": "node test-source-types.js",
-    "postinstall": "npx puppeteer browsers install chrome --path /usr/src/app/.cache/puppeteer || npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome --path /usr/src/app/.cache/puppeteer || npx puppeteer browsers install chrome",
+    "check-reel-embeddings": "node scripts/checkReelEmbeddingStatus.js",
+    "fix-reel-embeddings": "node scripts/fixReelEmbeddings.js",
+    "update-reel-pca": "node scripts/updateReelPCAEmbeddings.js",
+    "test-reel-upload": "node scripts/testReelUpload.js"
   },
   "devDependencies": {
     "@redocly/cli": "^1.34.5"

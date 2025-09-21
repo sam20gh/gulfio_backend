@@ -35,6 +35,7 @@ const axios = require('axios'); // Replace fetch with axios
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
 const { igdl } = require('btch-downloader');// Adjust the path as needed
 const NodeCache = require('node-cache');
 const router = express.Router();
@@ -1417,16 +1418,27 @@ router.post('/reels/upload', async (req, res) => {
 
         const { signedUrl, key } = uploadResult;
 
-        // 3. Generate AI embedding
-        let embedding;
+        // 3. Generate AI embedding and PCA embedding
+        let embedding, embedding_pca;
         try {
             const embedInput = `${caption}\n\n${reelUrl}`;
             embedding = await getDeepSeekEmbedding(embedInput);
             console.log(`🧠 Generated embedding: ${embedding?.length} dimensions`);
+
+            // Generate PCA embedding if the main embedding was successful
+            if (embedding && embedding.length === 1536) {
+                embedding_pca = await convertToPCAEmbedding(embedding);
+                if (embedding_pca) {
+                    console.log(`🧠 Generated PCA embedding: ${embedding_pca.length} dimensions`);
+                } else {
+                    console.warn('⚠️ Failed to generate PCA embedding, continuing without it');
+                }
+            }
         } catch (error) {
             console.error('❌ Failed to generate embedding:', error);
             // Continue without embedding - it's not critical for basic functionality
             embedding = null;
+            embedding_pca = null;
         }
 
         // 4. Save to MongoDB
@@ -1440,11 +1452,12 @@ router.post('/reels/upload', async (req, res) => {
                 reelId: filename,
                 scrapedAt: new Date(),
                 updatedAt: new Date(),
-                embedding
+                embedding,
+                embedding_pca
             });
 
             savedReel = await newReel.save();
-            console.log(`💾 Saved to MongoDB: ${savedReel._id}`);
+            console.log(`💾 Saved to MongoDB: ${savedReel._id} with embedding: ${!!embedding}, PCA: ${!!embedding_pca}`);
         } catch (error) {
             console.error('❌ Failed to save to database:', error);
             return res.status(500).json({
