@@ -1601,14 +1601,15 @@ articleRouter.get('/', async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const language = req.query.language || 'english';
     const category = req.query.category;
+    const search = req.query.search;
 
-    console.log(`🌍 PUBLIC/GUEST ROUTE CALLED: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}`);
+    console.log(`🌍 PUBLIC/GUEST ROUTE CALLED: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}, search: "${search || 'none'}"`);
     console.log(`🌍 Request headers:`, {
       authorization: req.headers.authorization ? 'present' : 'missing',
       'user-agent': req.headers['user-agent']?.substring(0, 50) + '...'
     });
 
-    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}`;
+    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}_search_${search || 'none'}`;
 
     let cached;
     try {
@@ -1626,6 +1627,18 @@ articleRouter.get('/', async (req, res) => {
     if (category) {
       filter.category = category;
       console.log('🏷️ Filtering articles by category:', category);
+    }
+
+    // Add search functionality
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      console.log(`🔍 Searching for articles with term: "${searchTerm}"`);
+      
+      // Use MongoDB regex search for title and content
+      filter.$or = [
+        { title: { $regex: searchTerm, $options: 'i' } },
+        { content: { $regex: searchTerm, $options: 'i' } }
+      ];
     }
 
     // Fetch more articles to allow for source group filtering and pagination
