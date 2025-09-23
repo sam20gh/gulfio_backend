@@ -63,6 +63,8 @@ gcloud run deploy $SERVICE_NAME \
     --port 8080 \
     --set-env-vars MONGO_URI="${MONGO_URI}" \
     --set-env-vars ADMIN_API_KEY="${ADMIN_API_KEY}" \
+    --set-env-vars SUPABASE_URL="${SUPABASE_URL}" \
+    --set-env-vars SUPABASE_SERVICE_ROLE_KEY="${SUPABASE_SERVICE_ROLE_KEY}" \
     --set-env-vars SUPABASE_JWT_ISSUER="${SUPABASE_JWT_ISSUER}" \
     --set-env-vars SUPABASE_JWT_SECRET="${SUPABASE_JWT_SECRET}" \
     --set-env-vars YOUTUBE_API_KEY="${YOUTUBE_API_KEY}" \
