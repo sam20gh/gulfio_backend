@@ -9,6 +9,7 @@ const articles = require('./routes/articles');
 const scrapeRoute = require('./routes/scrape');
 const userRoutes = require('./routes/user');
 const userActions = require('./routes/userActions');
+const authRoutes = require('./routes/auth');
 const recommendations = require('./routes/recommendations');
 const Article = require('./models/Article');
 const sourceGroupRoutes = require('./routes/sourceGroup');
@@ -218,6 +219,7 @@ app.get('/db-test', async (req, res) => {
 app.use('/api/sources', sources);
 app.use('/api/articles', articles);
 app.use('/api/scrape', scrapeRoute);
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/user', userActions);
 app.use('/api/recommendations', recommendations);
