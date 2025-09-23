@@ -9,6 +9,7 @@ const userSchema = new mongoose.Schema({
     gender: { type: String, enum: ['Male', 'Female', 'Other', ''] }, // ✅ NEW
     dob: { type: Date }, // ✅ NEW
     type: { type: String, enum: ['admin', 'publisher', 'user', ''], default: 'user' }, // ✅ NEW
+    publisher_group: [{ type: String }], // ✅ NEW - Publisher groups (e.g., 'gulf news', 'arab news')
     pushToken: { type: String },
     liked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     disliked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
