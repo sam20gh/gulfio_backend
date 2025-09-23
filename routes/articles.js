@@ -1644,7 +1644,7 @@ articleRouter.get('/', async (req, res) => {
       }
     }
 
-    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}_search_${search || 'none'}_pub_${userPublisherGroups ? userPublisherGroups.join(',') : 'none'}`;
+    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}_search_${search || 'none'}_pub_${userPublisherGroups ? (Array.isArray(userPublisherGroups) ? userPublisherGroups.join(',') : userPublisherGroups) : 'none'}`;
 
     let cached;
     try {
@@ -1677,13 +1677,14 @@ articleRouter.get('/', async (req, res) => {
     }
 
     // Add publisher filtering if user is a publisher
-    if (userPublisherGroups && userPublisherGroups.length > 0) {
-      console.log(`🔒 Applying publisher filter for groups: ${userPublisherGroups}`);
+    if (userPublisherGroups && (Array.isArray(userPublisherGroups) ? userPublisherGroups.length > 0 : userPublisherGroups)) {
+      const publisherGroupsArray = Array.isArray(userPublisherGroups) ? userPublisherGroups : [userPublisherGroups];
+      console.log(`🔒 Applying publisher filter for groups: ${publisherGroupsArray}`);
       
       // Get source IDs that match the user's publisher groups
       const Source = require('../models/Source');
       const allowedSources = await Source.find({
-        $or: userPublisherGroups.map(group => ({
+        $or: publisherGroupsArray.map(group => ({
           groupName: { $regex: new RegExp('^' + group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
         }))
       }).select('_id').lean();
@@ -1696,7 +1697,7 @@ articleRouter.get('/', async (req, res) => {
         filter.sourceId = { $in: allowedSourceIds };
       } else {
         // No matching sources found, return empty result
-        console.log(`🔒 No sources found for publisher groups: ${userPublisherGroups}`);
+        console.log(`🔒 No sources found for publisher groups: ${publisherGroupsArray}`);
         return res.json([]);
       }
     }
