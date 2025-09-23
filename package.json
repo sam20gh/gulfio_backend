@@ -2,6 +2,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.828.0",
     "@aws-sdk/s3-request-presigner": "^3.842.0",
+    "@supabase/supabase-js": "^2.57.4",
     "axios": "^1.8.4",
     "btch-downloader": "^4.0.15",
     "cheerio": "^1.0.0",

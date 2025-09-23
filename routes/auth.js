@@ -17,9 +17,9 @@ router.post('/login', async (req, res) => {
         const { email, password } = req.body;
 
         if (!email || !password) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Email and password are required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Email and password are required'
             });
         }
 
@@ -31,16 +31,16 @@ router.post('/login', async (req, res) => {
 
         if (error) {
             console.error('Login error:', error);
-            return res.status(401).json({ 
-                success: false, 
-                message: error.message 
+            return res.status(401).json({
+                success: false,
+                message: error.message
             });
         }
 
         if (!data.user || !data.session) {
-            return res.status(401).json({ 
-                success: false, 
-                message: 'Login failed - no user or session returned' 
+            return res.status(401).json({
+                success: false,
+                message: 'Login failed - no user or session returned'
             });
         }
 
@@ -53,9 +53,9 @@ router.post('/login', async (req, res) => {
 
     } catch (error) {
         console.error('Auth login error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during login' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during login'
         });
     }
 });
@@ -69,9 +69,9 @@ router.post('/signup', async (req, res) => {
         const { email, password, name } = req.body;
 
         if (!email || !password) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Email and password are required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Email and password are required'
             });
         }
 
@@ -88,9 +88,9 @@ router.post('/signup', async (req, res) => {
 
         if (error) {
             console.error('Signup error:', error);
-            return res.status(400).json({ 
-                success: false, 
-                message: error.message 
+            return res.status(400).json({
+                success: false,
+                message: error.message
             });
         }
 
@@ -104,9 +104,9 @@ router.post('/signup', async (req, res) => {
 
     } catch (error) {
         console.error('Auth signup error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during signup' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during signup'
         });
     }
 });
@@ -120,9 +120,9 @@ router.post('/forgot-password', async (req, res) => {
         const { email } = req.body;
 
         if (!email) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Email is required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Email is required'
             });
         }
 
@@ -133,9 +133,9 @@ router.post('/forgot-password', async (req, res) => {
 
         if (error) {
             console.error('Reset password error:', error);
-            return res.status(400).json({ 
-                success: false, 
-                message: error.message 
+            return res.status(400).json({
+                success: false,
+                message: error.message
             });
         }
 
@@ -146,9 +146,9 @@ router.post('/forgot-password', async (req, res) => {
 
     } catch (error) {
         console.error('Auth forgot-password error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during password reset' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during password reset'
         });
     }
 });
@@ -162,9 +162,9 @@ router.post('/reset-password', async (req, res) => {
         const { access_token, refresh_token, password } = req.body;
 
         if (!access_token || !refresh_token || !password) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Access token, refresh token, and new password are required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Access token, refresh token, and new password are required'
             });
         }
 
@@ -176,9 +176,9 @@ router.post('/reset-password', async (req, res) => {
 
         if (sessionError) {
             console.error('Session error:', sessionError);
-            return res.status(400).json({ 
-                success: false, 
-                message: sessionError.message 
+            return res.status(400).json({
+                success: false,
+                message: sessionError.message
             });
         }
 
@@ -189,9 +189,9 @@ router.post('/reset-password', async (req, res) => {
 
         if (error) {
             console.error('Password update error:', error);
-            return res.status(400).json({ 
-                success: false, 
-                message: error.message 
+            return res.status(400).json({
+                success: false,
+                message: error.message
             });
         }
 
@@ -203,9 +203,9 @@ router.post('/reset-password', async (req, res) => {
 
     } catch (error) {
         console.error('Auth reset-password error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during password reset' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during password reset'
         });
     }
 });
@@ -219,9 +219,9 @@ router.post('/refresh', async (req, res) => {
         const { refresh_token } = req.body;
 
         if (!refresh_token) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Refresh token is required' 
+            return res.status(400).json({
+                success: false,
+                message: 'Refresh token is required'
             });
         }
 
@@ -232,9 +232,9 @@ router.post('/refresh', async (req, res) => {
 
         if (error) {
             console.error('Refresh error:', error);
-            return res.status(401).json({ 
-                success: false, 
-                message: error.message 
+            return res.status(401).json({
+                success: false,
+                message: error.message
             });
         }
 
@@ -246,9 +246,9 @@ router.post('/refresh', async (req, res) => {
 
     } catch (error) {
         console.error('Auth refresh error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during token refresh' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during token refresh'
         });
     }
 });
@@ -283,9 +283,9 @@ router.post('/logout', async (req, res) => {
 
     } catch (error) {
         console.error('Auth logout error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error during logout' 
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during logout'
         });
     }
 });

@@ -177,6 +177,11 @@ function loadRoutes() {
         app.use('/api/users', userRoutes);
         console.log('✅ User routes loaded');
 
+        // Load auth routes for web frontend
+        const authRoutes = require('./routes/auth');
+        app.use('/api/auth', authRoutes);
+        console.log('✅ Auth routes loaded');
+
         // Load all remaining routes
         const scrapeRoute = require('./routes/scrape');
         const userActions = require('./routes/userActions');

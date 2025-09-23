@@ -79,7 +79,7 @@ router.get('/generate-engagement-summary', async (req, res) => {
 router.get('/users', auth, ensureMongoUser, async (req, res) => {
     try {
         const currentUser = req.mongoUser;
-        
+
         // Only allow admins to access this endpoint
         if (currentUser.type !== 'admin') {
             return res.status(403).json({ message: 'Access denied. Admin access required.' });
