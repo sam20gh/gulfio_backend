@@ -1595,6 +1595,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
 });
 
 // GET: Generic (guest) feed with recency-aware sort and source group limiting
+// Also supports JWT-based publisher filtering for authenticated users
 articleRouter.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -1603,13 +1604,47 @@ articleRouter.get('/', async (req, res) => {
     const category = req.query.category;
     const search = req.query.search;
 
-    console.log(`🌍 PUBLIC/GUEST ROUTE CALLED: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}, search: "${search || 'none'}"`);
-    console.log(`🌍 Request headers:`, {
-      authorization: req.headers.authorization ? 'present' : 'missing',
-      'user-agent': req.headers['user-agent']?.substring(0, 50) + '...'
-    });
+    // Detect authentication method
+    const hasJWT = req.headers.authorization && req.headers.authorization.startsWith('Bearer ');
+    const hasAPIKey = req.headers['x-api-key'];
+    
+    console.log(`🌍 ARTICLES ROUTE: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}, search: "${search || 'none'}"`);
+    console.log(`🔐 Auth method: ${hasJWT ? 'JWT' : hasAPIKey ? 'API-KEY' : 'NONE'}`);
 
-    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}_search_${search || 'none'}`;
+    let userPublisherGroups = null;
+    let isAuthenticated = false;
+
+    // Handle JWT authentication for publisher filtering
+    if (hasJWT) {
+      try {
+        const token = req.headers.authorization.split(' ')[1];
+        const { createClient } = require('@supabase/supabase-js');
+        const supabase = createClient(
+          process.env.SUPABASE_URL,
+          process.env.SUPABASE_SERVICE_ROLE_KEY
+        );
+        
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        
+        if (!error && user) {
+          // Get user's publisher groups from MongoDB
+          const mongoUser = await User.findOne({ supabase_id: user.id }).lean();
+          if (mongoUser && mongoUser.type === 'publisher' && mongoUser.publisher_group) {
+            userPublisherGroups = mongoUser.publisher_group;
+            isAuthenticated = true;
+            console.log(`🔐 Publisher user detected: ${mongoUser.email}, groups: ${userPublisherGroups}`);
+          } else {
+            console.log(`🔐 Regular user or admin: ${mongoUser?.email || 'unknown'}, type: ${mongoUser?.type || 'none'}`);
+            isAuthenticated = true; // Still authenticated, just not a publisher
+          }
+        }
+      } catch (jwtError) {
+        console.error('⚠️ JWT authentication failed:', jwtError.message);
+        // Continue as unauthenticated user
+      }
+    }
+
+    const cacheKey = `articles_page_${page}_limit_${limit}_lang_${language}_cat_${category || 'all'}_search_${search || 'none'}_pub_${userPublisherGroups ? userPublisherGroups.join(',') : 'none'}`;
 
     let cached;
     try {
@@ -1641,6 +1676,31 @@ articleRouter.get('/', async (req, res) => {
       ];
     }
 
+    // Add publisher filtering if user is a publisher
+    if (userPublisherGroups && userPublisherGroups.length > 0) {
+      console.log(`🔒 Applying publisher filter for groups: ${userPublisherGroups}`);
+      
+      // Get source IDs that match the user's publisher groups
+      const Source = require('../models/Source');
+      const allowedSources = await Source.find({
+        $or: userPublisherGroups.map(group => ({
+          groupName: { $regex: new RegExp('^' + group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
+        }))
+      }).select('_id').lean();
+      
+      const allowedSourceIds = allowedSources.map(s => s._id);
+      
+      console.log(`🔒 Found ${allowedSources.length} allowed sources for publisher groups`);
+      
+      if (allowedSourceIds.length > 0) {
+        filter.sourceId = { $in: allowedSourceIds };
+      } else {
+        // No matching sources found, return empty result
+        console.log(`🔒 No sources found for publisher groups: ${userPublisherGroups}`);
+        return res.json([]);
+      }
+    }
+
     // Fetch more articles to allow for source group filtering and pagination
     const raw = await Article.find(filter)
       .populate('sourceId', 'name icon groupName') // Populate source data
@@ -1648,7 +1708,7 @@ articleRouter.get('/', async (req, res) => {
       .limit(limit * 5) // Get more articles for source filtering and pagination
       .lean();
 
-    console.log(`📊 Found ${raw.length} raw articles from database`);
+    console.log(`📊 Found ${raw.length} raw articles from database${userPublisherGroups ? ' (publisher filtered)' : ''}`);
 
     // Re-rank by page-aware recency+engagement for better first page feel
     const freshRatio =
