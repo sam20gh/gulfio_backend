@@ -290,4 +290,47 @@ router.post('/logout', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/auth/verify
+ * Verify session token via Supabase
+ */
+router.get('/verify', async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({
+                success: false,
+                message: 'Authorization header required'
+            });
+        }
+
+        const accessToken = authHeader.split(' ')[1];
+
+        // Verify the token with Supabase
+        const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+        if (error || !user) {
+            console.error('Token verification error:', error);
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid or expired token'
+            });
+        }
+
+        res.json({
+            success: true,
+            user,
+            message: 'Session verified successfully'
+        });
+
+    } catch (error) {
+        console.error('Auth verify error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error during verification'
+        });
+    }
+});
+
 module.exports = router;
