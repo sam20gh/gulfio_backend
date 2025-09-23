@@ -1633,7 +1633,7 @@ articleRouter.get('/', async (req, res) => {
     if (search && search.trim()) {
       const searchTerm = search.trim();
       console.log(`🔍 Searching for articles with term: "${searchTerm}"`);
-      
+
       // Use MongoDB regex search for title and content
       filter.$or = [
         { title: { $regex: searchTerm, $options: 'i' } },
