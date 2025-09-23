@@ -276,12 +276,16 @@ router.post('/test-notify', auth, ensureMongoUser, async (req, res) => {
 router.get('/me', auth, ensureMongoUser, (req, res) => {
     const user = req.mongoUser
     res.json({
+        _id: user._id,
+        supabase_id: user.supabase_id,
         email: user.email,
         name: user.name,
         avatar_url: user.avatar_url,
         profile_image: user.profile_image,
         gender: user.gender,
         dob: user.dob,
+        type: user.type,
+        publisher_group: user.publisher_group,
     })
 })
 
