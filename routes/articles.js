@@ -1782,13 +1782,30 @@ articleRouter.get('/', async (req, res) => {
     });
     console.log(`📊 Page ${page} source distribution:`, Object.entries(pageSourceCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
+    // Create pagination metadata
+    const totalPages = Math.ceil(processedArticles.length / limit);
+    const hasNextPage = page < totalPages;
+    const hasPrevPage = page > 1;
+    
+    const responseData = {
+      articles: finalArticles,
+      pagination: {
+        page,
+        limit,
+        total: processedArticles.length,
+        pages: totalPages,
+        hasNext: hasNextPage,
+        hasPrev: hasPrevPage
+      }
+    };
+
     try {
-      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 300);
+      await redis.set(cacheKey, JSON.stringify(responseData), 'EX', 300);
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
 
-    res.json(finalArticles);
+    res.json(responseData);
   } catch (error) {
     console.error('❌ Error fetching articles:', error);
     res.status(500).json({ error: 'Error fetching articles', message: error.message });
