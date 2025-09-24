@@ -1607,7 +1607,7 @@ articleRouter.get('/', async (req, res) => {
     // Detect authentication method
     const hasJWT = req.headers.authorization && req.headers.authorization.startsWith('Bearer ');
     const hasAPIKey = req.headers['x-api-key'];
-    
+
     console.log(`🌍 ARTICLES ROUTE: page ${page}, limit ${limit}, language ${language}, category ${category || 'all'}, search: "${search || 'none'}"`);
     console.log(`🔐 Auth method: ${hasJWT ? 'JWT' : hasAPIKey ? 'API-KEY' : 'NONE'}`);
 
@@ -1623,9 +1623,9 @@ articleRouter.get('/', async (req, res) => {
           process.env.SUPABASE_URL,
           process.env.SUPABASE_SERVICE_ROLE_KEY
         );
-        
+
         const { data: { user }, error } = await supabase.auth.getUser(token);
-        
+
         if (!error && user) {
           // Get user's publisher groups from MongoDB
           const mongoUser = await User.findOne({ supabase_id: user.id }).lean();
@@ -1680,7 +1680,7 @@ articleRouter.get('/', async (req, res) => {
     if (userPublisherGroups && (Array.isArray(userPublisherGroups) ? userPublisherGroups.length > 0 : userPublisherGroups)) {
       const publisherGroupsArray = Array.isArray(userPublisherGroups) ? userPublisherGroups : [userPublisherGroups];
       console.log(`🔒 Applying publisher filter for groups: ${publisherGroupsArray}`);
-      
+
       // Get source IDs that match the user's publisher groups
       const Source = require('../models/Source');
       const allowedSources = await Source.find({
@@ -1688,11 +1688,11 @@ articleRouter.get('/', async (req, res) => {
           groupName: { $regex: new RegExp('^' + group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
         }))
       }).select('_id').lean();
-      
+
       const allowedSourceIds = allowedSources.map(s => s._id);
-      
+
       console.log(`🔒 Found ${allowedSources.length} allowed sources for publisher groups`);
-      
+
       if (allowedSourceIds.length > 0) {
         filter.sourceId = { $in: allowedSourceIds };
       } else {
@@ -1706,7 +1706,7 @@ articleRouter.get('/', async (req, res) => {
     // Publishers need more articles since they have higher per-source limits
     const fetchMultiplier = userPublisherGroups ? 8 : 5;
     const fetchLimit = limit * fetchMultiplier;
-    
+
     const raw = await Article.find(filter)
       .populate('sourceId', 'name icon groupName') // Populate source data
       .sort({ publishedAt: -1 })
@@ -1745,7 +1745,7 @@ articleRouter.get('/', async (req, res) => {
     const startIndex = (page - 1) * limit;
     let processedArticles = [];
     const sourceGroupCounts = {};
-    
+
     // Publishers get higher limit per source group since they're already filtered to their allowed sources
     const maxPerSourceGroup = userPublisherGroups ? Math.max(5, Math.ceil(limit / 2)) : 2;
 
@@ -1764,16 +1764,16 @@ articleRouter.get('/', async (req, res) => {
       }
       // If source group limit reached for this group, continue looking for articles from other sources
     }
-    
+
     // Now apply proper pagination to the filtered list
     const finalArticles = processedArticles.slice(startIndex, startIndex + limit);
-    
+
     console.log(`🔀 Step 1: Applied source group limits to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
     console.log(`🔀 Step 2: Applied pagination (${startIndex}-${startIndex + limit}) to get ${finalArticles.length} final articles`);
 
     console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} filtered candidates (max ${maxPerSourceGroup} per source group)`);
     console.log(`📊 Total source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
-    
+
     // Calculate distribution for this page only
     const pageSourceCounts = {};
     finalArticles.forEach(article => {
@@ -1786,7 +1786,7 @@ articleRouter.get('/', async (req, res) => {
     const totalPages = Math.ceil(processedArticles.length / limit);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
-    
+
     const responseData = {
       articles: finalArticles,
       pagination: {
