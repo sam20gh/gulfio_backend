@@ -1703,10 +1703,14 @@ articleRouter.get('/', async (req, res) => {
     }
 
     // Fetch more articles to allow for source group filtering and pagination
+    // Publishers need more articles since they have higher per-source limits
+    const fetchMultiplier = userPublisherGroups ? 8 : 5;
+    const fetchLimit = limit * fetchMultiplier;
+    
     const raw = await Article.find(filter)
       .populate('sourceId', 'name icon groupName') // Populate source data
       .sort({ publishedAt: -1 })
-      .limit(limit * 5) // Get more articles for source filtering and pagination
+      .limit(fetchLimit) // Get more articles for source filtering and pagination
       .lean();
 
     console.log(`📊 Found ${raw.length} raw articles from database${userPublisherGroups ? ' (publisher filtered)' : ''}`);
@@ -1739,8 +1743,7 @@ articleRouter.get('/', async (req, res) => {
 
     // Apply pagination with source group limiting (max 2 per source group per page for general users, more for publishers)
     const startIndex = (page - 1) * limit;
-    let skipped = 0;
-    let finalArticles = [];
+    let processedArticles = [];
     const sourceGroupCounts = {};
     
     // Publishers get higher limit per source group since they're already filtered to their allowed sources
@@ -1748,27 +1751,36 @@ articleRouter.get('/', async (req, res) => {
 
     console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}, maxPerGroup ${maxPerSourceGroup}${userPublisherGroups ? ' (publisher mode)' : ''}`);
 
-    for (let i = 0; i < enhancedArticles.length && finalArticles.length < limit; i++) {
+    // First, apply source group limiting to all articles to create a properly filtered list
+    for (let i = 0; i < enhancedArticles.length; i++) {
       const article = enhancedArticles[i];
       const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
 
-      // Skip articles until we reach the start index for this page
-      if (skipped < startIndex) {
-        skipped++;
-        continue;
-      }
-
-      // Check if adding this article would exceed the source group limit for this page
+      // Check if adding this article would exceed the source group limit
       const currentCount = sourceGroupCounts[sourceGroup] || 0;
       if (currentCount < maxPerSourceGroup) {
-        finalArticles.push(article);
+        processedArticles.push(article);
         sourceGroupCounts[sourceGroup] = currentCount + 1;
       }
-      // If source group limit reached, continue looking for articles from other sources
+      // If source group limit reached for this group, continue looking for articles from other sources
     }
+    
+    // Now apply proper pagination to the filtered list
+    const finalArticles = processedArticles.slice(startIndex, startIndex + limit);
+    
+    console.log(`🔀 Step 1: Applied source group limits to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
+    console.log(`🔀 Step 2: Applied pagination (${startIndex}-${startIndex + limit}) to get ${finalArticles.length} final articles`);
 
-    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${enhancedArticles.length} candidates (max ${maxPerSourceGroup} per source group)`);
-    console.log(`📊 Source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
+    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} filtered candidates (max ${maxPerSourceGroup} per source group)`);
+    console.log(`📊 Total source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
+    
+    // Calculate distribution for this page only
+    const pageSourceCounts = {};
+    finalArticles.forEach(article => {
+      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+      pageSourceCounts[sourceGroup] = (pageSourceCounts[sourceGroup] || 0) + 1;
+    });
+    console.log(`📊 Page ${page} source distribution:`, Object.entries(pageSourceCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
     try {
       await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 300);
