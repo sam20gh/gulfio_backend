@@ -1737,13 +1737,16 @@ articleRouter.get('/', async (req, res) => {
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
 
-    // Apply pagination with source group limiting (max 2 per source group per page)
+    // Apply pagination with source group limiting (max 2 per source group per page for general users, more for publishers)
     const startIndex = (page - 1) * limit;
     let skipped = 0;
     let finalArticles = [];
     const sourceGroupCounts = {};
+    
+    // Publishers get higher limit per source group since they're already filtered to their allowed sources
+    const maxPerSourceGroup = userPublisherGroups ? Math.max(5, Math.ceil(limit / 2)) : 2;
 
-    console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}`);
+    console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}, maxPerGroup ${maxPerSourceGroup}${userPublisherGroups ? ' (publisher mode)' : ''}`);
 
     for (let i = 0; i < enhancedArticles.length && finalArticles.length < limit; i++) {
       const article = enhancedArticles[i];
@@ -1757,14 +1760,14 @@ articleRouter.get('/', async (req, res) => {
 
       // Check if adding this article would exceed the source group limit for this page
       const currentCount = sourceGroupCounts[sourceGroup] || 0;
-      if (currentCount < 2) {
+      if (currentCount < maxPerSourceGroup) {
         finalArticles.push(article);
         sourceGroupCounts[sourceGroup] = currentCount + 1;
       }
       // If source group limit reached, continue looking for articles from other sources
     }
 
-    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${enhancedArticles.length} candidates (max 2 per source group)`);
+    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${enhancedArticles.length} candidates (max ${maxPerSourceGroup} per source group)`);
     console.log(`📊 Source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
     try {
