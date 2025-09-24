@@ -1741,37 +1741,44 @@ articleRouter.get('/', async (req, res) => {
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
 
-    // Apply pagination with source group limiting (max 2 per source group per page for general users, more for publishers)
+    // Apply pagination with source group limiting (general users only - publishers skip this)
     const startIndex = (page - 1) * limit;
     let processedArticles = [];
     const sourceGroupCounts = {};
 
-    // Publishers get higher limit per source group since they're already filtered to their allowed sources
-    const maxPerSourceGroup = userPublisherGroups ? Math.max(5, Math.ceil(limit / 2)) : 2;
+    if (userPublisherGroups) {
+      // Publishers: Skip source group limiting entirely since they're already filtered to their allowed sources
+      console.log(`🔀 PUBLISHER MODE: Skipping source group limits, using all ${enhancedArticles.length} articles`);
+      processedArticles = enhancedArticles;
+      
+      // Count source groups for logging
+      enhancedArticles.forEach(article => {
+        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+        sourceGroupCounts[sourceGroup] = (sourceGroupCounts[sourceGroup] || 0) + 1;
+      });
+    } else {
+      // General users: Apply source group limiting (max 2 per source group)
+      const maxPerSourceGroup = 2;
+      console.log(`🔀 GENERAL MODE: Applying source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}, maxPerGroup ${maxPerSourceGroup}`);
 
-    console.log(`🔀 Applying pagination and source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}, maxPerGroup ${maxPerSourceGroup}${userPublisherGroups ? ' (publisher mode)' : ''}`);
+      for (let i = 0; i < enhancedArticles.length; i++) {
+        const article = enhancedArticles[i];
+        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
 
-    // First, apply source group limiting to all articles to create a properly filtered list
-    for (let i = 0; i < enhancedArticles.length; i++) {
-      const article = enhancedArticles[i];
-      const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-
-      // Check if adding this article would exceed the source group limit
-      const currentCount = sourceGroupCounts[sourceGroup] || 0;
-      if (currentCount < maxPerSourceGroup) {
-        processedArticles.push(article);
-        sourceGroupCounts[sourceGroup] = currentCount + 1;
+        // Check if adding this article would exceed the source group limit
+        const currentCount = sourceGroupCounts[sourceGroup] || 0;
+        if (currentCount < maxPerSourceGroup) {
+          processedArticles.push(article);
+          sourceGroupCounts[sourceGroup] = currentCount + 1;
+        }
       }
-      // If source group limit reached for this group, continue looking for articles from other sources
     }
-
+    
     // Now apply proper pagination to the filtered list
-    const finalArticles = processedArticles.slice(startIndex, startIndex + limit);
-
-    console.log(`🔀 Step 1: Applied source group limits to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
+    const finalArticles = processedArticles.slice(startIndex, startIndex + limit);    console.log(`🔀 Step 1: ${userPublisherGroups ? 'Skipped source group limits (publisher)' : 'Applied source group limits'} to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
     console.log(`🔀 Step 2: Applied pagination (${startIndex}-${startIndex + limit}) to get ${finalArticles.length} final articles`);
 
-    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} filtered candidates (max ${maxPerSourceGroup} per source group)`);
+    console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} candidates ${userPublisherGroups ? '(publisher - no source limits)' : '(general - source limited)'}`);
     console.log(`📊 Total source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
     // Calculate distribution for this page only
