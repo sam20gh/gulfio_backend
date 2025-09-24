@@ -1750,7 +1750,7 @@ articleRouter.get('/', async (req, res) => {
       // Publishers: Skip source group limiting entirely since they're already filtered to their allowed sources
       console.log(`🔀 PUBLISHER MODE: Skipping source group limits, using all ${enhancedArticles.length} articles`);
       processedArticles = enhancedArticles;
-      
+
       // Count source groups for logging
       enhancedArticles.forEach(article => {
         const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
@@ -1773,9 +1773,9 @@ articleRouter.get('/', async (req, res) => {
         }
       }
     }
-    
+
     // Now apply proper pagination to the filtered list
-    const finalArticles = processedArticles.slice(startIndex, startIndex + limit);    console.log(`🔀 Step 1: ${userPublisherGroups ? 'Skipped source group limits (publisher)' : 'Applied source group limits'} to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
+    const finalArticles = processedArticles.slice(startIndex, startIndex + limit); console.log(`🔀 Step 1: ${userPublisherGroups ? 'Skipped source group limits (publisher)' : 'Applied source group limits'} to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
     console.log(`🔀 Step 2: Applied pagination (${startIndex}-${startIndex + limit}) to get ${finalArticles.length} final articles`);
 
     console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} candidates ${userPublisherGroups ? '(publisher - no source limits)' : '(general - source limited)'}`);
