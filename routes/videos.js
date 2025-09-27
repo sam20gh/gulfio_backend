@@ -58,13 +58,7 @@ console.log('🔧 AWS Configuration Debug:', {
     accessKeyId: AWS_ACCESS_KEY_ID ? 'Set' : 'Missing',
     secretKey: AWS_SECRET_ACCESS_KEY ? 'Set' : 'Missing'
 });
-const s3 = new S3Client({
-    region: AWS_S3_REGION,
-    credentials: {
-        accessKeyId: AWS_ACCESS_KEY_ID,
-        secretAccessKey: AWS_SECRET_ACCESS_KEY
-    }
-});
+
 function cosineSimilarity(vec1, vec2) {
     const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
     const magnitudeA = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
