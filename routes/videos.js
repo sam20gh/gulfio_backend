@@ -32,7 +32,7 @@ const Source = require('../models/Source');
 const UserActivity = require('../models/UserActivity');
 const puppeteer = require('puppeteer');
 const axios = require('axios'); // Replace fetch with axios
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
@@ -58,7 +58,13 @@ console.log('🔧 AWS Configuration Debug:', {
     accessKeyId: AWS_ACCESS_KEY_ID ? 'Set' : 'Missing',
     secretKey: AWS_SECRET_ACCESS_KEY ? 'Set' : 'Missing'
 });
-
+const s3 = new S3Client({
+    region: AWS_S3_REGION,
+    credentials: {
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY
+    }
+});
 function cosineSimilarity(vec1, vec2) {
     const dotProduct = vec1.reduce((sum, val, i) => sum + val * vec2[i], 0);
     const magnitudeA = Math.sqrt(vec1.reduce((sum, val) => sum + val * val, 0));
@@ -503,6 +509,45 @@ async function uploadToR2(videoUrl, filename) {
         throw new Error(`Failed to upload to R2: ${error.message}`);
     }
 }
+
+const isSignedS3Url = (u) => {
+    if (!u) return false;
+    try {
+        const url = new URL(u);
+        return (
+            url.searchParams.has('X-Amz-Signature') ||
+            url.searchParams.has('X-Amz-Credential') ||
+            url.searchParams.has('X-Amz-Security-Token')
+        );
+    } catch {
+        return false;
+    }
+};
+
+const extractKeyFromUrl = (u, bucket = AWS_S3_BUCKET, region = AWS_S3_REGION) => {
+    try {
+        const url = new URL(u);
+        const host = url.hostname.toLowerCase();
+        const path = decodeURIComponent(url.pathname || '/');
+
+        // virtual-hosted style
+        const vhHosts = new Set([
+            `${bucket}.s3.${region}.amazonaws.com`,
+            `${bucket}.s3.amazonaws.com`
+        ]);
+        if (vhHosts.has(host)) return path.replace(/^\/+/, '');
+
+        // path style
+        if (host === `s3.${region}.amazonaws.com` || host === 's3.amazonaws.com') {
+            const parts = path.split('/').filter(Boolean);
+            if (parts.length >= 2 && parts[0] === bucket) return parts.slice(1).join('/');
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+};
 // ===================== EXISTING ROUTES =====================
 router.get('/', async (req, res) => {
     try {
@@ -1670,40 +1715,66 @@ router.get('/reels/debug', async (req, res) => {
 router.post('/reels/refresh-urls', async (req, res) => {
     try {
         const secret = req.headers['x-api-key'];
-        if (secret !== process.env.ADMIN_API_KEY) {
+        if (secret !== ADMIN_API_KEY) {
             return res.status(403).json({ error: 'Forbidden' });
         }
 
-        const reels = await Reel.find({}, '_id originalKey');
+        const force = String(req.query.force || '').toLowerCase() === 'true';
+        const reels = await Reel.find({}, '_id originalKey videoUrl').lean();
 
-        let updatedCount = 0;
+        let refreshed = 0;
+        let backfilledOriginalKey = 0;
+        let skipped = 0;
+        let failed = 0;
+
         for (const reel of reels) {
             try {
-                const command = new GetObjectCommand({
-                    Bucket: AWS_S3_BUCKET,
-                    Key: reel.originalKey
-                });
+                let key = reel.originalKey;
+                if (!key && reel.videoUrl) key = extractKeyFromUrl(reel.videoUrl);
 
-                const newSignedUrl = await getSignedUrl(s3, command, {
-                    expiresIn: 60 * 60 * 24 * 7 // 7 days
-                });
+                if (!key) {
+                    skipped++;
+                    continue;
+                }
 
-                await Reel.updateOne({ _id: reel._id }, {
-                    $set: {
-                        videoUrl: newSignedUrl,
-                        updatedAt: new Date()
-                    }
-                });
+                if (!force && isSignedS3Url(reel.videoUrl)) {
+                    skipped++;
+                    continue;
+                }
 
-                updatedCount++;
+                try {
+                    await s3.send(new HeadObjectCommand({ Bucket: AWS_S3_BUCKET, Key: key }));
+                } catch {
+                    skipped++;
+                    continue;
+                }
+
+                const cmd = new GetObjectCommand({ Bucket: AWS_S3_BUCKET, Key: key });
+                const signed = await getSignedUrl(s3, cmd, { expiresIn: 60 * 60 * 24 * 7 });
+
+                const update = { videoUrl: signed, updatedAt: new Date() };
+                if (!reel.originalKey) {
+                    update.originalKey = key;
+                    backfilledOriginalKey++;
+                }
+
+                await Reel.updateOne({ _id: reel._id }, { $set: update });
+                refreshed++;
             } catch (err) {
-                console.warn(`⚠️ Failed to refresh ${reel.originalKey}: ${err.message}`);
+                failed++;
+                console.warn(`⚠️ Failed to refresh/backfill _id=${reel._id}: ${err.message}`);
             }
         }
 
         res.json({
-            message: `✅ Refreshed ${updatedCount} reel video URLs`,
-            count: updatedCount
+            message: '✅ Reel video URLs processed',
+            refreshed,
+            backfilledOriginalKey,
+            skipped,
+            failed,
+            bucket: AWS_S3_BUCKET,
+            region: AWS_S3_REGION,
+            force
         });
     } catch (err) {
         console.error('❌ Failed to refresh reel URLs:', err);
