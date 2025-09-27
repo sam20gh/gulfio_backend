@@ -49,6 +49,7 @@ const {
     AWS_S3_BUCKET,
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
+    ADMIN_API_KEY
 } = process.env;
 
 // Debug AWS configuration
