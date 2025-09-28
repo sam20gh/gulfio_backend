@@ -371,6 +371,9 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       matchFilter.sourceId = { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) }; // Assuming source IDs are ObjectIds
     }
 
+    // Get more articles initially to allow for source group filtering and randomization
+    const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
+    
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
@@ -381,12 +384,24 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         $sort: { publishedAt: -1 }
       },
       {
-        // Stage 3: Early limit for maximum speed - skip source lookup entirely
-        $limit: limit
+        // Stage 3: Get more articles for source group filtering
+        $limit: initialLimit
       },
       {
-        // Stage 4: Add performance markers without source lookup
+        // Stage 4: Lookup source to get groupName for filtering
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [{ $project: { groupName: 1, name: 1 } }] // Only get needed fields
+        }
+      },
+      {
+        // Stage 5: Add source group name for filtering
         $addFields: {
+          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
           isLight: { $literal: true },
           fetchedAt: { $literal: new Date() },
           isRefreshed: { $literal: forceRefresh },
@@ -395,7 +410,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         }
       },
       {
-        // Stage 5: Project only essential fields for maximum speed
+        // Stage 6: Project essential fields
         $project: {
           title: 1,
           content: 1,
@@ -408,7 +423,9 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           dislikes: 1,
           likedBy: 1,
           dislikedBy: 1,
-          sourceId: 1, // Let client handle source resolution for speed
+          sourceId: 1,
+          sourceGroupName: 1,
+          sourceName: 1,
           isLight: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -418,15 +435,62 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       }
     ]);
 
-    console.log(`⚡ ULTRA-FAST DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+    console.log(`⚡ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} initial articles`);
 
-    // OPTIMIZATION 4: Skip source grouping for ultra-speed - return articles directly
+    // Apply source group filtering and randomization
+    const filteringStart = Date.now();
+    
+    // Step 1: Apply source group filtering (max 3 per group)
+    const sourceGroupCounts = {};
+    const filteredArticles = [];
+    
+    for (const article of articles) {
+      const groupName = article.sourceGroupName || article.sourceName || 'unknown';
+      const currentCount = sourceGroupCounts[groupName] || 0;
+      
+      if (currentCount < 3) { // Max 3 per source group
+        sourceGroupCounts[groupName] = currentCount + 1;
+        filteredArticles.push(article);
+        
+        // Stop if we have enough articles
+        if (filteredArticles.length >= limit) break;
+      }
+    }
+    
+    // Step 2: Randomize while preserving recency bias
+    // Use a deterministic seed based on user ID and day for consistent randomization
+    const seed = simpleHash(userId + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed
+    const rng = lcg(seed);
+    
+    // Apply gentle randomization: shuffle articles within time-based buckets
+    const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
+    const randomizedArticles = [];
+    
+    for (let i = 0; i < filteredArticles.length; i += bucketSize) {
+      const bucket = filteredArticles.slice(i, i + bucketSize);
+      
+      // Fisher-Yates shuffle with deterministic RNG for this bucket
+      for (let j = bucket.length - 1; j > 0; j--) {
+        const k = Math.floor(rng() * (j + 1));
+        [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
+      }
+      
+      randomizedArticles.push(...bucket);
+    }
+    
+    // Take only the requested limit
+    const finalArticles = randomizedArticles.slice(0, limit);
+    
+    console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
+    console.log(`📊 Source group distribution:`, sourceGroupCounts);
+    console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
+
     const totalTime = Date.now() - startTime;
-    console.log(`🚀 ULTRA-FAST Light personalized complete in ${totalTime}ms - ${articles.length} articles (no source grouping)`);
+    console.log(`🚀 Light personalized complete in ${totalTime}ms - ${finalArticles.length} articles with source group filtering`);
 
-    // OPTIMIZATION 5: Shorter cache for fresher content at ultra-speed
+    // Cache the final result
     try {
-      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 900); // 15 min cache for speed
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 900); // 15 min cache for speed
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
@@ -434,10 +498,12 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     // Add performance headers for monitoring
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
-    res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup');
+    res.setHeader('X-Filtering-Time', Date.now() - filteringStart);
+    res.setHeader('X-Optimization-Applied', 'source-group-filtering-randomization');
     res.setHeader('X-Personalized', preferredCategories.length > 0 || preferredSources.length > 0 ? 'semi' : 'none');
+    res.setHeader('X-Source-Groups', Object.keys(sourceGroupCounts).length);
 
-    res.json(articles);
+    res.json(finalArticles);
 
   } catch (error) {
     const errorTime = Date.now() - startTime;
@@ -665,6 +731,10 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       matchFilter.sourceId = { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) }; // Assuming source IDs are ObjectIds
     }
 
+    // Get more articles initially to allow for source group filtering and randomization
+    const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
+    const initialSkip = Math.max(0, skip - Math.floor(initialLimit / 3)); // Adjust skip for larger initial fetch
+    
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
@@ -675,16 +745,28 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
         $sort: { publishedAt: -1 }
       },
       {
-        // Stage 3: Skip for pagination
-        $skip: skip
+        // Stage 3: Skip for pagination (adjusted for larger fetch)
+        $skip: initialSkip
       },
       {
-        // Stage 4: Limit for this page
-        $limit: limit
+        // Stage 4: Get more articles for source group filtering
+        $limit: initialLimit
       },
       {
-        // Stage 5: Add performance markers without source lookup
+        // Stage 5: Lookup source to get groupName for filtering
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [{ $project: { groupName: 1, name: 1 } }] // Only get needed fields
+        }
+      },
+      {
+        // Stage 6: Add source group name and performance markers
         $addFields: {
+          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
           isFast: { $literal: true },
           fetchedAt: { $literal: new Date() },
           isRefreshed: { $literal: forceRefresh },
@@ -694,7 +776,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
         }
       },
       {
-        // Stage 6: Project only essential fields for maximum speed
+        // Stage 7: Project essential fields
         $project: {
           title: 1,
           content: 1,
@@ -707,7 +789,9 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           dislikes: 1,
           likedBy: 1,
           dislikedBy: 1,
-          sourceId: 1, // Let client handle source resolution for speed
+          sourceId: 1,
+          sourceGroupName: 1,
+          sourceName: 1,
           isFast: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -718,15 +802,62 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       }
     ]);
 
-    console.log(`⚡ ULTRA-FAST DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles for page ${page}`);
+    console.log(`⚡ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} initial articles for page ${page}`);
 
-    // OPTIMIZATION 4: Skip source grouping for ultra-speed - return articles directly
+    // Apply source group filtering and randomization
+    const filteringStart = Date.now();
+    
+    // Step 1: Apply source group filtering (max 3 per group)
+    const sourceGroupCounts = {};
+    const filteredArticles = [];
+    
+    for (const article of articles) {
+      const groupName = article.sourceGroupName || article.sourceName || 'unknown';
+      const currentCount = sourceGroupCounts[groupName] || 0;
+      
+      if (currentCount < 3) { // Max 3 per source group
+        sourceGroupCounts[groupName] = currentCount + 1;
+        filteredArticles.push(article);
+        
+        // Stop if we have enough articles
+        if (filteredArticles.length >= limit) break;
+      }
+    }
+    
+    // Step 2: Randomize while preserving recency bias
+    // Use a deterministic seed based on user ID, page, and day for consistent randomization
+    const seed = simpleHash(userId + page.toString() + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed with page
+    const rng = lcg(seed);
+    
+    // Apply gentle randomization: shuffle articles within time-based buckets
+    const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
+    const randomizedArticles = [];
+    
+    for (let i = 0; i < filteredArticles.length; i += bucketSize) {
+      const bucket = filteredArticles.slice(i, i + bucketSize);
+      
+      // Fisher-Yates shuffle with deterministic RNG for this bucket
+      for (let j = bucket.length - 1; j > 0; j--) {
+        const k = Math.floor(rng() * (j + 1));
+        [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
+      }
+      
+      randomizedArticles.push(...bucket);
+    }
+    
+    // Take only the requested limit
+    const finalArticles = randomizedArticles.slice(0, limit);
+    
+    console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
+    console.log(`📊 Source group distribution for page ${page}:`, sourceGroupCounts);
+    console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
+
     const totalTime = Date.now() - startTime;
-    console.log(`🚀 ULTRA-FAST personalized-fast complete in ${totalTime}ms - ${articles.length} articles (page ${page}, no source grouping for speed)`);
+    console.log(`🚀 personalized-fast complete in ${totalTime}ms - ${finalArticles.length} articles (page ${page}, with source group filtering)`);
 
-    // OPTIMIZATION 5: 15-minute cache for consistency with personalized-light
+    // Cache the final result
     try {
-      await redis.set(cacheKey, JSON.stringify(articles), 'EX', 900); // 15 min cache
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 900); // 15 min cache
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
@@ -734,11 +865,13 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     // Add performance headers for monitoring
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
-    res.setHeader('X-Optimization-Applied', 'ultra-fast-no-lookup-pagination');
+    res.setHeader('X-Filtering-Time', Date.now() - filteringStart);
+    res.setHeader('X-Optimization-Applied', 'source-group-filtering-randomization-pagination');
     res.setHeader('X-Page', page);
     res.setHeader('X-Personalized', preferredCategories.length > 0 || preferredSources.length > 0 ? 'semi' : 'none');
+    res.setHeader('X-Source-Groups', Object.keys(sourceGroupCounts).length);
 
-    res.json(articles);
+    res.json(finalArticles);
 
   } catch (error) {
     const errorTime = Date.now() - startTime;
