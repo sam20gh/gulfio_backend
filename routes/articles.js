@@ -373,7 +373,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     // Get more articles initially to allow for source group filtering and randomization
     const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
-    
+
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
@@ -438,50 +438,50 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     // Apply source group filtering and randomization
     const filteringStart = Date.now();
-    
+
     // Step 1: Apply source group filtering (max 3 per group)
     const sourceGroupCounts = {};
     const filteredArticles = [];
-    
+
     for (const article of articles) {
       const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
       const currentCount = sourceGroupCounts[groupName] || 0;
-      
+
       if (currentCount < 3) { // Max 3 per source group
         sourceGroupCounts[groupName] = currentCount + 1;
         // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
         const { sourceGroupName, ...cleanArticle } = article;
         filteredArticles.push(cleanArticle);
-        
+
         // Stop if we have enough articles
         if (filteredArticles.length >= limit) break;
       }
     }
-    
+
     // Step 2: Randomize while preserving recency bias
     // Use a deterministic seed based on user ID and day for consistent randomization
     const seed = simpleHash(userId + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed
     const rng = lcg(seed);
-    
+
     // Apply gentle randomization: shuffle articles within time-based buckets
     const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
     const randomizedArticles = [];
-    
+
     for (let i = 0; i < filteredArticles.length; i += bucketSize) {
       const bucket = filteredArticles.slice(i, i + bucketSize);
-      
+
       // Fisher-Yates shuffle with deterministic RNG for this bucket
       for (let j = bucket.length - 1; j > 0; j--) {
         const k = Math.floor(rng() * (j + 1));
         [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
       }
-      
+
       randomizedArticles.push(...bucket);
     }
-    
+
     // Take only the requested limit
     const finalArticles = randomizedArticles.slice(0, limit);
-    
+
     console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
     console.log(`📊 Source group distribution:`, sourceGroupCounts);
     console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
@@ -735,7 +735,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     // Get more articles initially to allow for source group filtering and randomization
     const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
     const initialSkip = Math.max(0, skip - Math.floor(initialLimit / 3)); // Adjust skip for larger initial fetch
-    
+
     const articles = await Article.aggregate([
       {
         // Stage 1: Match with optimized filter (use compound index)
@@ -806,50 +806,50 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
 
     // Apply source group filtering and randomization
     const filteringStart = Date.now();
-    
+
     // Step 1: Apply source group filtering (max 3 per group)
     const sourceGroupCounts = {};
     const filteredArticles = [];
-    
+
     for (const article of articles) {
       const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
       const currentCount = sourceGroupCounts[groupName] || 0;
-      
+
       if (currentCount < 3) { // Max 3 per source group
         sourceGroupCounts[groupName] = currentCount + 1;
         // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
         const { sourceGroupName, ...cleanArticle } = article;
         filteredArticles.push(cleanArticle);
-        
+
         // Stop if we have enough articles
         if (filteredArticles.length >= limit) break;
       }
     }
-    
+
     // Step 2: Randomize while preserving recency bias
     // Use a deterministic seed based on user ID, page, and day for consistent randomization
     const seed = simpleHash(userId + page.toString() + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed with page
     const rng = lcg(seed);
-    
+
     // Apply gentle randomization: shuffle articles within time-based buckets
     const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
     const randomizedArticles = [];
-    
+
     for (let i = 0; i < filteredArticles.length; i += bucketSize) {
       const bucket = filteredArticles.slice(i, i + bucketSize);
-      
+
       // Fisher-Yates shuffle with deterministic RNG for this bucket
       for (let j = bucket.length - 1; j > 0; j--) {
         const k = Math.floor(rng() * (j + 1));
         [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
       }
-      
+
       randomizedArticles.push(...bucket);
     }
-    
+
     // Take only the requested limit
     const finalArticles = randomizedArticles.slice(0, limit);
-    
+
     console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
     console.log(`📊 Source group distribution for page ${page}:`, sourceGroupCounts);
     console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
