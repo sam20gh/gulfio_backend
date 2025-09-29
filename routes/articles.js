@@ -410,7 +410,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         }
       },
       {
-        // Stage 6: Project essential fields
+        // Stage 6: Project essential fields (keep sourceGroupName for filtering but don't expose sourceName to avoid conflicts)
         $project: {
           title: 1,
           content: 1,
@@ -424,8 +424,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           likedBy: 1,
           dislikedBy: 1,
           sourceId: 1,
-          sourceGroupName: 1,
-          sourceName: 1,
+          sourceGroupName: 1, // Keep for internal filtering
           isLight: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -445,12 +444,14 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const filteredArticles = [];
     
     for (const article of articles) {
-      const groupName = article.sourceGroupName || article.sourceName || 'unknown';
+      const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
       const currentCount = sourceGroupCounts[groupName] || 0;
       
       if (currentCount < 3) { // Max 3 per source group
         sourceGroupCounts[groupName] = currentCount + 1;
-        filteredArticles.push(article);
+        // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
+        const { sourceGroupName, ...cleanArticle } = article;
+        filteredArticles.push(cleanArticle);
         
         // Stop if we have enough articles
         if (filteredArticles.length >= limit) break;
@@ -776,7 +777,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
         }
       },
       {
-        // Stage 7: Project essential fields
+        // Stage 7: Project essential fields (keep sourceGroupName for filtering but don't expose sourceName to avoid conflicts)
         $project: {
           title: 1,
           content: 1,
@@ -790,8 +791,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           likedBy: 1,
           dislikedBy: 1,
           sourceId: 1,
-          sourceGroupName: 1,
-          sourceName: 1,
+          sourceGroupName: 1, // Keep for internal filtering
           isFast: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -812,12 +812,14 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     const filteredArticles = [];
     
     for (const article of articles) {
-      const groupName = article.sourceGroupName || article.sourceName || 'unknown';
+      const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
       const currentCount = sourceGroupCounts[groupName] || 0;
       
       if (currentCount < 3) { // Max 3 per source group
         sourceGroupCounts[groupName] = currentCount + 1;
-        filteredArticles.push(article);
+        // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
+        const { sourceGroupName, ...cleanArticle } = article;
+        filteredArticles.push(cleanArticle);
         
         // Stop if we have enough articles
         if (filteredArticles.length >= limit) break;
