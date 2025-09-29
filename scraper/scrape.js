@@ -139,8 +139,13 @@ async function scrapeAllSources(frequency = null) {
     }
 
     console.log('📋 Fetching sources from database...');
-    let sources = await Source.find();
-    console.log(`📊 Found ${sources.length} total sources`);
+    let sources = await Source.find({ status: { $ne: 'blocked' } });
+    console.log(`📊 Found ${sources.length} total sources (excluding blocked)`);
+
+    // Filter out suspended and only keep active sources
+    sources = sources.filter(s => s.status === 'active' || !s.status); // Include sources without status field (backwards compatibility)
+    console.log(`📊 Filtered to ${sources.length} active sources`);
+
     if (frequency) {
         sources = sources.filter(s => s.frequency === frequency);
         console.log(`📊 Filtered to ${sources.length} sources with frequency: ${frequency}`);

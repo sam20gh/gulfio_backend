@@ -300,6 +300,11 @@ async function testSingleSource(sourceId) {
         console.log(`🔗 URL: ${source.url}`);
         console.log(`📊 Type: ${source.type || 'html'}`);
 
+        // Check source status and warn if not active
+        if (source.status && source.status !== 'active') {
+            console.log(`⚠️ WARNING: Source status is "${source.status}" - this source would be skipped during normal scraping`);
+        }
+
         // Check if this is an RSS source
         if (source.type === 'rss') {
             console.log('📡 RSS source detected, using RSS testing function...');
@@ -313,6 +318,7 @@ async function testSingleSource(sourceId) {
                 name: source.name,
                 url: source.url,
                 type: source.type || 'html',
+                status: source.status,
                 selectors: {
                     listSelector: source.listSelector,
                     linkSelector: source.linkSelector,
@@ -326,6 +332,11 @@ async function testSingleSource(sourceId) {
             errors: [],
             success: false
         };
+
+        // Add status warning to test results if source is not active
+        if (source.status && source.status !== 'active') {
+            testResults.steps.push(`⚠️ WARNING: Source status is "${source.status}" - would be skipped during normal scraping`);
+        }
 
         // Step 1: Fetch main page
         testResults.steps.push('Fetching main page...');

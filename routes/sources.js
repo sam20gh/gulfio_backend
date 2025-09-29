@@ -15,7 +15,7 @@ try {
 }
 
 router.get('/', auth, async (req, res) => {
-    const sources = await Source.find();
+    const sources = await Source.find({ status: { $ne: 'blocked' } });
     res.json(sources);
 });
 
@@ -105,12 +105,17 @@ router.get('/search', auth, async (req, res) => {
 
         const regex = new RegExp(query, 'i'); // case-insensitive
         const results = await Source.find({
-            $or: [
-                { name: { $regex: regex } },
-                { category: { $regex: regex } },
-                { groupName: { $regex: regex } }
-            ],
-            language // Add language filter
+            $and: [
+                {
+                    $or: [
+                        { name: { $regex: regex } },
+                        { category: { $regex: regex } },
+                        { groupName: { $regex: regex } }
+                    ]
+                },
+                { language }, // Add language filter
+                { status: { $ne: 'blocked' } } // Exclude blocked sources
+            ]
         })
             .sort({ followers: -1 }) // Sort by popularity
             .limit(20); // Limit results

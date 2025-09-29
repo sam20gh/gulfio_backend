@@ -394,8 +394,15 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           localField: 'sourceId',
           foreignField: '_id',
           as: 'source',
-          pipeline: [{ $project: { groupName: 1, name: 1 } }] // Only get needed fields
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
+            { $project: { groupName: 1, name: 1, status: 1 } } // Only get needed fields
+          ]
         }
+      },
+      {
+        // Stage 4.5: Filter out articles from blocked sources
+        $match: { 'source.0': { $exists: true } }
       },
       {
         // Stage 5: Add source group name for filtering
@@ -760,8 +767,15 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           localField: 'sourceId',
           foreignField: '_id',
           as: 'source',
-          pipeline: [{ $project: { groupName: 1, name: 1 } }] // Only get needed fields
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
+            { $project: { groupName: 1, name: 1, status: 1 } } // Only get needed fields
+          ]
         }
+      },
+      {
+        // Stage 5.5: Filter out articles from blocked sources
+        $match: { 'source.0': { $exists: true } }
       },
       {
         // Stage 6: Add source group name and performance markers
@@ -1556,14 +1570,36 @@ articleRouter.get('/category', async (req, res) => {
     const totalInCategory = await Article.countDocuments({ language, category });
     console.log(`📊 Total articles in category "${category}": ${totalInCategory}`);
 
-    // Fetch articles from the specified category
-    const raw = await Article.find(filter)
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit * 2) // Get more to allow for better ranking
-      .lean();
+    // Fetch articles from the specified category with source filtering
+    const raw = await Article.aggregate([
+      { $match: filter },
+      { $sort: { publishedAt: -1 } },
+      { $skip: skip },
+      { $limit: limit * 2 }, // Get more to allow for better ranking
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
+            { $project: { name: 1, icon: 1, groupName: 1, status: 1 } }
+          ]
+        }
+      },
+      { $match: { 'source.0': { $exists: true } } }, // Only keep articles with valid (non-blocked) sources
+      {
+        $addFields: {
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] }
+        }
+      },
+      { $unset: 'source' } // Remove the source array to clean up the response
+    ]);
 
-    console.log(`📊 Found ${raw.length} articles in category`);
+    console.log(`📊 Found ${raw.length} articles in category (filtered by non-blocked sources)`);
 
     if (raw.length === 0) {
       console.log(`⚠️ No articles found in category: "${category}"`);
@@ -1661,11 +1697,32 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     console.log(`📊 Total articles in category "${category}": ${totalInCategory}`);
 
     // Fetch articles from the specified category
-    const raw = await Article.find(filter)
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit * 2) // Get more to allow for better ranking
-      .lean();
+    const raw = await Article.aggregate([
+      { $match: filter },
+      { $sort: { publishedAt: -1 } },
+      { $skip: skip },
+      { $limit: limit * 2 }, // Get more to allow for better ranking
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } },
+            { $project: { name: 1, icon: 1, groupName: 1 } }
+          ]
+        }
+      },
+      { $match: { 'source.0': { $exists: true } } }, // Only articles from non-blocked sources
+      {
+        $addFields: {
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] }
+        }
+      },
+      { $unset: 'source' }
+    ]);
 
     console.log(`📊 Found ${raw.length} articles after applying user exclusions`);
 
@@ -1673,11 +1730,22 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       console.log(`⚠️ No articles found in category: "${category}" after applying user exclusions`);
 
       // Try without user exclusions to see if that's the issue
-      const rawWithoutExclusions = await Article.find({ language, category })
-        .sort({ publishedAt: -1 })
-        .skip(skip)
-        .limit(5)
-        .lean();
+      const rawWithoutExclusions = await Article.aggregate([
+        { $match: { language, category } },
+        { $sort: { publishedAt: -1 } },
+        { $skip: skip },
+        { $limit: 5 },
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'sourceId',
+            foreignField: '_id',
+            as: 'source',
+            pipeline: [{ $match: { status: { $ne: 'blocked' } } }]
+          }
+        },
+        { $match: { 'source.0': { $exists: true } } }
+      ]);
 
       console.log(`🔍 Articles in "${category}" without user exclusions: ${rawWithoutExclusions.length}`);
 
@@ -1843,12 +1911,18 @@ articleRouter.get('/', async (req, res) => {
     const fetchLimit = limit * fetchMultiplier;
 
     const raw = await Article.find(filter)
-      .populate('sourceId', 'name icon groupName') // Populate source data
+      .populate({
+        path: 'sourceId',
+        select: 'name icon groupName status',
+        match: { status: { $ne: 'blocked' } } // Only populate non-blocked sources
+      })
       .sort({ publishedAt: -1 })
       .limit(fetchLimit) // Get more articles for source filtering and pagination
       .lean();
 
-    console.log(`📊 Found ${raw.length} raw articles from database${userPublisherGroups ? ' (publisher filtered)' : ''}`);
+    // Filter out articles from blocked sources (where sourceId population returned null)
+    const filteredArticles = raw.filter(article => article.sourceId !== null);
+    console.log(`📊 Found ${raw.length} raw articles, ${filteredArticles.length} after filtering blocked sources${userPublisherGroups ? ' (publisher filtered)' : ''}`);
 
     // Re-rank by page-aware recency+engagement for better first page feel
     const freshRatio =
@@ -1857,7 +1931,7 @@ articleRouter.get('/', async (req, res) => {
           page === 3 ? 0.45 :
             0.35;
 
-    const enhancedArticles = raw
+    const enhancedArticles = filteredArticles
       .map((a) => {
         const engagement = calculateEngagementScore(a);
         const recency = basicRecencyScore(a.publishedAt);
@@ -2166,10 +2240,32 @@ articleRouter.get('/feature', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find({ category: 'feature', language })
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    const articles = await Article.aggregate([
+      { $match: { category: 'feature', language } },
+      { $sort: { publishedAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } },
+            { $project: { name: 1, icon: 1, groupName: 1 } }
+          ]
+        }
+      },
+      { $match: { 'source.0': { $exists: true } } }, // Only articles from non-blocked sources
+      {
+        $addFields: {
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] }
+        }
+      },
+      { $unset: 'source' }
+    ]);
 
     const totalFeatureArticles = await Article.countDocuments({ category: 'feature', language });
 
@@ -2214,10 +2310,32 @@ articleRouter.get('/headline', auth, async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-    const articles = await Article.find({ category: 'breaking', language })
-      .sort({ publishedAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    const articles = await Article.aggregate([
+      { $match: { category: 'breaking', language } },
+      { $sort: { publishedAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } },
+            { $project: { name: 1, icon: 1, groupName: 1 } }
+          ]
+        }
+      },
+      { $match: { 'source.0': { $exists: true } } }, // Only articles from non-blocked sources
+      {
+        $addFields: {
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] }
+        }
+      },
+      { $unset: 'source' }
+    ]);
 
     const totalHeadlineArticles = await Article.countDocuments({ category: 'breaking', language });
 
