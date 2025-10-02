@@ -1422,26 +1422,26 @@ router.post('/reels/upload', async (req, res) => {
             });
         }
 
-        // 5. Generate thumbnail in background (don't wait for it)
+        // 5. Generate thumbnail using ThumbnailGenerator service
+        let thumbnailUrl = null;
         try {
             const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
             console.log('🎬 Generating thumbnail for new reel...');
 
-            // Generate thumbnail asynchronously
-            thumbnailGenerator.generateForNewVideo(signedUrl, savedReel._id)
-                .then(thumbnailUrl => {
-                    if (thumbnailUrl) {
-                        // Update the reel with thumbnail URL
-                        Reel.findByIdAndUpdate(savedReel._id, { thumbnailUrl })
-                            .then(() => console.log(`✅ Thumbnail generated for ${savedReel._id}: ${thumbnailUrl}`))
-                            .catch(err => console.error(`❌ Failed to update reel with thumbnail: ${err.message}`));
-                    }
-                })
-                .catch(err => {
-                    console.warn(`⚠️ Thumbnail generation failed for ${savedReel._id}: ${err.message}`);
+            // Generate thumbnail synchronously for immediate feedback
+            thumbnailUrl = await thumbnailGenerator.generateThumbnail(signedUrl, savedReel._id);
+            
+            if (thumbnailUrl) {
+                // Update the reel with thumbnail URL
+                await Reel.findByIdAndUpdate(savedReel._id, { 
+                    thumbnailUrl,
+                    updatedAt: new Date()
                 });
+                console.log(`✅ Thumbnail generated and saved for ${savedReel._id}: ${thumbnailUrl}`);
+            }
         } catch (thumbnailError) {
-            console.warn(`⚠️ Thumbnail service not available: ${thumbnailError.message}`);
+            console.warn(`⚠️ Thumbnail generation failed for ${savedReel._id}: ${thumbnailError.message}`);
+            // Continue without thumbnail - not critical for upload success
         }
 
         res.json({
@@ -1449,10 +1449,12 @@ router.post('/reels/upload', async (req, res) => {
             reel: {
                 _id: savedReel._id,
                 videoUrl: savedReel.videoUrl,
+                thumbnailUrl: thumbnailUrl, // Include thumbnail URL in response
                 caption: savedReel.caption,
                 source: savedReel.source,
                 scrapedAt: savedReel.scrapedAt
-            }
+            },
+            thumbnailGenerated: !!thumbnailUrl
         });
 
     } catch (err) {
