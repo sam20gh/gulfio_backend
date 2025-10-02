@@ -23,13 +23,13 @@ async function generateThumbnailsBatch(batchSize = 5) {
         // Get statistics - check for null thumbnails specifically
         const [totalReels, reelsWithValidThumbnails, reelsWithNullThumbnails] = await Promise.all([
             Reel.countDocuments(),
-            Reel.countDocuments({ 
-                thumbnailUrl: { 
-                    $exists: true, 
-                    $ne: null, 
-                    $ne: '', 
+            Reel.countDocuments({
+                thumbnailUrl: {
+                    $exists: true,
+                    $ne: null,
+                    $ne: '',
                     $regex: /^https?:\/\/.+/ // Must be a valid URL
-                } 
+                }
             }),
             Reel.countDocuments({ thumbnailUrl: null })
         ]);
@@ -78,7 +78,7 @@ async function generateThumbnailsBatch(batchSize = 5) {
                 const thumbnailUrl = await thumbnailGenerator.generateThumbnail(reel.videoUrl, reel._id);
 
                 // Update database
-                await Reel.findByIdAndUpdate(reel._id, { 
+                await Reel.findByIdAndUpdate(reel._id, {
                     thumbnailUrl,
                     updatedAt: new Date() // Update timestamp if your schema has this field
                 });
@@ -95,7 +95,7 @@ async function generateThumbnailsBatch(batchSize = 5) {
             } catch (error) {
                 failed++;
                 console.error(`❌ Failed for reel ${reel._id}: ${error.message}`);
-                
+
                 // Log additional context for debugging
                 if (error.message.includes('invalid') || error.message.includes('format')) {
                     console.error(`   Video URL format issue: ${reel.videoUrl}`);

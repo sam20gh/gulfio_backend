@@ -1430,10 +1430,10 @@ router.post('/reels/upload', async (req, res) => {
 
             // Generate thumbnail synchronously for immediate feedback
             thumbnailUrl = await thumbnailGenerator.generateThumbnail(signedUrl, savedReel._id);
-            
+
             if (thumbnailUrl) {
                 // Update the reel with thumbnail URL
-                await Reel.findByIdAndUpdate(savedReel._id, { 
+                await Reel.findByIdAndUpdate(savedReel._id, {
                     thumbnailUrl,
                     updatedAt: new Date()
                 });
