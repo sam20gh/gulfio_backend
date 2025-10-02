@@ -159,5 +159,17 @@ node_modules
 psd
 thumb
 sketch
+# Naive
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.aab
+*.apk
+*.ipa
+*.md
+*.sh
 
 # End of https://www.toptal.com/developers/gitignore/api/react,node
