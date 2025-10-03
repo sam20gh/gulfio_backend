@@ -1344,11 +1344,16 @@ router.post('/reels/upload', async (req, res) => {
             });
         }
 
-        // 1. Get direct video URL from Instagram
+        // 1. Get direct video URL from Instagram (with timeout)
         console.log('🔍 Extracting direct video URL...');
         let directVideoUrl;
         try {
-            directVideoUrl = await getInstagramVideoUrl(reelUrl);
+            const extractPromise = getInstagramVideoUrl(reelUrl);
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Instagram extraction timeout after 30s')), 30000)
+            );
+
+            directVideoUrl = await Promise.race([extractPromise, timeoutPromise]);
             console.log(`🎯 Extracted video URL: ${directVideoUrl}`);
         } catch (error) {
             console.error('❌ Failed to extract Instagram video URL:', error);
@@ -1358,11 +1363,16 @@ router.post('/reels/upload', async (req, res) => {
             });
         }
 
-        // 2. Upload to S3 and get signed URL
+        // 2. Upload to S3 and get signed URL (with timeout)
         const filename = `gulfio-${Date.now()}.mp4`;
         let uploadResult;
         try {
-            uploadResult = await uploadToR2(directVideoUrl, filename);
+            const uploadPromise = uploadToR2(directVideoUrl, filename);
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Upload timeout after 60s')), 60000)
+            );
+
+            uploadResult = await Promise.race([uploadPromise, timeoutPromise]);
             console.log(`🎬 Upload completed: ${filename}`);
         } catch (error) {
             console.error('❌ Failed to upload video:', error);
@@ -1374,30 +1384,7 @@ router.post('/reels/upload', async (req, res) => {
 
         const { signedUrl, key } = uploadResult;
 
-        // 3. Generate AI embedding and PCA embedding
-        let embedding, embedding_pca;
-        try {
-            const embedInput = `${caption}\n\n${reelUrl}`;
-            embedding = await getDeepSeekEmbedding(embedInput);
-            console.log(`🧠 Generated embedding: ${embedding?.length} dimensions`);
-
-            // Generate PCA embedding if the main embedding was successful
-            if (embedding && embedding.length === 1536) {
-                embedding_pca = await convertToPCAEmbedding(embedding);
-                if (embedding_pca) {
-                    console.log(`🧠 Generated PCA embedding: ${embedding_pca.length} dimensions`);
-                } else {
-                    console.warn('⚠️ Failed to generate PCA embedding, continuing without it');
-                }
-            }
-        } catch (error) {
-            console.error('❌ Failed to generate embedding:', error);
-            // Continue without embedding - it's not critical for basic functionality
-            embedding = null;
-            embedding_pca = null;
-        }
-
-        // 4. Save to MongoDB
+        // 3. Save to MongoDB first (fast response), then generate embeddings in background
         let savedReel;
         try {
             const newReel = new Reel({
@@ -1408,12 +1395,13 @@ router.post('/reels/upload', async (req, res) => {
                 reelId: filename,
                 scrapedAt: new Date(),
                 updatedAt: new Date(),
-                embedding,
-                embedding_pca
+                // Will add embeddings in background
+                embedding: null,
+                embedding_pca: null
             });
 
             savedReel = await newReel.save();
-            console.log(`💾 Saved to MongoDB: ${savedReel._id} with embedding: ${!!embedding}, PCA: ${!!embedding_pca}`);
+            console.log(`💾 Saved to MongoDB: ${savedReel._id}`);
         } catch (error) {
             console.error('❌ Failed to save to database:', error);
             return res.status(500).json({
@@ -1422,39 +1410,109 @@ router.post('/reels/upload', async (req, res) => {
             });
         }
 
-        // 5. Generate thumbnail using ThumbnailGenerator service
-        let thumbnailUrl = null;
-        try {
-            const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
-            console.log('🎬 Generating thumbnail for new reel...');
+        // 4. Generate embeddings and thumbnail in background (non-blocking)
+        setTimeout(async () => {
+            try {
+                console.log('🧠 Starting background embedding generation...');
+                const embedInput = `${caption}\n\n${reelUrl}`;
 
-            // Generate thumbnail synchronously for immediate feedback
-            thumbnailUrl = await thumbnailGenerator.generateThumbnail(signedUrl, savedReel._id);
+                let embedding = null;
+                let embedding_pca = null;
 
-            if (thumbnailUrl) {
-                // Update the reel with thumbnail URL
-                await Reel.findByIdAndUpdate(savedReel._id, {
-                    thumbnailUrl,
-                    updatedAt: new Date()
+                try {
+                    console.log('🔄 Calling getDeepSeekEmbedding...');
+                    embedding = await getDeepSeekEmbedding(embedInput);
+                    console.log(`🧠 Generated embedding: ${embedding?.length} dimensions`);
+
+                    // Generate PCA embedding if the main embedding was successful
+                    if (embedding && embedding.length === 1536) {
+                        console.log('🔄 Converting to PCA embedding...');
+                        embedding_pca = await convertToPCAEmbedding(embedding);
+                        if (embedding_pca) {
+                            console.log(`🧠 Generated PCA embedding: ${embedding_pca.length} dimensions`);
+                        } else {
+                            console.warn('⚠️ Failed to generate PCA embedding - will save without PCA');
+                        }
+                    } else {
+                        console.warn(`⚠️ Embedding size unexpected: ${embedding?.length} (expected 1536)`);
+                    }
+                } catch (embeddingError) {
+                    console.error('❌ Failed to generate embedding:', {
+                        error: embeddingError.message,
+                        stack: embeddingError.stack,
+                        input: embedInput.substring(0, 100) + '...'
+                    });
+                }
+
+                // Update reel with embeddings (even if only one is successful)
+                if (embedding || embedding_pca) {
+                    const updateData = { updatedAt: new Date() };
+                    if (embedding) updateData.embedding = embedding;
+                    if (embedding_pca) updateData.embedding_pca = embedding_pca;
+
+                    await Reel.findByIdAndUpdate(savedReel._id, updateData);
+                    console.log(`✅ Updated reel ${savedReel._id} with embeddings - full: ${!!embedding}, PCA: ${!!embedding_pca}`);
+                } else {
+                    console.error(`❌ No embeddings generated for reel ${savedReel._id}`);
+                }
+            } catch (error) {
+                console.error('❌ Background embedding generation failed:', {
+                    error: error.message,
+                    stack: error.stack,
+                    reelId: savedReel._id
                 });
-                console.log(`✅ Thumbnail generated and saved for ${savedReel._id}: ${thumbnailUrl}`);
             }
-        } catch (thumbnailError) {
-            console.warn(`⚠️ Thumbnail generation failed for ${savedReel._id}: ${thumbnailError.message}`);
-            // Continue without thumbnail - not critical for upload success
-        }
+        }, 100); // Start after 100ms
+
+        // 5. Generate thumbnail in background (don't wait for it)
+        setTimeout(async () => {
+            try {
+                const { thumbnailGenerator } = require('../services/ThumbnailGenerator');
+                console.log('🎬 Starting background thumbnail generation...');
+
+                // Use the new method that fetches video URL from database by reel ID
+                const thumbnailUrl = await thumbnailGenerator.generateThumbnailById(savedReel._id);
+
+                if (thumbnailUrl) {
+                    // Update the reel with thumbnail URL
+                    await Reel.findByIdAndUpdate(savedReel._id, {
+                        thumbnailUrl,
+                        updatedAt: new Date()
+                    });
+                    console.log(`✅ Thumbnail generated and saved for ${savedReel._id}: ${thumbnailUrl}`);
+                } else {
+                    console.warn(`⚠️ Thumbnail generation returned null for ${savedReel._id}`);
+                }
+            } catch (err) {
+                console.error(`❌ Thumbnail generation failed for ${savedReel._id}:`, {
+                    error: err.message,
+                    stack: err.stack,
+                    reelId: savedReel._id,
+                    videoUrl: signedUrl
+                });
+
+                // Optional: Set a flag in the database that thumbnail generation failed
+                try {
+                    await Reel.findByIdAndUpdate(savedReel._id, {
+                        thumbnailGenerationFailed: true,
+                        thumbnailError: err.message,
+                        updatedAt: new Date()
+                    });
+                } catch (updateErr) {
+                    console.error(`Failed to update thumbnail error status: ${updateErr.message}`);
+                }
+            }
+        }, 1000); // Start after 1 second to let DB save complete
 
         res.json({
             message: '✅ Reel uploaded and saved!',
             reel: {
                 _id: savedReel._id,
                 videoUrl: savedReel.videoUrl,
-                thumbnailUrl: thumbnailUrl, // Include thumbnail URL in response
                 caption: savedReel.caption,
                 source: savedReel.source,
                 scrapedAt: savedReel.scrapedAt
-            },
-            thumbnailGenerated: !!thumbnailUrl
+            }
         });
 
     } catch (err) {

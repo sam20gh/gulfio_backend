@@ -4,13 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-// Configure AWS S3 (for Cloudflare R2 compatibility)
+// Configure AWS S3 using the same environment variables as the upload route
 const s3Client = new S3Client({
-    region: 'auto', // Use 'auto' for Cloudflare R2
-    endpoint: process.env.R2_ENDPOINT,
+    region: process.env.AWS_S3_REGION || 'me-central-1',
     credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY,
-        secretAccessKey: process.env.R2_SECRET_KEY,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     },
 });
 
@@ -18,7 +17,15 @@ class ThumbnailGenerator {
     constructor() {
         this.tempDir = path.join(__dirname, '..', 'temp', 'thumbnails');
         this.ensureTempDir();
-        this.bucketName = process.env.R2_BUCKET || 'gulfio';
+        this.bucketName = process.env.AWS_S3_BUCKET || 'blipsbucket';
+
+        // Debug AWS configuration
+        console.log('🔧 ThumbnailGenerator AWS Config:', {
+            region: process.env.AWS_S3_REGION ? 'Set' : 'Missing',
+            bucket: this.bucketName,
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID ? 'Set' : 'Missing',
+            secretKey: process.env.AWS_SECRET_ACCESS_KEY ? 'Set' : 'Missing'
+        });
     }
 
     ensureTempDir() {
@@ -74,8 +81,12 @@ class ThumbnailGenerator {
                 CacheControl: 'max-age=31536000', // Cache for 1 year
             });
 
+            console.log(`🚀 Uploading thumbnail to S3: ${this.bucketName}/${s3Key}`);
             const uploadResult = await s3Client.send(uploadCommand);
-            const thumbnailUrl = `${process.env.R2_PUBLIC_URL}/thumbnails/${reelId}-thumbnail.jpg`;
+
+            // Generate AWS S3 public URL
+            const thumbnailUrl = `https://${this.bucketName}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
+            console.log(`🔗 Generated thumbnail URL: ${thumbnailUrl}`);
 
             // Clean up temp file
             this.cleanupTempFile(thumbnailPath);
@@ -84,7 +95,15 @@ class ThumbnailGenerator {
             return thumbnailUrl;
 
         } catch (error) {
-            console.error(`❌ Thumbnail generation failed for ${reelId}:`, error.message);
+            console.error(`❌ Thumbnail generation failed for ${reelId}:`, {
+                error: error.message,
+                stack: error.stack,
+                videoUrl,
+                reelId,
+                tempPath: thumbnailPath,
+                bucketName: this.bucketName,
+                hasCredentials: !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
+            });
 
             // Clean up on error
             this.cleanupTempFile(thumbnailPath);
@@ -178,6 +197,34 @@ class ThumbnailGenerator {
         } catch (error) {
             console.error(`❌ Failed to generate thumbnail for new video ${reelId}:`, error.message);
             // Return null so the video can still be saved without thumbnail
+            return null;
+        }
+    }
+
+    // Generate thumbnail by reel ID (fetches video URL from database)
+    async generateThumbnailById(reelId) {
+        try {
+            const Reel = require('../models/Reel');
+            console.log(`🔍 Fetching reel data for ID: ${reelId}`);
+
+            const reel = await Reel.findById(reelId);
+            if (!reel) {
+                throw new Error(`Reel not found with ID: ${reelId}`);
+            }
+
+            if (!reel.videoUrl) {
+                throw new Error(`Reel ${reelId} has no videoUrl`);
+            }
+
+            console.log(`✅ Found reel: ${reel.videoUrl}`);
+            const thumbnailUrl = await this.generateThumbnail(reel.videoUrl, reelId);
+            return thumbnailUrl;
+        } catch (error) {
+            console.error(`❌ Failed to generate thumbnail by ID ${reelId}:`, {
+                error: error.message,
+                stack: error.stack,
+                reelId
+            });
             return null;
         }
     }
