@@ -49,15 +49,34 @@ const {
     AWS_S3_BUCKET,
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
+    R2_ENDPOINT,
+    R2_ACCESS_KEY,
+    R2_SECRET_KEY,
+    R2_PUBLIC_URL,
+    R2_BUCKET,
     ADMIN_API_KEY
 } = process.env;
 
-// Debug AWS configuration
-console.log('🔧 AWS Configuration Debug:', {
-    region: AWS_S3_REGION ? 'Set' : 'Missing',
-    bucket: AWS_S3_BUCKET ? 'Set' : 'Missing',
-    accessKeyId: AWS_ACCESS_KEY_ID ? 'Set' : 'Missing',
-    secretKey: AWS_SECRET_ACCESS_KEY ? 'Set' : 'Missing'
+// Debug storage configuration - prefer AWS S3 over R2 (since most reels are in S3)
+const isUsingAWS = AWS_S3_REGION && AWS_S3_BUCKET && AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY;
+const isUsingR2 = R2_ENDPOINT && R2_ACCESS_KEY && R2_SECRET_KEY && R2_BUCKET;
+
+console.log('🔧 Storage Configuration Debug:', {
+    r2: {
+        endpoint: R2_ENDPOINT ? 'Set' : 'Missing',
+        bucket: R2_BUCKET ? 'Set' : 'Missing',
+        accessKey: R2_ACCESS_KEY ? 'Set' : 'Missing',
+        secretKey: R2_SECRET_KEY ? 'Set' : 'Missing',
+        publicUrl: R2_PUBLIC_URL ? 'Set' : 'Missing'
+    },
+    aws: {
+        region: AWS_S3_REGION ? 'Set' : 'Missing',
+        bucket: AWS_S3_BUCKET ? 'Set' : 'Missing',
+        accessKeyId: AWS_ACCESS_KEY_ID ? 'Set' : 'Missing',
+        secretKey: AWS_SECRET_ACCESS_KEY ? 'Set' : 'Missing'
+    },
+    usingR2: isUsingR2,
+    usingAWS: isUsingAWS
 });
 
 function cosineSimilarity(vec1, vec2) {
@@ -432,20 +451,48 @@ async function getInstagramVideoUrl(reelUrl) {
         throw new Error('Failed to extract video URL using btch-downloader');
     }
 }
-// Helper: Upload to R2
+// Helper: Initialize storage client (R2 or S3)
 let s3;
+let storageConfig = {};
+
 try {
-    s3 = new S3Client({
-        region: AWS_S3_REGION || 'me-central-1',
-        credentials: {
-            accessKeyId: AWS_ACCESS_KEY_ID,
-            secretAccessKey: AWS_SECRET_ACCESS_KEY,
-        },
-    });
-    console.log('✅ S3 Client initialized successfully');
+    if (isUsingAWS) {
+        // Configure for AWS S3 (primary storage)
+        s3 = new S3Client({
+            region: AWS_S3_REGION || 'me-central-1',
+            credentials: {
+                accessKeyId: AWS_ACCESS_KEY_ID,
+                secretAccessKey: AWS_SECRET_ACCESS_KEY,
+            },
+        });
+        storageConfig = {
+            bucket: AWS_S3_BUCKET,
+            region: AWS_S3_REGION,
+            type: 'S3'
+        };
+        console.log('✅ S3 Client initialized successfully');
+    } else if (isUsingR2) {
+        // Configure for Cloudflare R2 (fallback for old reels)
+        s3 = new S3Client({
+            region: 'auto',
+            endpoint: R2_ENDPOINT,
+            credentials: {
+                accessKeyId: R2_ACCESS_KEY,
+                secretAccessKey: R2_SECRET_KEY,
+            },
+        });
+        storageConfig = {
+            bucket: R2_BUCKET,
+            publicUrl: R2_PUBLIC_URL,
+            type: 'R2'
+        };
+        console.log('✅ R2 Client initialized successfully');
+    } else {
+        throw new Error('No storage configuration found. Please configure either AWS S3 or R2.');
+    }
 } catch (error) {
-    console.error('❌ Failed to initialize S3 Client:', error);
-    throw new Error(`S3 Client initialization failed: ${error.message}`);
+    console.error('❌ Failed to initialize Storage Client:', error);
+    throw new Error(`Storage Client initialization failed: ${error.message}`);
 }
 
 async function uploadToR2(videoUrl, filename) {
@@ -464,26 +511,26 @@ async function uploadToR2(videoUrl, filename) {
         console.log(`📊 Video downloaded: ${response.data.length} bytes`);
         const buffer = Buffer.from(response.data);
 
-        if (!AWS_S3_BUCKET) {
-            throw new Error('AWS_S3_BUCKET environment variable is not set');
+        if (!storageConfig.bucket) {
+            throw new Error(`${storageConfig.type} bucket environment variable is not set`);
         }
 
         const command = new PutObjectCommand({
-            Bucket: AWS_S3_BUCKET,
+            Bucket: storageConfig.bucket,
             Key: filename,
             Body: buffer,
             ContentType: 'video/mp4',
         });
 
-        console.log(`🚀 Uploading to S3 bucket: ${AWS_S3_BUCKET}`);
+        console.log(`🚀 Uploading to ${storageConfig.type} bucket: ${storageConfig.bucket}`);
         await s3.send(command);
-        console.log(`✅ S3 upload successful: ${filename}`);
+        console.log(`✅ ${storageConfig.type} upload successful: ${filename}`);
 
         // Generate signed URL (valid for 7 days)
         const signedUrl = await getSignedUrl(
             s3,
             new GetObjectCommand({
-                Bucket: AWS_S3_BUCKET,
+                Bucket: storageConfig.bucket,
                 Key: filename,
             }),
             { expiresIn: 60 * 60 * 24 * 7 } // 7 days
@@ -519,27 +566,46 @@ const isSignedS3Url = (u) => {
     }
 };
 
-const extractKeyFromUrl = (u, bucket = AWS_S3_BUCKET, region = AWS_S3_REGION) => {
+const extractKeyFromUrl = (u, bucket = null, region = null) => {
     try {
         const url = new URL(u);
         const host = url.hostname.toLowerCase();
         const path = decodeURIComponent(url.pathname || '/');
 
-        // virtual-hosted style
-        const vhHosts = new Set([
-            `${bucket}.s3.${region}.amazonaws.com`,
-            `${bucket}.s3.amazonaws.com`
-        ]);
-        if (vhHosts.has(host)) return path.replace(/^\/+/, '');
+        // AWS S3 URLs - Handle both virtual-hosted and path-style
+        // Virtual-hosted style: https://bucket.s3.region.amazonaws.com/key
+        // Path style: https://s3.region.amazonaws.com/bucket/key
 
-        // path style
-        if (host === `s3.${region}.amazonaws.com` || host === 's3.amazonaws.com') {
-            const parts = path.split('/').filter(Boolean);
-            if (parts.length >= 2 && parts[0] === bucket) return parts.slice(1).join('/');
+        // Check if it's an S3 URL by looking for amazonaws.com
+        if (host.includes('amazonaws.com')) {
+            // Virtual-hosted style (bucket.s3.region.amazonaws.com)
+            if (host.includes('.s3.') && host.includes('.amazonaws.com')) {
+                return path.replace(/^\/+/, '');
+            }
+
+            // Path style (s3.region.amazonaws.com/bucket/key)
+            if (host.startsWith('s3.') && host.includes('.amazonaws.com')) {
+                const parts = path.split('/').filter(Boolean);
+                if (parts.length >= 2) {
+                    // First part is bucket, rest is the key
+                    return parts.slice(1).join('/');
+                }
+            }
+
+            // Generic S3 URL - use path as key
+            return path.replace(/^\/+/, '');
         }
 
-        return null;
-    } catch {
+        // Cloudflare R2 URLs (pub-xxxxx.r2.dev or custom domain)
+        if (host.includes('.r2.dev') || host.includes('r2.dev')) {
+            // For R2, the path is the key (remove leading slash)
+            return path.replace(/^\/+/, '');
+        }
+
+        // Fallback: try to use the path as the key
+        return path.replace(/^\/+/, '') || null;
+    } catch (error) {
+        console.warn('Error extracting key from URL:', error.message);
         return null;
     }
 };
@@ -1766,6 +1832,34 @@ router.get('/reels/debug', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// Helper function to check if a signed URL is expired
+const isUrlExpired = (url) => {
+    if (!url) return true;
+
+    try {
+        const urlObj = new URL(url);
+        const expires = urlObj.searchParams.get('X-Amz-Expires');
+        const xAmzDate = urlObj.searchParams.get('X-Amz-Date');
+
+        if (!expires || !xAmzDate) {
+            return true; // No expiration info = treat as expired
+        }
+
+        // Parse the X-Amz-Date (format: 20251004T203338Z)
+        const signTime = new Date(xAmzDate.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'));
+        const expiryTime = new Date(signTime.getTime() + parseInt(expires) * 1000);
+        const now = new Date();
+
+        // Add 1 hour buffer before expiry to ensure URLs don't expire while in use
+        const bufferTime = new Date(expiryTime.getTime() - (60 * 60 * 1000)); // 1 hour before expiry
+
+        return now > bufferTime;
+    } catch (error) {
+        console.warn('Error checking URL expiration:', error.message);
+        return true; // If we can't parse, treat as expired
+    }
+};
+
 // Refresh signed S3 URLs for all Reels — for Google Cloud Scheduler
 router.post('/reels/refresh-urls', async (req, res) => {
     try {
@@ -1775,39 +1869,94 @@ router.post('/reels/refresh-urls', async (req, res) => {
         }
 
         const force = String(req.query.force || '').toLowerCase() === 'true';
-        const reels = await Reel.find({}, '_id originalKey videoUrl').lean();
+        const limit = parseInt(req.query.limit) || 1000; // Process in batches
+        const skip = parseInt(req.query.skip) || 0;
+
+        console.log(`🔄 Starting URL refresh - Force: ${force}, Limit: ${limit}, Skip: ${skip}`);
+
+        const reels = await Reel.find({}, '_id originalKey videoUrl updatedAt')
+            .limit(limit)
+            .skip(skip)
+            .lean();
 
         let refreshed = 0;
         let backfilledOriginalKey = 0;
         let skipped = 0;
         let failed = 0;
+        let alreadyFresh = 0;
+
+        console.log(`📊 Processing ${reels.length} reels`);
 
         for (const reel of reels) {
             try {
+                // Skip R2 URLs as they are public and don't need refreshing
+                if (reel.videoUrl && reel.videoUrl.includes('.r2.dev')) {
+                    console.log(`🔄 Skipping R2 reel ${reel._id} - public URL doesn't need refresh`);
+                    skipped++;
+                    continue;
+                }
+
+                // Only process S3 URLs (signed URLs that expire)
+                if (!reel.videoUrl || !reel.videoUrl.includes('amazonaws.com')) {
+                    console.warn(`⚠️ Skipping reel ${reel._id} - not an S3 URL`);
+                    skipped++;
+                    continue;
+                }
+
                 let key = reel.originalKey;
-                if (!key && reel.videoUrl) key = extractKeyFromUrl(reel.videoUrl);
+
+                // Try to extract key from URL if originalKey is missing
+                if (!key && reel.videoUrl) {
+                    key = extractKeyFromUrl(reel.videoUrl);
+                }
 
                 if (!key) {
+                    console.warn(`⚠️ No key found for S3 reel ${reel._id}`);
                     skipped++;
                     continue;
                 }
 
-                if (!force && isSignedS3Url(reel.videoUrl)) {
-                    skipped++;
+                // Check if URL is expired or force refresh
+                const urlExpired = isUrlExpired(reel.videoUrl);
+
+                if (!force && !urlExpired) {
+                    alreadyFresh++;
                     continue;
                 }
 
+                // Determine which bucket to use based on URL
+                let bucketToUse = storageConfig.bucket;
+
+                // If the URL is from a different storage system, extract the correct bucket
+                if (reel.videoUrl) {
+                    const urlHost = new URL(reel.videoUrl).hostname.toLowerCase();
+
+                    // Extract bucket from S3 URL if different from config
+                    if (urlHost.includes('amazonaws.com') && urlHost.includes('.s3.')) {
+                        const bucketFromUrl = urlHost.split('.s3.')[0];
+                        if (bucketFromUrl && bucketFromUrl !== bucketToUse) {
+                            bucketToUse = bucketFromUrl;
+                            console.log(`🔄 Using bucket from URL: ${bucketToUse} for reel ${reel._id}`);
+                        }
+                    }
+                }
+
+                // Verify the object exists in storage
                 try {
-                    await s3.send(new HeadObjectCommand({ Bucket: AWS_S3_BUCKET, Key: key }));
-                } catch {
-                    skipped++;
+                    await s3.send(new HeadObjectCommand({ Bucket: bucketToUse, Key: key }));
+                } catch (storageError) {
+                    console.warn(`⚠️ Object not found for key ${key} in bucket ${bucketToUse}, reel ${reel._id}: ${storageError.message}`);
+                    failed++;
                     continue;
                 }
 
-                const cmd = new GetObjectCommand({ Bucket: AWS_S3_BUCKET, Key: key });
+                // Generate new signed URL (valid for 7 days)
+                const cmd = new GetObjectCommand({ Bucket: bucketToUse, Key: key });
                 const signed = await getSignedUrl(s3, cmd, { expiresIn: 60 * 60 * 24 * 7 });
 
                 const update = { videoUrl: signed, updatedAt: new Date() };
+
+                // Backfill originalKey if missing
                 if (!reel.originalKey) {
                     update.originalKey = key;
                     backfilledOriginalKey++;
@@ -1815,25 +1964,47 @@ router.post('/reels/refresh-urls', async (req, res) => {
 
                 await Reel.updateOne({ _id: reel._id }, { $set: update });
                 refreshed++;
+
+                if (refreshed % 100 === 0) {
+                    console.log(`✅ Refreshed ${refreshed} URLs so far...`);
+                }
+
             } catch (err) {
                 failed++;
-                console.warn(`⚠️ Failed to refresh/backfill _id=${reel._id}: ${err.message}`);
+                console.error(`❌ Failed to refresh reel ${reel._id}: ${err.message}`);
             }
         }
 
+        const totalReels = await Reel.countDocuments();
+        const hasMore = skip + limit < totalReels;
+
+        console.log(`🎯 S3 URL refresh complete: ${refreshed} S3 URLs refreshed, ${skipped} skipped (R2 + invalid), ${failed} failed, ${alreadyFresh} already fresh`);
+
         res.json({
-            message: '✅ Reel video URLs processed',
-            refreshed,
-            backfilledOriginalKey,
-            skipped,
-            failed,
-            bucket: AWS_S3_BUCKET,
-            region: AWS_S3_REGION,
-            force
+            message: '✅ S3 reel video URLs processed (R2 URLs skipped - no refresh needed)',
+            statistics: {
+                s3UrlsRefreshed: refreshed,
+                backfilledOriginalKey,
+                skipped: `${skipped} (includes R2 reels which don't need refresh)`,
+                failed,
+                alreadyFresh,
+                processed: reels.length,
+                totalReels,
+                hasMore,
+                nextSkip: hasMore ? skip + limit : null
+            },
+            config: {
+                bucket: storageConfig.bucket,
+                region: storageConfig.region || AWS_S3_REGION,
+                type: storageConfig.type,
+                force,
+                limit,
+                skip
+            }
         });
     } catch (err) {
         console.error('❌ Failed to refresh reel URLs:', err);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: err.message, stack: err.stack });
     }
 });
 
