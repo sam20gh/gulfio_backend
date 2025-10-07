@@ -719,13 +719,13 @@ router.get('/reels', async (req, res) => {
             // Get different types of content with exclusions to avoid duplicates
             const [recent, popular, trending, random] = await Promise.all([
                 Reel.find()
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey engagement_score')
                     .populate('source', 'name icon favicon')
                     .sort({ scrapedAt: -1 })
                     .limit(recentLimit * 2) // Get more to allow for filtering
                     .lean(),
                 Reel.find()
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey engagement_score')
                     .populate('source', 'name icon favicon')
                     .sort({ viewCount: -1, likes: -1 })
                     .limit(popularLimit * 2)
@@ -738,7 +738,7 @@ router.get('/reels', async (req, res) => {
                         ]
                     }
                 })
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey')
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey engagement_score')
                     .populate('source', 'name icon favicon')
                     .sort({ likes: -1, viewCount: -1 })
                     .limit(trendingLimit * 2)
@@ -806,8 +806,14 @@ router.get('/reels', async (req, res) => {
                 sourcesUsed: Object.keys(sourceCount).length
             });
 
-            return res.json(req.query.simple === 'true' ? shuffledReels : {
-                reels: shuffledReels,
+            // Map engagement_score to engagementScore for frontend compatibility
+            const mappedShuffledReels = shuffledReels.map(reel => ({
+                ...reel,
+                engagementScore: reel.engagement_score // Map snake_case to camelCase
+            }));
+
+            return res.json(req.query.simple === 'true' ? mappedShuffledReels : {
+                reels: mappedShuffledReels,
                 pagination: {
                     currentPage: page,
                     totalPages: Math.ceil(1000 / limit), // Approximate for mixed content
@@ -848,7 +854,7 @@ router.get('/reels', async (req, res) => {
             // Parallel execution for better performance
             [reels, totalCount] = await Promise.all([
                 Reel.find()
-                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey') // Only select needed fields
+                    .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt embedding originalKey engagement_score') // Only select needed fields including engagement_score
                     .populate('source', 'name icon favicon') // Populate source info efficiently with more fields
                     .sort(sortQuery)
                     .skip(actualSkip)
@@ -868,15 +874,21 @@ router.get('/reels', async (req, res) => {
             });
         }
 
+        // Map engagement_score to engagementScore for frontend compatibility
+        const mappedReels = reels.map(reel => ({
+            ...reel,
+            engagementScore: reel.engagement_score // Map snake_case to camelCase
+        }));
+
         const totalPages = Math.ceil(totalCount / limit);
 
         // Return direct array if no pagination metadata needed (for mobile apps)
         if (req.query.simple === 'true') {
-            return res.json(reels);
+            return res.json(mappedReels);
         }
 
         res.json({
-            reels,
+            reels: mappedReels,
             pagination: {
                 currentPage: page,
                 totalPages,
@@ -1623,14 +1635,20 @@ router.get('/reels/trending', async (req, res) => {
         }
 
         const trending = await Reel.find()
-            .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt')
+            .select('source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt engagement_score')
             .populate('source', 'name icon favicon') // Populate source info
             .sort({ viewCount: -1, likes: -1 })
             .limit(20)
             .lean();
 
-        reelCache.set(cacheKey, trending);
-        res.json(trending);
+        // Map engagement_score to engagementScore for frontend compatibility
+        const mappedTrending = trending.map(reel => ({
+            ...reel,
+            engagementScore: reel.engagement_score
+        }));
+
+        reelCache.set(cacheKey, mappedTrending);
+        res.json(mappedTrending);
     } catch (err) {
         console.error('Error fetching trending reels:', err.message);
         res.status(500).json({ error: 'Failed to fetch trending reels' });
@@ -1656,7 +1674,7 @@ router.post('/reels/recommendations', async (req, res) => {
         // Use PCA embeddings if we receive a 128-dimension embedding
         const usePCA = embedding.length === 128;
         const embeddingField = usePCA ? 'embedding_pca' : 'embedding';
-        const selectFields = `source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt ${embeddingField}`;
+        const selectFields = `source reelId videoUrl thumbnailUrl caption likes dislikes viewCount saves scrapedAt publishedAt engagement_score ${embeddingField}`;
 
         console.log(`🎯 Using ${usePCA ? 'PCA' : 'full'} embeddings for recommendation calculation`);
 
@@ -1792,7 +1810,13 @@ router.post('/reels/recommendations', async (req, res) => {
             avgFinalScore: (finalReels.reduce((sum, r) => sum + r.finalScore, 0) / finalReels.length).toFixed(3)
         });
 
-        res.json(finalReels);
+        // Map engagement_score to engagementScore for frontend compatibility
+        const mappedFinalReels = finalReels.map(reel => ({
+            ...reel,
+            engagementScore: reel.engagement_score
+        }));
+
+        res.json(mappedFinalReels);
     } catch (err) {
         console.error('Error fetching recommendations:', err.message);
         res.status(500).json({ error: 'Failed to fetch recommendations' });
