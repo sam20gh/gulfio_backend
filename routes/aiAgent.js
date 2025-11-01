@@ -34,10 +34,20 @@ router.get('/suggestions', async (req, res) => {
 // Start a new chat session
 router.post('/chat/session', auth, async (req, res) => {
     try {
-        console.log('🤖 Creating new chat session for user:', req.user.uid);
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
+        console.log('🤖 Creating new chat session for user:', userId);
+        console.log('🔍 Available user fields:', Object.keys(req.user || {}));
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID not found in token'
+            });
+        }
 
         const chatSession = new ChatSession({
-            userId: req.user.uid,
+            userId: userId,
             startedAt: new Date(),
             isActive: true,
             language: req.body.language || 'english'
@@ -65,10 +75,13 @@ router.post('/chat/session', auth, async (req, res) => {
 router.post('/chat/message', auth, async (req, res) => {
     try {
         const { sessionId, message, category, usePersonalization = true } = req.body;
+        
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
         console.log('🤖 Processing message:', {
             sessionId,
-            userId: req.user.uid,
+            userId: userId,
             message: message?.substring(0, 100),
             category
         });
@@ -80,10 +93,17 @@ router.post('/chat/message', auth, async (req, res) => {
             });
         }
 
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID not found in token'
+            });
+        }
+
         // Verify session belongs to user
         const session = await ChatSession.findOne({
             _id: sessionId,
-            userId: req.user.uid
+            userId: userId
         });
 
         if (!session) {
@@ -96,7 +116,7 @@ router.post('/chat/message', auth, async (req, res) => {
         // Save user message
         const userMessage = new ChatMessage({
             sessionId,
-            userId: req.user.uid,
+            userId: userId,
             role: 'user',
             content: message,
             timestamp: new Date()
@@ -110,7 +130,7 @@ router.post('/chat/message', auth, async (req, res) => {
         const relevantArticles = await searchArticles(
             message,
             category,
-            req.user.uid,
+            userId,
             usePersonalization
         );
 
@@ -120,13 +140,13 @@ router.post('/chat/message', auth, async (req, res) => {
             message,
             relevantArticles,
             sessionId,
-            req.user.uid
+            userId
         );
 
         // Save AI response
         const aiMessage = new ChatMessage({
             sessionId,
-            userId: req.user.uid,
+            userId: userId,
             role: 'assistant',
             content: aiResponse.text,
             articleReferences: aiResponse.articles.map(a => a._id),
@@ -166,13 +186,23 @@ router.get('/chat/history/:sessionId', auth, async (req, res) => {
     try {
         const { sessionId } = req.params;
         const { limit = 50, offset = 0 } = req.query;
+        
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
         console.log('📜 Getting chat history for session:', sessionId);
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID not found in token'
+            });
+        }
 
         // Verify session belongs to user
         const session = await ChatSession.findOne({
             _id: sessionId,
-            userId: req.user.uid
+            userId: userId
         });
 
         if (!session) {
@@ -184,7 +214,7 @@ router.get('/chat/history/:sessionId', auth, async (req, res) => {
 
         const messages = await ChatMessage.find({
             sessionId,
-            userId: req.user.uid
+            userId: userId
         })
             .sort({ timestamp: 1 }) // Ascending order for chat history
             .skip(parseInt(offset))
@@ -212,11 +242,21 @@ router.get('/chat/history/:sessionId', auth, async (req, res) => {
 router.get('/chat/sessions', auth, async (req, res) => {
     try {
         const { limit = 20 } = req.query;
+        
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
-        console.log('📋 Getting chat sessions for user:', req.user.uid);
+        console.log('📋 Getting chat sessions for user:', userId);
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID not found in token'
+            });
+        }
 
         const sessions = await ChatSession.find({
-            userId: req.user.uid
+            userId: userId
         })
             .sort({ lastMessageAt: -1 })
             .limit(parseInt(limit))
@@ -241,13 +281,23 @@ router.get('/chat/sessions', auth, async (req, res) => {
 router.delete('/chat/session/:sessionId', auth, async (req, res) => {
     try {
         const { sessionId } = req.params;
+        
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
         console.log('🗑️ Deleting chat session:', sessionId);
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID not found in token'
+            });
+        }
 
         // Verify session belongs to user
         const session = await ChatSession.findOne({
             _id: sessionId,
-            userId: req.user.uid
+            userId: userId
         });
 
         if (!session) {
@@ -282,6 +332,9 @@ router.delete('/chat/session/:sessionId', auth, async (req, res) => {
 router.get('/search', auth, async (req, res) => {
     try {
         const { q: query, category, limit = 5 } = req.query;
+        
+        // Extract user ID from JWT token (handle different field names)
+        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
         if (!query) {
             return res.status(400).json({
@@ -292,7 +345,7 @@ router.get('/search', auth, async (req, res) => {
 
         console.log('🔍 Search request:', { query, category, limit });
 
-        const articles = await searchArticles(query, category, req.user.uid, true);
+        const articles = await searchArticles(query, category, userId, true);
 
         res.json({
             success: true,

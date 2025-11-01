@@ -199,6 +199,7 @@ function loadRoutes() {
         const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
         const docsRouter = require('./routes/docs');
         const adsRoutes = require('./routes/ads');
+        const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
 
         app.use('/api/scrape', scrapeRoute);
         app.use('/api/user', userActions);
@@ -216,6 +217,7 @@ function loadRoutes() {
         app.use('/docs', docsRouter);
         app.use('/api', recommendationRoutes);
         app.use('/api/ads', adsRoutes);
+        app.use('/api/ai', aiAgentRoutes); // AI Agent routes
 
         console.log('🎉 All API routes loaded successfully!');
 
