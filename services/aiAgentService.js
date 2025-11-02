@@ -25,7 +25,7 @@ async function generateQueryEmbedding(query) {
             {
                 input: query,
                 model: EMBEDDING_MODEL,
-                dimensions: 128 // Match your embedding_pca dimensions
+                dimensions: 1536 // CRITICAL: Match vec_full index (1536 dimensions, NOT 128!)
             },
             {
                 headers: {
@@ -71,8 +71,8 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         const pipeline = [
             {
                 $vectorSearch: {
-                    index: VECTOR_INDEX_NAME,
-                    path: 'embedding_pca', // Using your embedding_pca field
+                    index: VECTOR_INDEX_NAME, // vec_full index
+                    path: 'embedding', // CRITICAL: Use 'embedding' field (1536 dims), NOT embedding_pca!
                     queryVector: queryEmbedding,
                     numCandidates: 500, // Search DEEP into article database for best semantic match
                     limit: MAX_ARTICLES * 4 // Get more candidates for better filtering
@@ -193,11 +193,17 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         const articles = await Article.aggregate(pipeline);
 
         console.log(`✅ Vector search found ${articles.length} articles`);
-
-        // If vector search returns no results, fallback to text search
-        if (articles.length === 0) {
-            console.log('⚠️ Vector search returned no results, falling back to text search...');
-            return await fallbackTextSearch(query, category);
+        
+        // Check if results are actually relevant (have reasonable scores)
+        const hasGoodResults = articles.some(a => a.relevanceScore && a.relevanceScore > 0.5);
+        
+        if (articles.length === 0 || !hasGoodResults) {
+            if (articles.length === 0) {
+                console.log('⚠️ Vector search returned NO results, falling back to text search...');
+            } else {
+                console.log(`⚠️ Vector search returned ${articles.length} articles but scores too low (best: ${articles[0]?.relevanceScore}), falling back...`);
+            }
+            return await fallbackTextSearch(query, category, detectedLocation);
         }
 
         console.log('📊 Articles found:', articles.map(a => ({
@@ -209,17 +215,39 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         return articles;
     } catch (error) {
         console.error('❌ Error searching articles:', error);
+        console.error('❌ Error details:', error.message);
         // Fallback to simple text search if vector search fails
-        console.log('🔄 Falling back to text search...');
-        return await fallbackTextSearch(query, category);
+        console.log('🔄 Falling back to text search due to error...');
+        
+        // Extract location again for fallback
+        const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Saudi', 'Arabia', 'Qatar', 'Egypt'];
+        const queryLower = query.toLowerCase();
+        const detectedLocation = locationKeywords.find(loc => queryLower.includes(loc.toLowerCase()));
+        
+        return await fallbackTextSearch(query, category, detectedLocation);
     }
 }
 
 /**
- * Fallback text search if vector search fails
+ * Fallback text search if vector search fails - LOCATION AWARE
  */
-async function fallbackTextSearch(query, category = null) {
+async function fallbackTextSearch(query, category = null, detectedLocation = null) {
     try {
+        console.log('🔄 Fallback text search for query:', query);
+        
+        // If location not provided, try to detect it
+        if (!detectedLocation) {
+            const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Saudi', 'Arabia', 'Qatar', 'Doha',
+                'Kuwait', 'Bahrain', 'Oman', 'Egypt', 'Cairo', 'Jordan'];
+            
+            const queryLower = query.toLowerCase();
+            detectedLocation = locationKeywords.find(loc => 
+                queryLower.includes(loc.toLowerCase())
+            );
+        }
+        
+        console.log('🌍 Fallback detected location:', detectedLocation || 'None');
+        
         // Split query into keywords for better matching
         const keywords = query.toLowerCase().split(' ').filter(word => word.length > 2);
         const keywordRegex = keywords.join('|');
@@ -235,14 +263,45 @@ async function fallbackTextSearch(query, category = null) {
         if (category && category !== 'all') {
             matchConditions.category = category;
         }
+        
+        // If location detected, prioritize articles with that location
+        if (detectedLocation) {
+            console.log(`🎯 Fallback: Prioritizing ${detectedLocation} articles`);
+            matchConditions.$or.push(
+                { title: { $regex: detectedLocation, $options: 'i' } },
+                { content: { $regex: detectedLocation, $options: 'i' } }
+            );
+        }
 
-        const articles = await Article.find(matchConditions)
-            .sort({ publishedAt: -1, viewCount: -1 })
-            .limit(MAX_ARTICLES)
+        // CRITICAL: Search MORE articles and sort by relevance, NOT just recency
+        let articles = await Article.find(matchConditions)
+            .sort({ viewCount: -1, publishedAt: -1 }) // Prioritize popular over newest
+            .limit(MAX_ARTICLES * 10) // Get WAY more candidates
             .select('_id title content url category publishedAt image viewCount sourceGroupName')
             .lean();
 
         console.log(`✅ Fallback search found ${articles.length} articles for keywords: ${keywords.join(', ')}`);
+        
+        // Filter and prioritize by location if detected
+        if (detectedLocation && articles.length > 0) {
+            // Split into location matches and others
+            const locationMatches = articles.filter(a => 
+                (a.title && a.title.toLowerCase().includes(detectedLocation.toLowerCase())) ||
+                (a.content && a.content.toLowerCase().includes(detectedLocation.toLowerCase()))
+            );
+            
+            const nonLocationMatches = articles.filter(a => 
+                !((a.title && a.title.toLowerCase().includes(detectedLocation.toLowerCase())) ||
+                (a.content && a.content.toLowerCase().includes(detectedLocation.toLowerCase())))
+            );
+            
+            console.log(`🎯 Location filtering: ${locationMatches.length} ${detectedLocation} articles, ${nonLocationMatches.length} others`);
+            
+            // Prioritize location matches
+            articles = [...locationMatches, ...nonLocationMatches].slice(0, MAX_ARTICLES);
+        } else {
+            articles = articles.slice(0, MAX_ARTICLES);
+        }
 
         // If still no results, get recent articles from relevant category
         if (articles.length === 0) {
