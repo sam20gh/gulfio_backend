@@ -52,6 +52,18 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         console.log('🔍 Searching articles for query:', query);
         console.log('🔍 Search parameters:', { category, userId, usePersonalization });
 
+        // Extract location keywords from query for better filtering
+        const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah', 
+                                   'Fujairah', 'Umm Al Quwain', 'Saudi', 'Arabia', 'Qatar', 'Doha',
+                                   'Kuwait', 'Bahrain', 'Oman', 'Muscat', 'Egypt', 'Cairo', 'Jordan', 'Amman'];
+        
+        const queryLower = query.toLowerCase();
+        const detectedLocation = locationKeywords.find(loc => 
+            queryLower.includes(loc.toLowerCase())
+        );
+        
+        console.log('🌍 Detected location in query:', detectedLocation || 'None');
+
         // Generate embedding for the query
         const queryEmbedding = await generateQueryEmbedding(query);
 
@@ -62,8 +74,8 @@ async function searchArticles(query, category = null, userId = null, usePersonal
                     index: VECTOR_INDEX_NAME,
                     path: 'embedding_pca', // Using your embedding_pca field
                     queryVector: queryEmbedding,
-                    numCandidates: 200, // Increased for better quality
-                    limit: MAX_ARTICLES * 3 // Get more candidates for filtering and diversity
+                    numCandidates: 500, // Search DEEP into article database for best semantic match
+                    limit: MAX_ARTICLES * 4 // Get more candidates for better filtering
                 }
             }
         ];
@@ -78,10 +90,21 @@ async function searchArticles(query, category = null, userId = null, usePersonal
 
         // Language filter (assuming English articles)
         matchConditions.language = 'english';
+        
+        // Location filtering - if location detected, prioritize those articles
+        if (detectedLocation) {
+            console.log(`🎯 Adding location filter for: ${detectedLocation}`);
+            // Don't exclude others, just boost matching ones later
+        }
 
-        // Recent articles preference (last 60 days)
+        // NO TIME RESTRICTION - Search all articles for best semantic match
+        // Recency boost for articles from last 30 days (mild preference, not requirement)
         const recentDate = new Date();
-        recentDate.setDate(recentDate.getDate() - 60);
+        recentDate.setDate(recentDate.getDate() - 30);
+        
+        // Very recent articles (last 7 days) get extra boost
+        const veryRecentDate = new Date();
+        veryRecentDate.setDate(veryRecentDate.getDate() - 7);
 
         if (Object.keys(matchConditions).length > 0) {
             pipeline.push({
@@ -89,32 +112,52 @@ async function searchArticles(query, category = null, userId = null, usePersonal
             });
         }
 
-        // Add relevance scoring
+        // Add relevance scoring with semantic match priority
         pipeline.push({
             $addFields: {
                 relevanceScore: { $meta: 'vectorSearchScore' },
+                // Location boost - STRONG boost if location matches query
+                locationBoost: detectedLocation ? {
+                    $cond: {
+                        if: {
+                            $or: [
+                                { $regexMatch: { input: '$title', regex: detectedLocation, options: 'i' } },
+                                { $regexMatch: { input: { $substr: ['$content', 0, 500] }, regex: detectedLocation, options: 'i' } }
+                            ]
+                        },
+                        then: 1.5, // STRONG boost for location match
+                        else: 0.7 // Reduce score for non-matching locations
+                    }
+                } : 1.0,
+                // Mild recency boost - semantic relevance is MORE important
                 recencyBoost: {
                     $cond: {
-                        if: { $gte: ['$publishedAt', recentDate] },
-                        then: 1.2,
-                        else: 1.0
+                        if: { $gte: ['$publishedAt', veryRecentDate] },
+                        then: 1.15, // Small boost for very recent
+                        else: {
+                            $cond: {
+                                if: { $gte: ['$publishedAt', recentDate] },
+                                then: 1.05, // Tiny boost for recent
+                                else: 1.0 // Older articles still fully valid
+                            }
+                        }
                     }
                 },
                 viewBoost: {
                     $cond: {
                         if: { $gte: ['$viewCount', 100] },
-                        then: 1.1,
+                        then: 1.05, // Reduced view boost to prioritize relevance
                         else: 1.0
                     }
                 }
             }
         });
 
-        // Calculate final score
+        // Calculate final score with location boost
         pipeline.push({
             $addFields: {
                 finalScore: {
-                    $multiply: ['$relevanceScore', '$recencyBoost', '$viewBoost']
+                    $multiply: ['$relevanceScore', '$locationBoost', '$recencyBoost', '$viewBoost']
                 }
             }
         });
