@@ -75,7 +75,7 @@ router.post('/chat/session', auth, async (req, res) => {
 router.post('/chat/message', auth, async (req, res) => {
     try {
         const { sessionId, message, category, usePersonalization = true } = req.body;
-        
+
         // Extract user ID from JWT token (handle different field names)
         const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
@@ -186,7 +186,7 @@ router.get('/chat/history/:sessionId', auth, async (req, res) => {
     try {
         const { sessionId } = req.params;
         const { limit = 50, offset = 0 } = req.query;
-        
+
         // Extract user ID from JWT token (handle different field names)
         const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
@@ -242,7 +242,7 @@ router.get('/chat/history/:sessionId', auth, async (req, res) => {
 router.get('/chat/sessions', auth, async (req, res) => {
     try {
         const { limit = 20 } = req.query;
-        
+
         // Extract user ID from JWT token (handle different field names)
         const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
@@ -281,7 +281,7 @@ router.get('/chat/sessions', auth, async (req, res) => {
 router.delete('/chat/session/:sessionId', auth, async (req, res) => {
     try {
         const { sessionId } = req.params;
-        
+
         // Extract user ID from JWT token (handle different field names)
         const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
@@ -332,7 +332,7 @@ router.delete('/chat/session/:sessionId', auth, async (req, res) => {
 router.get('/search', auth, async (req, res) => {
     try {
         const { q: query, category, limit = 5 } = req.query;
-        
+
         // Extract user ID from JWT token (handle different field names)
         const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
 
