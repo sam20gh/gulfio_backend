@@ -390,4 +390,49 @@ router.get('/search', auth, async (req, res) => {
     }
 });
 
+// Test endpoint for performance testing (API key authentication)
+router.post('/test/message', async (req, res) => {
+    try {
+        // Simple API key check for testing
+        const apiKey = req.headers['x-api-key'];
+        if (apiKey !== 'mena-news-2024-api-key') {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid API key'
+            });
+        }
+
+        const { message } = req.body;
+        if (!message) {
+            return res.status(400).json({
+                success: false,
+                error: 'Message is required'
+            });
+        }
+
+        console.log('🧪 Test endpoint - processing message:', message);
+        const startTime = Date.now();
+
+        // Use the optimized search pipeline
+        const response = await generateResponse(message);
+        
+        const duration = Date.now() - startTime;
+        console.log(`⏱️  Test response generated in ${duration}ms`);
+
+        res.json({
+            success: true,
+            response,
+            duration,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Error in test endpoint:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate response',
+            details: error.message
+        });
+    }
+});
+
 module.exports = router;
