@@ -53,15 +53,15 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         console.log('🔍 Search parameters:', { category, userId, usePersonalization });
 
         // Extract location keywords from query for better filtering
-        const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah', 
-                                   'Fujairah', 'Umm Al Quwain', 'Saudi', 'Arabia', 'Qatar', 'Doha',
-                                   'Kuwait', 'Bahrain', 'Oman', 'Muscat', 'Egypt', 'Cairo', 'Jordan', 'Amman'];
-        
+        const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah',
+            'Fujairah', 'Umm Al Quwain', 'Saudi', 'Arabia', 'Qatar', 'Doha',
+            'Kuwait', 'Bahrain', 'Oman', 'Muscat', 'Egypt', 'Cairo', 'Jordan', 'Amman'];
+
         const queryLower = query.toLowerCase();
-        const detectedLocation = locationKeywords.find(loc => 
+        const detectedLocation = locationKeywords.find(loc =>
             queryLower.includes(loc.toLowerCase())
         );
-        
+
         console.log('🌍 Detected location in query:', detectedLocation || 'None');
 
         // Generate embedding for the query
@@ -90,7 +90,7 @@ async function searchArticles(query, category = null, userId = null, usePersonal
 
         // Language filter (assuming English articles)
         matchConditions.language = 'english';
-        
+
         // Location filtering - if location detected, prioritize those articles
         if (detectedLocation) {
             console.log(`🎯 Adding location filter for: ${detectedLocation}`);
@@ -101,7 +101,7 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         // Recency boost for articles from last 30 days (mild preference, not requirement)
         const recentDate = new Date();
         recentDate.setDate(recentDate.getDate() - 30);
-        
+
         // Very recent articles (last 7 days) get extra boost
         const veryRecentDate = new Date();
         veryRecentDate.setDate(veryRecentDate.getDate() - 7);

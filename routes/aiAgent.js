@@ -415,7 +415,7 @@ router.post('/test/message', async (req, res) => {
 
         // Use the optimized search pipeline
         const response = await generateResponse(message);
-        
+
         const duration = Date.now() - startTime;
         console.log(`⏱️  Test response generated in ${duration}ms`);
 
