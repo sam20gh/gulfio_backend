@@ -34,17 +34,31 @@ router.get('/suggestions', async (req, res) => {
 // Start a new chat session
 router.post('/chat/session', auth, async (req, res) => {
     try {
-        // Extract user ID from JWT token (handle different field names)
-        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
+        console.log('🔍 Full req.user object:', JSON.stringify(req.user, null, 2));
+
+        // Extract user ID from JWT token (Supabase uses 'sub' as standard)
+        const userId = req.user.sub || req.user.uid || req.user.user_id || req.user.id;
         console.log('🤖 Creating new chat session for user:', userId);
         console.log('🔍 Available user fields:', Object.keys(req.user || {}));
 
         if (!userId) {
+            console.error('❌ No user ID found in any expected field');
             return res.status(400).json({
                 success: false,
-                error: 'User ID not found in token'
+                error: 'User ID not found in token',
+                debug: {
+                    availableFields: Object.keys(req.user || {}),
+                    userObject: req.user
+                }
             });
         }
+
+        console.log('🔍 Creating ChatSession with data:', {
+            userId: userId,
+            startedAt: new Date(),
+            isActive: true,
+            language: req.body.language || 'english'
+        });
 
         const chatSession = new ChatSession({
             userId: userId,
@@ -53,6 +67,7 @@ router.post('/chat/session', auth, async (req, res) => {
             language: req.body.language || 'english'
         });
 
+        console.log('🔍 ChatSession model created, attempting to save...');
         await chatSession.save();
 
         console.log('✅ Chat session created:', chatSession._id);
@@ -64,9 +79,22 @@ router.post('/chat/session', auth, async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Error creating chat session:', error);
+        console.error('❌ Error name:', error.name);
+        console.error('❌ Error message:', error.message);
+        console.error('❌ Error stack:', error.stack);
+
+        if (error.name === 'ValidationError') {
+            console.error('❌ Validation errors:', error.errors);
+        }
+
         res.status(500).json({
             success: false,
-            error: 'Failed to create chat session'
+            error: 'Failed to create chat session',
+            debug: {
+                errorName: error.name,
+                errorMessage: error.message,
+                userId: req.user ? (req.user.sub || req.user.uid || req.user.user_id || req.user.id) : 'No user object'
+            }
         });
     }
 });
@@ -76,8 +104,8 @@ router.post('/chat/message', auth, async (req, res) => {
     try {
         const { sessionId, message, category, usePersonalization = true } = req.body;
 
-        // Extract user ID from JWT token (handle different field names)
-        const userId = req.user.uid || req.user.sub || req.user.user_id || req.user.id;
+        // Extract user ID from JWT token (Supabase uses 'sub' as standard)
+        const userId = req.user.sub || req.user.uid || req.user.user_id || req.user.id;
 
         console.log('🤖 Processing message:', {
             sessionId,

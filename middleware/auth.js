@@ -5,20 +5,32 @@ const SUPABASE_ISSUER = process.env.SUPABASE_JWT_ISSUER;
 const ADMIN_KEY = process.env.ADMIN_API_KEY;
 
 module.exports = async (req, res, next) => {
+    console.log('🔐 Auth middleware triggered');
+
     const apiKey = req.headers['x-api-key'];
-    if (apiKey === ADMIN_KEY) return next();
+    if (apiKey === ADMIN_KEY) {
+        console.log('✅ Using admin API key, skipping JWT verification');
+        return next();
+    }
 
     let token = null;
 
     if (req.headers['authorization']?.startsWith('Bearer ')) {
         token = req.headers['authorization'].split(' ')[1];
+        console.log('🔍 Found Bearer token in Authorization header');
     } else if (req.headers['x-access-token']) {
         token = req.headers['x-access-token'];
+        console.log('🔍 Found token in x-access-token header');
     }
 
     if (!token) {
+        console.error('❌ No token found in request headers');
         return res.status(401).json({ message: 'Unauthorized: Missing token' });
     }
+
+    console.log('🔍 Token length:', token.length);
+    console.log('🔍 JWT_SECRET exists:', !!JWT_SECRET);
+    console.log('🔍 SUPABASE_ISSUER:', SUPABASE_ISSUER);
 
 
     try {
@@ -54,14 +66,27 @@ module.exports = async (req, res, next) => {
         }
 
         console.log('🎯 Auth middleware: Setting req.user with decoded token');
+        console.log('🎯 Decoded token structure:', JSON.stringify(decoded, null, 2));
         req.user = decoded;
-        console.log('🎯 Auth middleware: req.user set successfully, calling next()');
+        console.log('🎯 Auth middleware: req.user set successfully');
+        console.log('🎯 req.user verification:', {
+            exists: !!req.user,
+            hasSubField: !!req.user?.sub,
+            subValue: req.user?.sub
+        });
+        console.log('🎯 Auth middleware: calling next()');
         next();
     } catch (err) {
         console.error('❌ Auth middleware failed:', err.message);
+        console.error('❌ Auth middleware error stack:', err.stack);
+        console.error('❌ Token that failed verification:', token?.substring(0, 100) + '...');
         return res.status(403).json({
             message: 'Forbidden: Invalid token',
-            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+            debug: {
+                errorName: err.name,
+                errorMessage: err.message
+            }
         });
     }
 };

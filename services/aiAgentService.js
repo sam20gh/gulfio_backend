@@ -5,8 +5,8 @@ const axios = require('axios');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const CHAT_MODEL = 'gpt-4o-mini'; // Using gpt-4o-mini as requested
-const MAX_ARTICLES = 5;
-const VECTOR_INDEX_NAME = 'article_vector_index'; // Your Atlas Vector Search index name
+const MAX_ARTICLES = 8; // Increased for more detailed responses
+const VECTOR_INDEX_NAME = 'default'; // Atlas Vector Search index name
 
 /**
  * Generate embedding for user query using OpenAI
@@ -57,8 +57,8 @@ async function searchArticles(query, category = null, userId = null, usePersonal
                     index: VECTOR_INDEX_NAME,
                     path: 'embedding_pca', // Using your embedding_pca field
                     queryVector: queryEmbedding,
-                    numCandidates: 100,
-                    limit: MAX_ARTICLES * 2 // Get more candidates for filtering
+                    numCandidates: 200, // Increased for better quality
+                    limit: MAX_ARTICLES * 3 // Get more candidates for filtering and diversity
                 }
             }
         ];
@@ -144,7 +144,14 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         console.log('🔍 Running vector search pipeline...');
         const articles = await Article.aggregate(pipeline);
 
-        console.log(`✅ Found ${articles.length} relevant articles`);
+        console.log(`✅ Vector search found ${articles.length} articles`);
+
+        // If vector search returns no results, fallback to text search
+        if (articles.length === 0) {
+            console.log('⚠️ Vector search returned no results, falling back to text search...');
+            return await fallbackTextSearch(query, category);
+        }
+
         console.log('📊 Articles found:', articles.map(a => ({
             title: a.title.substring(0, 60) + '...',
             category: a.category,
@@ -165,10 +172,14 @@ async function searchArticles(query, category = null, userId = null, usePersonal
  */
 async function fallbackTextSearch(query, category = null) {
     try {
+        // Split query into keywords for better matching
+        const keywords = query.toLowerCase().split(' ').filter(word => word.length > 2);
+        const keywordRegex = keywords.join('|');
+
         const matchConditions = {
             $or: [
-                { title: { $regex: query, $options: 'i' } },
-                { content: { $regex: query, $options: 'i' } }
+                { title: { $regex: keywordRegex, $options: 'i' } },
+                { content: { $regex: keywordRegex, $options: 'i' } }
             ],
             language: 'english'
         };
@@ -183,7 +194,26 @@ async function fallbackTextSearch(query, category = null) {
             .select('_id title content url category publishedAt image viewCount sourceGroupName')
             .lean();
 
-        console.log(`✅ Fallback search found ${articles.length} articles`);
+        console.log(`✅ Fallback search found ${articles.length} articles for keywords: ${keywords.join(', ')}`);
+
+        // If still no results, get recent articles from relevant category
+        if (articles.length === 0) {
+            console.log('🔄 No keyword matches, getting recent articles...');
+            const recentConditions = { language: 'english' };
+            if (category && category !== 'all') {
+                recentConditions.category = category;
+            }
+
+            const recentArticles = await Article.find(recentConditions)
+                .sort({ publishedAt: -1 })
+                .limit(MAX_ARTICLES)
+                .select('_id title content url category publishedAt image viewCount sourceGroupName')
+                .lean();
+
+            console.log(`✅ Found ${recentArticles.length} recent articles as final fallback`);
+            return recentArticles;
+        }
+
         return articles;
     } catch (error) {
         console.error('❌ Fallback search failed:', error);
@@ -293,6 +323,16 @@ Please provide a comprehensive answer based on the available articles. If the ar
         };
     } catch (error) {
         console.error('❌ Error generating AI response:', error.response?.data || error.message);
+        console.error('❌ Full error details:', {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            config: {
+                url: error.config?.url,
+                method: error.config?.method,
+                timeout: error.config?.timeout
+            }
+        });
 
         // Provide fallback response
         const fallbackResponse = articles.length > 0 ?
