@@ -5,7 +5,7 @@ const API_KEY = 'mena-news-2024-api-key';
 
 async function debugAIService() {
     console.log('🔍 Debugging AI service issues...\n');
-    
+
     // First, test the suggestions endpoint (should work without auth)
     console.log('1. Testing suggestions endpoint...');
     try {
@@ -14,7 +14,7 @@ async function debugAIService() {
     } catch (error) {
         console.log('❌ Suggestions failed:', error.message);
     }
-    
+
     console.log('\n2. Testing test endpoint with simple message...');
     const startTime = Date.now();
     try {
@@ -29,12 +29,12 @@ async function debugAIService() {
                 timeout: 30000 // Longer timeout for debugging
             }
         );
-        
+
         const duration = Date.now() - startTime;
         console.log('✅ Test endpoint working!');
         console.log(`⏱️  Response time: ${duration}ms`);
         console.log(`📝 Response: ${response.data.response?.substring(0, 100)}...`);
-        
+
     } catch (error) {
         const duration = Date.now() - startTime;
         console.log(`❌ Test endpoint failed after ${duration}ms`);
@@ -43,7 +43,7 @@ async function debugAIService() {
             console.log('Details:', JSON.stringify(error.response.data, null, 2));
         }
     }
-    
+
     console.log('\n3. Testing actual mobile app endpoint...');
     const sessionStart = Date.now();
     try {
@@ -59,10 +59,10 @@ async function debugAIService() {
                 timeout: 5000
             }
         );
-        
+
         console.log('✅ Session created successfully');
         console.log('Session ID:', sessionResponse.data.session?._id);
-        
+
     } catch (error) {
         const duration = Date.now() - sessionStart;
         console.log(`❌ Session creation failed after ${duration}ms`);
