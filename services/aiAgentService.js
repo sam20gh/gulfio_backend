@@ -32,7 +32,7 @@ async function generateQueryEmbedding(query) {
                     'Authorization': `Bearer ${OPENAI_API_KEY}`,
                     'Content-Type': 'application/json'
                 },
-                timeout: 10000
+                timeout: 20000 // Increased for reliability (embedding generation)
             }
         );
 
@@ -409,7 +409,7 @@ Please provide a comprehensive answer based on the available articles. If the ar
                     'Authorization': `Bearer ${OPENAI_API_KEY}`,
                     'Content-Type': 'application/json'
                 },
-                timeout: 30000
+                timeout: 45000 // Increased for reliability (GPT response generation)
             }
         );
 
@@ -419,11 +419,24 @@ Please provide a comprehensive answer based on the available articles. If the ar
         console.log('✅ AI response generated successfully');
         console.log(`⏱️ Response time: ${responseTime}ms`);
 
+        // Return articles with full metadata for proper linking
+        const articleReferences = articles.map((article, idx) => ({
+            _id: article._id,
+            title: article.title,
+            url: article.url,
+            category: article.category,
+            publishedAt: article.publishedAt,
+            image: article.image,
+            sourceGroupName: article.sourceGroupName || 'Gulf.io',
+            referenceNumber: idx + 1 // For matching [1], [2], etc. in text
+        }));
+
         return {
             text: aiText,
-            articles: articles.slice(0, 3), // Return top 3 articles as references
+            articles: articleReferences, // Return ALL articles with reference numbers
             metadata: {
                 articlesFound: articles.length,
+                articlesReturned: articleReferences.length,
                 searchQuery: query,
                 responseTime
             }
