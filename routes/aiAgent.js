@@ -191,6 +191,15 @@ router.post('/chat/message', auth, async (req, res) => {
         });
 
         console.log('✅ AI response generated and saved');
+        console.log('📤 Sending response with articles:', aiResponse.articles?.length || 0);
+        if (aiResponse.articles && aiResponse.articles.length > 0) {
+            console.log('📰 First article being sent:', {
+                title: aiResponse.articles[0].title,
+                sourceGroupName: aiResponse.articles[0].sourceGroupName,
+                referenceNumber: aiResponse.articles[0].referenceNumber,
+                _id: aiResponse.articles[0]._id
+            });
+        }
 
         res.json({
             success: true,
