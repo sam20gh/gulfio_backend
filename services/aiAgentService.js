@@ -172,7 +172,17 @@ async function searchArticles(query, category = null, userId = null, usePersonal
             $limit: MAX_ARTICLES
         });
 
-        // Project only needed fields
+        // Lookup source information to get groupName
+        pipeline.push({
+            $lookup: {
+                from: 'sources',
+                localField: 'sourceId',
+                foreignField: '_id',
+                as: 'sourceInfo'
+            }
+        });
+
+        // Project only needed fields and extract groupName from source
         pipeline.push({
             $project: {
                 _id: 1,
@@ -183,7 +193,12 @@ async function searchArticles(query, category = null, userId = null, usePersonal
                 publishedAt: 1,
                 image: 1,
                 viewCount: 1,
-                sourceGroupName: 1,
+                sourceGroupName: {
+                    $ifNull: [
+                        '$sourceGroupName', // Use existing field if available
+                        { $arrayElemAt: ['$sourceInfo.groupName', 0] } // Otherwise get from source
+                    ]
+                },
                 relevanceScore: 1,
                 finalScore: 1
             }
@@ -277,7 +292,8 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
         let articles = await Article.find(matchConditions)
             .sort({ viewCount: -1, publishedAt: -1 }) // Prioritize popular over newest
             .limit(MAX_ARTICLES * 10) // Get WAY more candidates
-            .select('_id title content url category publishedAt image viewCount sourceGroupName')
+            .select('_id title content url category publishedAt image viewCount sourceGroupName sourceId')
+            .populate('sourceId', 'groupName name') // Populate source to get groupName
             .lean();
 
         console.log(`✅ Fallback search found ${articles.length} articles for keywords: ${keywords.join(', ')}`);
@@ -303,6 +319,12 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
             articles = articles.slice(0, MAX_ARTICLES);
         }
 
+        // Normalize articles: extract groupName from populated sourceId
+        articles = articles.map(article => ({
+            ...article,
+            sourceGroupName: article.sourceGroupName || article.sourceId?.groupName || article.sourceId?.name || 'Gulf.io'
+        }));
+
         // If still no results, get recent articles from relevant category
         if (articles.length === 0) {
             console.log('🔄 No keyword matches, getting recent articles...');
@@ -311,11 +333,18 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
                 recentConditions.category = category;
             }
 
-            const recentArticles = await Article.find(recentConditions)
+            let recentArticles = await Article.find(recentConditions)
                 .sort({ publishedAt: -1 })
                 .limit(MAX_ARTICLES)
-                .select('_id title content url category publishedAt image viewCount sourceGroupName')
+                .select('_id title content url category publishedAt image viewCount sourceGroupName sourceId')
+                .populate('sourceId', 'groupName name')
                 .lean();
+
+            // Normalize articles: extract groupName from populated sourceId
+            recentArticles = recentArticles.map(article => ({
+                ...article,
+                sourceGroupName: article.sourceGroupName || article.sourceId?.groupName || article.sourceId?.name || 'Gulf.io'
+            }));
 
             console.log(`✅ Found ${recentArticles.length} recent articles as final fallback`);
             return recentArticles;
