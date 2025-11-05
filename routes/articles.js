@@ -918,7 +918,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
 
 
 // Performance configuration constants
-const VECTOR_INDEX = "articles_pca_index";
+const VECTOR_INDEX = "default";
 const NUM_CANDIDATE_MULT = 2.5; // Reduced from 4 for faster vector search
 const LIMIT_MULT = 1.5; // Reduced from 2 for smaller candidate pools
 const DIVERSITY_RATIO = 0.15;
