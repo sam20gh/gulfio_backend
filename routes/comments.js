@@ -378,28 +378,50 @@ router.delete('/:commentId/reply/:replyId', auth, async (req, res) => {
 });
 router.get('/:id/comments', async (req, res) => {
     try {
-        const user = await User.findOne({ supabase_id: req.params.id });
+        const userId = req.params.id; // This is the Supabase ID
+
+        // Verify user exists
+        const user = await User.findOne({ supabase_id: userId });
         if (!user) return res.status(404).send({ message: 'User not found' });
 
-        // fetch last 20 comments, populate article title
+        // Fetch comments using userId (which stores Supabase ID)
         const comments = await Comment
-            .find({ author: user._id })
+            .find({ userId: userId })
             .sort({ createdAt: -1 })
-            .limit(20)
-            .populate('article', 'title');
+            .lean(); // Use lean for better performance
 
-        // map into a lightweight shape
-        const out = comments.map(c => ({
+        // Fetch article titles for comments with articleIds
+        const Article = require('../models/Article');
+        const articleIds = comments
+            .filter(c => c.articleId)
+            .map(c => c.articleId);
+        
+        const articles = await Article
+            .find({ _id: { $in: articleIds } })
+            .select('_id title')
+            .lean();
+
+        const articleMap = {};
+        articles.forEach(a => {
+            articleMap[a._id.toString()] = a.title;
+        });
+
+        // Map comments to frontend format
+        const mappedComments = comments.map(c => ({
             _id: c._id,
-            text: c.text,
-            articleId: c.article._id,
-            articleTitle: c.article.title,
+            text: c.comment, // Map 'comment' field to 'text'
+            articleId: c.articleId,
+            articleTitle: articleMap[c.articleId] || 'Unknown Article',
             createdAt: c.createdAt
         }));
 
-        res.json(out);
+        // Return with count for frontend
+        res.json({
+            count: mappedComments.length,
+            comments: mappedComments
+        });
     } catch (err) {
-        console.error(err);
+        console.error('Error fetching user comments:', err);
         res.status(500).send({ message: 'Server error' });
     }
 });
