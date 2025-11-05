@@ -395,7 +395,7 @@ router.get('/:id/comments', async (req, res) => {
         const articleIds = comments
             .filter(c => c.articleId)
             .map(c => c.articleId);
-        
+
         const articles = await Article
             .find({ _id: { $in: articleIds } })
             .select('_id title')
