@@ -52,7 +52,7 @@ async function checkIndexes() {
         console.log('='.repeat(50));
 
         const vectorIndex = indexes.find(idx =>
-            idx.name === 'articles_pca_index' ||
+            idx.name === 'default' ||
             idx.name.includes('embedding') ||
             idx.type === 'vectorSearch'
         );
@@ -169,7 +169,7 @@ async function checkIndexes() {
 
         if (!vectorIndex) {
             console.log('⚠️  Critical: Create vector search index for embedding_pca field');
-            console.log('   Index name: articles_pca_index');
+            console.log('   Index name: "default"');
             console.log('   Field: embedding_pca');
             console.log('   Type: vectorSearch');
         }
@@ -219,7 +219,7 @@ async function createRecommendedIndexes() {
         console.log('\nℹ️  Vector search index must be created through MongoDB Atlas UI');
         console.log('   Go to Atlas → Collections → articles → Search Indexes');
         console.log('   Create Vector Search Index with:');
-        console.log('   - Name: articles_pca_index');
+        console.log('   - Name: default');
         console.log('   - Field: embedding_pca');
         console.log('   - Dimensions: 128 (or your actual embedding size)');
 

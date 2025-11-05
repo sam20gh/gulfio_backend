@@ -2612,7 +2612,7 @@ Performance Knobs:
 */
 
 // Cache Warmer Admin Endpoints (temporarily disabled)
-/*
+
 articleRouter.get('/cache-warmer/stats', (req, res) => {
   try {
     const stats = cacheWarmer.getStats();
