@@ -371,14 +371,14 @@ async function scrapeAllSources(frequency = null) {
                     // 📸 IMPROVED: Process content elements in order, preserving embed positions inline
                     let contentParts = [];
                     let embedCount = 0;
-                    
+
                     try {
                         $$(source.contentSelector || '.story-element.story-element-text p').each((_, el) => {
                             // Skip hidden elements
                             if (!isElementVisible($$, el)) return;
-                            
+
                             const $el = $$(el);
-                            
+
                             // Check if this is an Instagram embed (blockquote or iframe)
                             if ($el.is('blockquote.instagram-media') || $el.is('iframe.instagram-media') || $el.is('iframe.instagram-media-rendered')) {
                                 const embedHtml = $$.html(el);
@@ -389,7 +389,7 @@ async function scrapeAllSources(frequency = null) {
                                 }
                                 return; // Skip to next element
                             }
-                            
+
                             // Check if this is a Twitter embed
                             if ($el.is('blockquote.twitter-tweet') || ($el.is('iframe') && ($el.attr('src') || '').includes('twitter.com'))) {
                                 const embedHtml = $$.html(el);
@@ -400,30 +400,30 @@ async function scrapeAllSources(frequency = null) {
                                 }
                                 return; // Skip to next element
                             }
-                            
+
                             // Skip elements inside blockquotes (they're part of the embed)
-                            if ($el.closest('blockquote.instagram-media').length > 0 || 
+                            if ($el.closest('blockquote.instagram-media').length > 0 ||
                                 $el.closest('blockquote.twitter-tweet').length > 0) {
                                 return;
                             }
-                            
+
                             // Skip other iframes
                             if ($el.is('iframe')) return;
-                            
+
                             // Extract text content for regular elements
                             const text = $el.text().trim();
                             if (text.length > 10) {
                                 contentParts.push(text);
                             }
                         });
-                        
+
                         if (embedCount > 0) {
                             console.log(`✅ Total embeds found: ${embedCount} (preserved inline in content)`);
                         }
                     } catch (embedError) {
                         console.warn('⚠️ Error processing content with embeds:', embedError.message);
                     }
-                    
+
                     // Join all parts (text + embeds) with double newlines
                     let content = cleanText(contentParts.join('\n\n'));
 
