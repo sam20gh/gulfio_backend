@@ -3,6 +3,11 @@ const mongoose = require('mongoose');
 const ArticleSchema = new mongoose.Schema({
     title: { type: String, required: true },
     content: String,
+    contentFormat: {
+        type: String,
+        enum: ['text', 'markdown'],
+        default: 'text' // Default to 'text' for backward compatibility with existing 24k+ articles
+    },
     url: { type: String, unique: true, sparse: true }, // Add unique constraint for URLs
     sourceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Source' },
     category: String,

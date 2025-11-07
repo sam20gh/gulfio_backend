@@ -369,8 +369,11 @@ async function scrapeAllSources(frequency = null) {
                         .text());
 
                     // 📸 IMPROVED: Process content elements in order, preserving embed positions inline
+                    // Also capture h2, h3, ul, ol for rich content structure
                     let contentParts = [];
                     let embedCount = 0;
+                    let headingCount = 0;
+                    let listCount = 0;
 
                     try {
                         $$(source.contentSelector || '.story-element.story-element-text p').each((_, el) => {
@@ -410,7 +413,58 @@ async function scrapeAllSources(frequency = null) {
                             // Skip other iframes
                             if ($el.is('iframe')) return;
 
-                            // Extract text content for regular elements
+                            const tagName = el.name;
+
+                            // Handle h2 headings
+                            if (tagName === 'h2') {
+                                const heading = $el.text().trim();
+                                if (heading.length > 0) {
+                                    contentParts.push(`\n## ${heading}\n`);
+                                }
+                                return;
+                            }
+
+                            // Handle h3 headings
+                            if (tagName === 'h3') {
+                                const heading = $el.text().trim();
+                                if (heading.length > 0) {
+                                    contentParts.push(`\n### ${heading}\n`);
+                                }
+                                return;
+                            }
+
+                            // Handle unordered lists (ul) - Use markdown format
+                            if (tagName === 'ul') {
+                                const listItems = [];
+                                $el.find('li').each((_, li) => {
+                                    const itemText = $$(li).text().trim();
+                                    if (itemText.length > 0) {
+                                        listItems.push(`- ${itemText}`);
+                                    }
+                                });
+                                if (listItems.length > 0) {
+                                    contentParts.push('\n' + listItems.join('\n') + '\n');
+                                    listCount++;
+                                }
+                                return;
+                            }
+
+                            // Handle ordered lists (ol)
+                            if (tagName === 'ol') {
+                                const listItems = [];
+                                $el.find('li').each((i, li) => {
+                                    const itemText = $$(li).text().trim();
+                                    if (itemText.length > 0) {
+                                        listItems.push(`${i + 1}. ${itemText}`);
+                                    }
+                                });
+                                if (listItems.length > 0) {
+                                    contentParts.push('\n' + listItems.join('\n') + '\n');
+                                }
+                                return;
+                            }
+
+                            // Extract text content for paragraphs and other elements
                             const text = $el.text().trim();
                             if (text.length > 10) {
                                 contentParts.push(text);
@@ -420,11 +474,17 @@ async function scrapeAllSources(frequency = null) {
                         if (embedCount > 0) {
                             console.log(`✅ Total embeds found: ${embedCount} (preserved inline in content)`);
                         }
+                        if (headingCount > 0) {
+                            console.log(`✅ Total headings found: ${headingCount} (h2/h3)`);
+                        }
+                        if (listCount > 0) {
+                            console.log(`✅ Total lists found: ${listCount} (ul/ol)`);
+                        }
                     } catch (embedError) {
-                        console.warn('⚠️ Error processing content with embeds:', embedError.message);
+                        console.warn('⚠️ Error processing content with embeds/structure:', embedError.message);
                     }
 
-                    // Join all parts (text + embeds) with double newlines
+                    // Join all parts (text + embeds + headings + lists) with double newlines
                     let content = cleanText(contentParts.join('\n\n'));
 
                     console.log(`📊 Extracted - Title length: ${title.length}, Content length: ${content.length}`);
@@ -522,6 +582,7 @@ async function scrapeAllSources(frequency = null) {
                             const articleData = {
                                 title,
                                 content,
+                                contentFormat: 'markdown', // NEW: Indicate content is in markdown format
                                 url: normalizedLink, // Use normalized URL for consistency
                                 sourceId: source._id,
                                 category: source.category,
