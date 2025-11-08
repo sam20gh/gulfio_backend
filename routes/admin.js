@@ -118,22 +118,43 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
 
         console.log('⏱️  Query 1: Total statistics (combined)');
         // Combined statistics query for better performance
-        const [totalArticles, statsResults] = await Promise.all([
+        // Note: totalViews now comes from UserActivity for accuracy
+        const [totalArticles, articleStatsResults, activityStatsResults] = await Promise.all([
             Article.countDocuments(articleFilter),
             Article.aggregate([
                 { $match: articleFilter },
                 {
                     $group: {
                         _id: null,
-                        totalViews: { $sum: '$viewCount' },
                         totalLikes: { $sum: '$likes' },
                         totalDislikes: { $sum: '$dislikes' }
+                    }
+                }
+            ]),
+            // Get total views from UserActivity within time window
+            UserActivity.aggregate([
+                {
+                    $match: {
+                        timestamp: { $gte: timeWindowStart },
+                        eventType: 'view'
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalViews: { $sum: 1 }
                     }
                 }
             ])
         ]);
 
-        const stats = statsResults[0] || { totalViews: 0, totalLikes: 0, totalDislikes: 0 };
+        const articleStats = articleStatsResults[0] || { totalLikes: 0, totalDislikes: 0 };
+        const activityStats = activityStatsResults[0] || { totalViews: 0 };
+        const stats = {
+            totalViews: activityStats.totalViews,
+            totalLikes: articleStats.totalLikes,
+            totalDislikes: articleStats.totalDislikes
+        };
 
         console.log('⏱️  Query 2: User activity');
         // User activity stats (ALWAYS limited by time window)
@@ -241,7 +262,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
 
         console.log('⏱️  Query 8: Growth calculations (combined)');
         // Growth calculations (compare this month vs last month) - combined queries
-        const [thisMonthArticles, lastMonthArticles, thisMonthStats, lastMonthStats] = await Promise.all([
+        const [thisMonthArticles, lastMonthArticles, thisMonthViews, lastMonthViews] = await Promise.all([
             Article.countDocuments({
                 ...articleFilter,
                 publishedAt: { $gte: startOfMonth, $lte: now }
@@ -250,23 +271,25 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
                 ...articleFilter,
                 publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
             }),
-            Article.aggregate([
+            // Count view events from UserActivity (this month)
+            UserActivity.aggregate([
                 {
                     $match: {
-                        ...articleFilter,
-                        publishedAt: { $gte: startOfMonth, $lte: now }
+                        timestamp: { $gte: startOfMonth, $lte: now },
+                        eventType: 'view'
                     }
                 },
-                { $group: { _id: null, views: { $sum: '$viewCount' } } }
+                { $group: { _id: null, views: { $sum: 1 } } }
             ]),
-            Article.aggregate([
+            // Count view events from UserActivity (last month)
+            UserActivity.aggregate([
                 {
                     $match: {
-                        ...articleFilter,
-                        publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
+                        timestamp: { $gte: startOfLastMonth, $lte: endOfLastMonth },
+                        eventType: 'view'
                     }
                 },
-                { $group: { _id: null, views: { $sum: '$viewCount' } } }
+                { $group: { _id: null, views: { $sum: 1 } } }
             ])
         ]);
 
@@ -274,8 +297,8 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             ? ((thisMonthArticles - lastMonthArticles) / lastMonthArticles * 100).toFixed(1)
             : 0;
 
-        const thisMonthViewCount = thisMonthStats[0]?.views || 0;
-        const lastMonthViewCount = lastMonthStats[0]?.views || 0;
+        const thisMonthViewCount = thisMonthViews[0]?.views || 0;
+        const lastMonthViewCount = lastMonthViews[0]?.views || 0;
         const viewGrowth = lastMonthViewCount > 0
             ? ((thisMonthViewCount - lastMonthViewCount) / lastMonthViewCount * 100).toFixed(1)
             : 0;
