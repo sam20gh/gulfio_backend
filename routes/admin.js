@@ -80,8 +80,21 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         const Article = require('../models/Article');
         const Source = require('../models/Source');
 
+        console.log('📊 Analytics request started for user:', currentUser.email);
+        const startTime = Date.now();
+
+        // Get date range from query params or use defaults (last 30 days)
+        const daysBack = parseInt(req.query.days) || 30;
+        const now = new Date();
+        const timeWindowStart = new Date(now);
+        timeWindowStart.setDate(now.getDate() - daysBack);
+
+        console.log(`📅 Using ${daysBack} day time window starting from`, timeWindowStart.toISOString());
+
         // Build filter based on user role
-        let articleFilter = {};
+        let articleFilter = {
+            publishedAt: { $gte: timeWindowStart } // ✅ CRITICAL: Limit to time window
+        };
         let sourceFilter = {};
 
         if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
@@ -89,14 +102,13 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             sourceFilter = { groupName: { $in: currentUser.publisher_group } };
             const publisherSources = await Source.find(sourceFilter).select('_id');
             const sourceIds = publisherSources.map(s => s._id);
-            articleFilter = { sourceId: { $in: sourceIds } };
+            articleFilter.sourceId = { $in: sourceIds };
         } else if (currentUser.type !== 'admin') {
             // Non-admin, non-publisher users get no data
             return res.status(403).json({ message: 'Access denied.' });
         }
 
         // Get current date ranges
-        const now = new Date();
         const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const startOfWeek = new Date(startOfToday);
         startOfWeek.setDate(startOfToday.getDate() - 7);
@@ -104,7 +116,8 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-        // Total statistics
+        console.log('⏱️  Query 1: Total statistics');
+        // Total statistics (within time window)
         const totalArticles = await Article.countDocuments(articleFilter);
         const totalViews = await Article.aggregate([
             { $match: articleFilter },
@@ -119,20 +132,25 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             { $group: { _id: null, total: { $sum: '$dislikes' } } }
         ]);
 
-        // User activity stats
+        console.log('⏱️  Query 2: User activity');
+        // User activity stats (limited to articles in time window)
         const activityFilter = currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0
-            ? { articleId: { $in: await Article.find(articleFilter).select('_id').then(docs => docs.map(d => d._id)) } }
-            : {};
+            ? { 
+                articleId: { $in: await Article.find(articleFilter).select('_id').limit(5000).then(docs => docs.map(d => d._id)) },
+                timestamp: { $gte: timeWindowStart }
+            }
+            : { timestamp: { $gte: timeWindowStart } };
 
         const uniqueUsers = await UserActivity.distinct('userId', activityFilter);
         const totalUsers = await User.countDocuments();
 
+        console.log('⏱️  Query 3: Weekly activity');
         // Weekly trends (last 7 days)
         const weeklyActivity = await UserActivity.aggregate([
             {
                 $match: {
                     timestamp: { $gte: startOfWeek },
-                    ...(activityFilter.articleId && { articleId: activityFilter.articleId })
+                    ...(activityFilter.articleId && { articleId: { $in: activityFilter.articleId } })
                 }
             },
             {
@@ -147,16 +165,11 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             { $sort: { '_id.date': 1 } }
         ]);
 
-        // Monthly trends (last 6 months)
-        const sixMonthsAgo = new Date(now);
-        sixMonthsAgo.setMonth(now.getMonth() - 6);
-
+        console.log('⏱️  Query 4: Monthly trends');
+        // Monthly trends (within time window, not 6 months ago)
         const monthlyTrends = await Article.aggregate([
             {
-                $match: {
-                    ...articleFilter,
-                    publishedAt: { $gte: sixMonthsAgo }
-                }
+                $match: articleFilter // Already includes time window
             },
             {
                 $group: {
@@ -172,14 +185,17 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             { $sort: { '_id.year': 1, '_id.month': 1 } }
         ]);
 
-        // Top articles by views
+        console.log('⏱️  Query 5: Top articles');
+        // Top articles by views (within time window)
         const topArticles = await Article.find(articleFilter)
             .sort({ viewCount: -1 })
             .limit(10)
             .populate('sourceId', 'name groupName')
-            .select('title viewCount likes dislikes publishedAt category sourceId');
+            .select('title viewCount likes dislikes publishedAt category sourceId')
+            .lean();
 
-        // Category distribution
+        console.log('⏱️  Query 6: Category stats');
+        // Category distribution (within time window)
         const categoryStats = await Article.aggregate([
             { $match: articleFilter },
             {
@@ -189,15 +205,17 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
                     views: { $sum: '$viewCount' }
                 }
             },
-            { $sort: { count: -1 } }
+            { $sort: { count: -1 } },
+            { $limit: 10 } // Limit to top 10 categories
         ]);
 
+        console.log('⏱️  Query 7: Recent activity');
         // Recent activity (last 24 hours)
         const recentActivity = await UserActivity.aggregate([
             {
                 $match: {
                     timestamp: { $gte: startOfToday },
-                    ...(activityFilter.articleId && { articleId: activityFilter.articleId })
+                    ...(activityFilter.articleId && { articleId: { $in: activityFilter.articleId } })
                 }
             },
             {
@@ -208,35 +226,35 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             }
         ]);
 
-        // Growth calculations (compare this month vs last month)
-        const thisMonthArticles = await Article.countDocuments({
+        console.log('⏱️  Query 8: Growth calculations');
+        // Growth calculations (compare this month vs last month, within time window)
+        const thisMonthFilter = {
             ...articleFilter,
-            publishedAt: { $gte: startOfMonth }
-        });
-        const lastMonthArticles = await Article.countDocuments({
+            publishedAt: { 
+                $gte: startOfMonth,
+                $lte: now
+            }
+        };
+        const lastMonthFilter = {
             ...articleFilter,
-            publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
-        });
+            publishedAt: { 
+                $gte: startOfLastMonth, 
+                $lte: endOfLastMonth 
+            }
+        };
+
+        const thisMonthArticles = await Article.countDocuments(thisMonthFilter);
+        const lastMonthArticles = await Article.countDocuments(lastMonthFilter);
         const articleGrowth = lastMonthArticles > 0
             ? ((thisMonthArticles - lastMonthArticles) / lastMonthArticles * 100).toFixed(1)
             : 0;
 
         const thisMonthViews = await Article.aggregate([
-            {
-                $match: {
-                    ...articleFilter,
-                    publishedAt: { $gte: startOfMonth }
-                }
-            },
+            { $match: thisMonthFilter },
             { $group: { _id: null, total: { $sum: '$viewCount' } } }
         ]);
         const lastMonthViews = await Article.aggregate([
-            {
-                $match: {
-                    ...articleFilter,
-                    publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
-                }
-            },
+            { $match: lastMonthFilter },
             { $group: { _id: null, total: { $sum: '$viewCount' } } }
         ]);
         const thisMonthViewCount = thisMonthViews[0]?.total || 0;
@@ -244,6 +262,10 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         const viewGrowth = lastMonthViewCount > 0
             ? ((thisMonthViewCount - lastMonthViewCount) / lastMonthViewCount * 100).toFixed(1)
             : 0;
+
+        const endTime = Date.now();
+        const duration = ((endTime - startTime) / 1000).toFixed(2);
+        console.log(`✅ Analytics completed in ${duration}s`);
 
         res.json({
             overview: {
@@ -262,10 +284,16 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             categoryStats,
             recentActivity,
             userRole: currentUser.type,
-            publisherGroups: currentUser.publisher_group || []
+            publisherGroups: currentUser.publisher_group || [],
+            timeWindow: {
+                days: daysBack,
+                startDate: timeWindowStart.toISOString(),
+                endDate: now.toISOString()
+            },
+            performanceMs: endTime - startTime
         });
     } catch (error) {
-        console.error('Error fetching analytics:', error);
+        console.error('❌ Error fetching analytics:', error);
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
