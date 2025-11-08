@@ -218,14 +218,43 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             { $sort: { '_id.year': 1, '_id.month': 1 } }
         ]);
 
-        console.log('⏱️  Query 5: Top articles');
-        // Top articles by views (within time window)
-        const topArticles = await Article.find(articleFilter)
-            .sort({ viewCount: -1 })
-            .limit(10)
+        console.log('⏱️  Query 5: Top articles by recent activity');
+        // Top articles by views in the time window (from UserActivity, not Article.viewCount)
+        const topArticleIds = await UserActivity.aggregate([
+            {
+                $match: {
+                    eventType: 'view',
+                    timestamp: { $gte: timeWindowStart }
+                }
+            },
+            {
+                $group: {
+                    _id: '$articleId',
+                    viewCount: { $sum: 1 }
+                }
+            },
+            { $sort: { viewCount: -1 } },
+            { $limit: 10 }
+        ]);
+
+        // Fetch full article details for top articles
+        const topArticleIdsArray = topArticleIds.map(item => item._id).filter(Boolean);
+        const topArticlesRaw = await Article.find({ _id: { $in: topArticleIdsArray } })
             .populate('sourceId', 'name groupName')
             .select('title viewCount likes dislikes publishedAt category sourceId')
             .lean();
+
+        // Merge with view counts from UserActivity and sort
+        const topArticles = topArticleIds.map(item => {
+            const article = topArticlesRaw.find(a => a._id.toString() === item._id.toString());
+            if (article) {
+                return {
+                    ...article,
+                    viewCount: item.viewCount // Use actual views from time window
+                };
+            }
+            return null;
+        }).filter(Boolean);
 
         console.log('⏱️  Query 6: Category stats');
         // Category distribution (within time window)
