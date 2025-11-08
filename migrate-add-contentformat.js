@@ -9,7 +9,7 @@ async function migrateContentFormat() {
     try {
         console.log('🔄 Starting contentFormat migration...');
         console.log('📊 Connecting to MongoDB...');
-        
+
         await mongoose.connect(process.env.MONGO_URI, {
             serverSelectionTimeoutMS: 30000,
             socketTimeoutMS: 90000, // 90 seconds for large operations
@@ -39,7 +39,7 @@ async function migrateContentFormat() {
         while (processed < articlesWithoutFormat) {
             const batchStart = Date.now();
             console.log(`📦 Processing batch: ${processed + 1} to ${Math.min(processed + batchSize, articlesWithoutFormat)}...`);
-            
+
             // Update batch of articles without contentFormat to 'text'
             const result = await Article.updateMany(
                 { contentFormat: { $exists: false } },
@@ -49,7 +49,7 @@ async function migrateContentFormat() {
 
             processed += result.modifiedCount;
             const batchTime = ((Date.now() - batchStart) / 1000).toFixed(2);
-            
+
             console.log(`   ✅ Modified ${result.modifiedCount} articles in ${batchTime}s (Total: ${processed}/${articlesWithoutFormat})`);
 
             // If no documents were modified, we're done
