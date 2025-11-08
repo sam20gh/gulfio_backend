@@ -73,6 +73,203 @@ router.get('/generate-engagement-summary', async (req, res) => {
     }
 });
 
+// Analytics dashboard endpoint
+router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
+    try {
+        const currentUser = req.mongoUser;
+        const Article = require('../models/Article');
+        const Source = require('../models/Source');
+
+        // Build filter based on user role
+        let articleFilter = {};
+        let sourceFilter = {};
+        
+        if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
+            // Publishers see only their assigned groups
+            sourceFilter = { groupName: { $in: currentUser.publisher_group } };
+            const publisherSources = await Source.find(sourceFilter).select('_id');
+            const sourceIds = publisherSources.map(s => s._id);
+            articleFilter = { sourceId: { $in: sourceIds } };
+        } else if (currentUser.type !== 'admin') {
+            // Non-admin, non-publisher users get no data
+            return res.status(403).json({ message: 'Access denied.' });
+        }
+
+        // Get current date ranges
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const startOfWeek = new Date(startOfToday);
+        startOfWeek.setDate(startOfToday.getDate() - 7);
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+
+        // Total statistics
+        const totalArticles = await Article.countDocuments(articleFilter);
+        const totalViews = await Article.aggregate([
+            { $match: articleFilter },
+            { $group: { _id: null, total: { $sum: '$viewCount' } } }
+        ]);
+        const totalLikes = await Article.aggregate([
+            { $match: articleFilter },
+            { $group: { _id: null, total: { $sum: '$likes' } } }
+        ]);
+        const totalDislikes = await Article.aggregate([
+            { $match: articleFilter },
+            { $group: { _id: null, total: { $sum: '$dislikes' } } }
+        ]);
+
+        // User activity stats
+        const activityFilter = currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0
+            ? { articleId: { $in: await Article.find(articleFilter).select('_id').then(docs => docs.map(d => d._id)) } }
+            : {};
+
+        const uniqueUsers = await UserActivity.distinct('userId', activityFilter);
+        const totalUsers = await User.countDocuments();
+
+        // Weekly trends (last 7 days)
+        const weeklyActivity = await UserActivity.aggregate([
+            {
+                $match: {
+                    timestamp: { $gte: startOfWeek },
+                    ...(activityFilter.articleId && { articleId: activityFilter.articleId })
+                }
+            },
+            {
+                $group: {
+                    _id: {
+                        date: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
+                        eventType: '$eventType'
+                    },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { '_id.date': 1 } }
+        ]);
+
+        // Monthly trends (last 6 months)
+        const sixMonthsAgo = new Date(now);
+        sixMonthsAgo.setMonth(now.getMonth() - 6);
+        
+        const monthlyTrends = await Article.aggregate([
+            {
+                $match: {
+                    ...articleFilter,
+                    publishedAt: { $gte: sixMonthsAgo }
+                }
+            },
+            {
+                $group: {
+                    _id: {
+                        year: { $year: '$publishedAt' },
+                        month: { $month: '$publishedAt' }
+                    },
+                    articles: { $sum: 1 },
+                    views: { $sum: '$viewCount' },
+                    likes: { $sum: '$likes' }
+                }
+            },
+            { $sort: { '_id.year': 1, '_id.month': 1 } }
+        ]);
+
+        // Top articles by views
+        const topArticles = await Article.find(articleFilter)
+            .sort({ viewCount: -1 })
+            .limit(10)
+            .populate('sourceId', 'name groupName')
+            .select('title viewCount likes dislikes publishedAt category sourceId');
+
+        // Category distribution
+        const categoryStats = await Article.aggregate([
+            { $match: articleFilter },
+            {
+                $group: {
+                    _id: '$category',
+                    count: { $sum: 1 },
+                    views: { $sum: '$viewCount' }
+                }
+            },
+            { $sort: { count: -1 } }
+        ]);
+
+        // Recent activity (last 24 hours)
+        const recentActivity = await UserActivity.aggregate([
+            {
+                $match: {
+                    timestamp: { $gte: startOfToday },
+                    ...(activityFilter.articleId && { articleId: activityFilter.articleId })
+                }
+            },
+            {
+                $group: {
+                    _id: '$eventType',
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        // Growth calculations (compare this month vs last month)
+        const thisMonthArticles = await Article.countDocuments({
+            ...articleFilter,
+            publishedAt: { $gte: startOfMonth }
+        });
+        const lastMonthArticles = await Article.countDocuments({
+            ...articleFilter,
+            publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
+        });
+        const articleGrowth = lastMonthArticles > 0
+            ? ((thisMonthArticles - lastMonthArticles) / lastMonthArticles * 100).toFixed(1)
+            : 0;
+
+        const thisMonthViews = await Article.aggregate([
+            {
+                $match: {
+                    ...articleFilter,
+                    publishedAt: { $gte: startOfMonth }
+                }
+            },
+            { $group: { _id: null, total: { $sum: '$viewCount' } } }
+        ]);
+        const lastMonthViews = await Article.aggregate([
+            {
+                $match: {
+                    ...articleFilter,
+                    publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
+                }
+            },
+            { $group: { _id: null, total: { $sum: '$viewCount' } } }
+        ]);
+        const thisMonthViewCount = thisMonthViews[0]?.total || 0;
+        const lastMonthViewCount = lastMonthViews[0]?.total || 0;
+        const viewGrowth = lastMonthViewCount > 0
+            ? ((thisMonthViewCount - lastMonthViewCount) / lastMonthViewCount * 100).toFixed(1)
+            : 0;
+
+        res.json({
+            overview: {
+                totalArticles,
+                totalViews: totalViews[0]?.total || 0,
+                totalLikes: totalLikes[0]?.total || 0,
+                totalDislikes: totalDislikes[0]?.total || 0,
+                activeUsers: uniqueUsers.length,
+                totalUsers,
+                articleGrowth: parseFloat(articleGrowth),
+                viewGrowth: parseFloat(viewGrowth)
+            },
+            weeklyActivity,
+            monthlyTrends,
+            topArticles,
+            categoryStats,
+            recentActivity,
+            userRole: currentUser.type,
+            publisherGroups: currentUser.publisher_group || []
+        });
+    } catch (error) {
+        console.error('Error fetching analytics:', error);
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+});
+
 // User management endpoints for role-based access control
 
 // Get all users with their types and publisher groups (admin only)
