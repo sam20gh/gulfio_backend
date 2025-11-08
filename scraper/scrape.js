@@ -376,7 +376,13 @@ async function scrapeAllSources(frequency = null) {
                     let listCount = 0;
 
                     try {
-                        $$(source.contentSelector || '.story-element.story-element-text p').each((_, el) => {
+                        // CRITICAL FIX: Expand selector to include headings and lists, not just paragraphs
+                        // This ensures we capture h2, h3, ul, ol elements for markdown formatting
+                        const expandedSelector = source.contentSelector 
+                            ? `${source.contentSelector}, ${source.contentSelector.replace(/\s+p$/, '')} h2, ${source.contentSelector.replace(/\s+p$/, '')} h3, ${source.contentSelector.replace(/\s+p$/, '')} ul, ${source.contentSelector.replace(/\s+p$/, '')} ol`
+                            : '.story-element.story-element-text p, .story-element.story-element-text h2, .story-element.story-element-text h3, .story-element.story-element-text ul, .story-element.story-element-text ol';
+                        
+                        $$(expandedSelector).each((_, el) => {
                             // Skip hidden elements
                             if (!isElementVisible($$, el)) return;
 
@@ -420,6 +426,8 @@ async function scrapeAllSources(frequency = null) {
                                 const heading = $el.text().trim();
                                 if (heading.length > 0) {
                                     contentParts.push(`\n## ${heading}\n`);
+                                    headingCount++;
+                                    console.log(`📝 Found h2 heading: "${heading.substring(0, 50)}..."`);
                                 }
                                 return;
                             }
@@ -429,6 +437,8 @@ async function scrapeAllSources(frequency = null) {
                                 const heading = $el.text().trim();
                                 if (heading.length > 0) {
                                     contentParts.push(`\n### ${heading}\n`);
+                                    headingCount++;
+                                    console.log(`📝 Found h3 heading: "${heading.substring(0, 50)}..."`);
                                 }
                                 return;
                             }
@@ -445,6 +455,7 @@ async function scrapeAllSources(frequency = null) {
                                 if (listItems.length > 0) {
                                     contentParts.push('\n' + listItems.join('\n') + '\n');
                                     listCount++;
+                                    console.log(`📋 Found unordered list with ${listItems.length} items`);
                                 }
                                 return;
                             }
@@ -460,6 +471,8 @@ async function scrapeAllSources(frequency = null) {
                                 });
                                 if (listItems.length > 0) {
                                     contentParts.push('\n' + listItems.join('\n') + '\n');
+                                    listCount++;
+                                    console.log(`🔢 Found ordered list with ${listItems.length} items`);
                                 }
                                 return;
                             }
@@ -479,6 +492,13 @@ async function scrapeAllSources(frequency = null) {
                         }
                         if (listCount > 0) {
                             console.log(`✅ Total lists found: ${listCount} (ul/ol)`);
+                        }
+                        
+                        // Log markdown format detection
+                        if (headingCount > 0 || listCount > 0) {
+                            console.log(`📝 Content will be saved as MARKDOWN format (headings: ${headingCount}, lists: ${listCount})`);
+                        } else {
+                            console.log(`📄 Content will be saved as TEXT format (no structured elements found)`);
                         }
                     } catch (embedError) {
                         console.warn('⚠️ Error processing content with embeds/structure:', embedError.message);
