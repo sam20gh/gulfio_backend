@@ -83,8 +83,8 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         console.log('📊 Analytics request started for user:', currentUser.email);
         const startTime = Date.now();
 
-        // Get date range from query params or use defaults (last 30 days)
-        const daysBack = parseInt(req.query.days) || 30;
+        // Get date range from query params or use defaults (last 7 days for speed)
+        const daysBack = parseInt(req.query.days) || 7;
         const now = new Date();
         const timeWindowStart = new Date(now);
         timeWindowStart.setDate(now.getDate() - daysBack);
@@ -116,21 +116,24 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-        console.log('⏱️  Query 1: Total statistics');
-        // Total statistics (within time window)
-        const totalArticles = await Article.countDocuments(articleFilter);
-        const totalViews = await Article.aggregate([
-            { $match: articleFilter },
-            { $group: { _id: null, total: { $sum: '$viewCount' } } }
+        console.log('⏱️  Query 1: Total statistics (combined)');
+        // Combined statistics query for better performance
+        const [totalArticles, statsResults] = await Promise.all([
+            Article.countDocuments(articleFilter),
+            Article.aggregate([
+                { $match: articleFilter },
+                {
+                    $group: {
+                        _id: null,
+                        totalViews: { $sum: '$viewCount' },
+                        totalLikes: { $sum: '$likes' },
+                        totalDislikes: { $sum: '$dislikes' }
+                    }
+                }
+            ])
         ]);
-        const totalLikes = await Article.aggregate([
-            { $match: articleFilter },
-            { $group: { _id: null, total: { $sum: '$likes' } } }
-        ]);
-        const totalDislikes = await Article.aggregate([
-            { $match: articleFilter },
-            { $group: { _id: null, total: { $sum: '$dislikes' } } }
-        ]);
+
+        const stats = statsResults[0] || { totalViews: 0, totalLikes: 0, totalDislikes: 0 };
 
         console.log('⏱️  Query 2: User activity');
         // User activity stats (ALWAYS limited by time window)
@@ -236,39 +239,43 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             { $limit: 20 } // Safety limit
         ]);
 
-        console.log('⏱️  Query 8: Growth calculations');
-        // Growth calculations (compare this month vs last month, within time window)
-        const thisMonthFilter = {
-            ...articleFilter,
-            publishedAt: {
-                $gte: startOfMonth,
-                $lte: now
-            }
-        };
-        const lastMonthFilter = {
-            ...articleFilter,
-            publishedAt: {
-                $gte: startOfLastMonth,
-                $lte: endOfLastMonth
-            }
-        };
+        console.log('⏱️  Query 8: Growth calculations (combined)');
+        // Growth calculations (compare this month vs last month) - combined queries
+        const [thisMonthArticles, lastMonthArticles, thisMonthStats, lastMonthStats] = await Promise.all([
+            Article.countDocuments({
+                ...articleFilter,
+                publishedAt: { $gte: startOfMonth, $lte: now }
+            }),
+            Article.countDocuments({
+                ...articleFilter,
+                publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
+            }),
+            Article.aggregate([
+                {
+                    $match: {
+                        ...articleFilter,
+                        publishedAt: { $gte: startOfMonth, $lte: now }
+                    }
+                },
+                { $group: { _id: null, views: { $sum: '$viewCount' } } }
+            ]),
+            Article.aggregate([
+                {
+                    $match: {
+                        ...articleFilter,
+                        publishedAt: { $gte: startOfLastMonth, $lte: endOfLastMonth }
+                    }
+                },
+                { $group: { _id: null, views: { $sum: '$viewCount' } } }
+            ])
+        ]);
 
-        const thisMonthArticles = await Article.countDocuments(thisMonthFilter);
-        const lastMonthArticles = await Article.countDocuments(lastMonthFilter);
         const articleGrowth = lastMonthArticles > 0
             ? ((thisMonthArticles - lastMonthArticles) / lastMonthArticles * 100).toFixed(1)
             : 0;
 
-        const thisMonthViews = await Article.aggregate([
-            { $match: thisMonthFilter },
-            { $group: { _id: null, total: { $sum: '$viewCount' } } }
-        ]);
-        const lastMonthViews = await Article.aggregate([
-            { $match: lastMonthFilter },
-            { $group: { _id: null, total: { $sum: '$viewCount' } } }
-        ]);
-        const thisMonthViewCount = thisMonthViews[0]?.total || 0;
-        const lastMonthViewCount = lastMonthViews[0]?.total || 0;
+        const thisMonthViewCount = thisMonthStats[0]?.views || 0;
+        const lastMonthViewCount = lastMonthStats[0]?.views || 0;
         const viewGrowth = lastMonthViewCount > 0
             ? ((thisMonthViewCount - lastMonthViewCount) / lastMonthViewCount * 100).toFixed(1)
             : 0;
@@ -280,9 +287,9 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         res.json({
             overview: {
                 totalArticles,
-                totalViews: totalViews[0]?.total || 0,
-                totalLikes: totalLikes[0]?.total || 0,
-                totalDislikes: totalDislikes[0]?.total || 0,
+                totalViews: stats.totalViews,
+                totalLikes: stats.totalLikes,
+                totalDislikes: stats.totalDislikes,
                 activeUsers: uniqueUsers.length,
                 totalUsers,
                 articleGrowth: parseFloat(articleGrowth),
