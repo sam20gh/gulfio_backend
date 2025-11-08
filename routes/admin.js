@@ -83,7 +83,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         // Build filter based on user role
         let articleFilter = {};
         let sourceFilter = {};
-        
+
         if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
             // Publishers see only their assigned groups
             sourceFilter = { groupName: { $in: currentUser.publisher_group } };
@@ -150,7 +150,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         // Monthly trends (last 6 months)
         const sixMonthsAgo = new Date(now);
         sixMonthsAgo.setMonth(now.getMonth() - 6);
-        
+
         const monthlyTrends = await Article.aggregate([
             {
                 $match: {
