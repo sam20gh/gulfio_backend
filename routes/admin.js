@@ -135,7 +135,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         console.log('⏱️  Query 2: User activity');
         // User activity stats (limited to articles in time window)
         const activityFilter = currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0
-            ? { 
+            ? {
                 articleId: { $in: await Article.find(articleFilter).select('_id').limit(5000).then(docs => docs.map(d => d._id)) },
                 timestamp: { $gte: timeWindowStart }
             }
@@ -230,16 +230,16 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         // Growth calculations (compare this month vs last month, within time window)
         const thisMonthFilter = {
             ...articleFilter,
-            publishedAt: { 
+            publishedAt: {
                 $gte: startOfMonth,
                 $lte: now
             }
         };
         const lastMonthFilter = {
             ...articleFilter,
-            publishedAt: { 
-                $gte: startOfLastMonth, 
-                $lte: endOfLastMonth 
+            publishedAt: {
+                $gte: startOfLastMonth,
+                $lte: endOfLastMonth
             }
         };
 
