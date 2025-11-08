@@ -133,24 +133,32 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         ]);
 
         console.log('⏱️  Query 2: User activity');
-        // User activity stats (limited to articles in time window)
-        const activityFilter = currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0
-            ? {
-                articleId: { $in: await Article.find(articleFilter).select('_id').limit(5000).then(docs => docs.map(d => d._id)) },
-                timestamp: { $gte: timeWindowStart }
+        // User activity stats (ALWAYS limited by time window)
+        let activityFilter = { timestamp: { $gte: timeWindowStart } };
+        
+        // For publishers, additionally filter by their article IDs
+        if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
+            const publisherArticleIds = await Article.find(articleFilter)
+                .select('_id')
+                .limit(1000) // Reduced from 5000 for better performance
+                .lean()
+                .then(docs => docs.map(d => d._id));
+            
+            if (publisherArticleIds.length > 0) {
+                activityFilter.articleId = { $in: publisherArticleIds };
             }
-            : { timestamp: { $gte: timeWindowStart } };
+        }
 
         const uniqueUsers = await UserActivity.distinct('userId', activityFilter);
         const totalUsers = await User.countDocuments();
 
         console.log('⏱️  Query 3: Weekly activity');
-        // Weekly trends (last 7 days)
+        // Weekly trends (last 7 days) - optimized
         const weeklyActivity = await UserActivity.aggregate([
             {
                 $match: {
-                    timestamp: { $gte: startOfWeek },
-                    ...(activityFilter.articleId && { articleId: { $in: activityFilter.articleId } })
+                    timestamp: { $gte: startOfWeek }
+                    // Removed articleId filter for performance - will show all platform activity
                 }
             },
             {
@@ -162,7 +170,8 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
                     count: { $sum: 1 }
                 }
             },
-            { $sort: { '_id.date': 1 } }
+            { $sort: { '_id.date': 1 } },
+            { $limit: 100 } // Safety limit
         ]);
 
         console.log('⏱️  Query 4: Monthly trends');
@@ -210,12 +219,12 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         ]);
 
         console.log('⏱️  Query 7: Recent activity');
-        // Recent activity (last 24 hours)
+        // Recent activity (last 24 hours) - simplified query
         const recentActivity = await UserActivity.aggregate([
             {
                 $match: {
-                    timestamp: { $gte: startOfToday },
-                    ...(activityFilter.articleId && { articleId: { $in: activityFilter.articleId } })
+                    timestamp: { $gte: startOfToday }
+                    // Removed articleId filter for performance
                 }
             },
             {
@@ -223,7 +232,8 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
                     _id: '$eventType',
                     count: { $sum: 1 }
                 }
-            }
+            },
+            { $limit: 20 } // Safety limit
         ]);
 
         console.log('⏱️  Query 8: Growth calculations');
