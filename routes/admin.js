@@ -135,7 +135,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
         console.log('⏱️  Query 2: User activity');
         // User activity stats (ALWAYS limited by time window)
         let activityFilter = { timestamp: { $gte: timeWindowStart } };
-        
+
         // For publishers, additionally filter by their article IDs
         if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
             const publisherArticleIds = await Article.find(articleFilter)
@@ -143,7 +143,7 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
                 .limit(1000) // Reduced from 5000 for better performance
                 .lean()
                 .then(docs => docs.map(d => d._id));
-            
+
             if (publisherArticleIds.length > 0) {
                 activityFilter.articleId = { $in: publisherArticleIds };
             }
