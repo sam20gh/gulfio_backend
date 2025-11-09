@@ -421,6 +421,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         $project: {
           title: 1,
           content: 1,
+          contentFormat: 1, // ✅ Include contentFormat for markdown rendering
           url: 1,
           category: 1,
           publishedAt: 1,
@@ -795,6 +796,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
         $project: {
           title: 1,
           content: 1,
+          contentFormat: 1, // ✅ Include contentFormat for markdown rendering
           url: 1,
           category: 1,
           publishedAt: 1,
@@ -1197,6 +1199,8 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
             _id: 1,
             title: 1,
             summary: 1,
+            content: 1,
+            contentFormat: 1, // ✅ Include contentFormat for markdown rendering
             image: 1,
             sourceId: 1,
             source: 1,
@@ -2537,110 +2541,6 @@ articleRouter.get('/:id', async (req, res) => {
 
 module.exports = articleRouter;
 
-/*
-=== MongoDB Atlas Search Index Configuration ===
 
-Create this Atlas Search index named "articles_pca_index" on the articles collection:
-
-{
-  "mappings": {
-    "dynamic": false,
-    "fields": {
-      "embedding_pca": {
-        "type": "vector",
-        "similarity": "cosine",
-        "dimensions": 128
-      },
-      "language": { "type": "keyword" },
-      "publishedAt": { "type": "date" }
-    }
-  }
-}
-
-Note: Replace 128 with your actual PCA dimensions if different.
-
-=== MongoDB Secondary Indexes ===
-
-Run these commands in MongoDB shell or compass:
-
-db.articles.createIndex({ language: 1, publishedAt: -1 })
-db.articles.createIndex({ viewCount: -1, publishedAt: -1, language: 1 })
-db.articles.createIndex({ "source": 1, publishedAt: -1 })
-
-=== Test Plan ===
-
-Unit Tests:
-- Test vector search with valid embedding_pca
-- Test fallback when embedding_pca is missing
-- Test progressive time window widening
-- Test diversity and trending injection
-- Test source diversification
-- Test pagination correctness
-- Test Redis served set management
-
-Integration Tests:
-- Test with real MongoDB Atlas cluster
-- Test vector search index availability
-- Test performance under load
-- Test cache hit/miss scenarios
-
-Smoke Tests:
-- GET /articles/personalized?page=1&limit=20&language=english
-- GET /articles/personalized?page=2&limit=10&language=arabic
-- GET /articles/personalized?resetServed=1
-- GET /articles/personalized?noCache=1
-
-=== Operations Notes ===
-
-Redis Keys & TTLs:
-- served_personalized_${userId}_${language}_${dayKey} (86400s TTL)
-- articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${dayKey}_${noveltySeed} (3600s TTL)
-
-Monitoring:
-- Track vector search response times
-- Monitor fallback usage rates  
-- Alert on vector search errors
-- Monitor Redis memory usage
-- Track cache hit rates
-
-Performance Knobs:
-- VECTOR_INDEX: Atlas Search index name
-- NUM_CANDIDATE_MULT: Controls numCandidates (4x pool size)
-- LIMIT_MULT: Controls search limit (2x pool size)
-- DIVERSITY_RATIO: Diversity injection percentage (0.15 = 15%)
-- TRENDING_RATIO: Trending injection percentage (0.10 = 10%)
-*/
-
-// Cache Warmer Admin Endpoints (temporarily disabled)
-/*
-articleRouter.get('/cache-warmer/stats', (req, res) => {
-  try {
-    const stats = cacheWarmer.getStats();
-    res.json({
-      status: 'success',
-      cacheWarmer: stats,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Cache warmer stats error:', error);
-    res.status(500).json({ error: 'Failed to get cache warmer stats' });
-  }
-});
-
-articleRouter.post('/cache-warmer/force-warm/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    await cacheWarmer.forceWarmUser(userId);
-    res.json({
-      status: 'success',
-      message: `Cache warming forced for user ${userId}`,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Force warm error:', error);
-    res.status(500).json({ error: 'Failed to force warm user cache' });
-  }
-});
-*/
 
 module.exports = articleRouter;
