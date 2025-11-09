@@ -2605,7 +2605,7 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
           .replace(/\n{3,}/g, '\n\n')
           .replace(/[ \t]{2,}/g, ' ')
           .trim();
-        
+
         await article.save();
         updatedCount++;
 
