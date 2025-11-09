@@ -2539,8 +2539,98 @@ articleRouter.get('/:id', async (req, res) => {
   }
 });
 
-module.exports = articleRouter;
+// Find and Replace - Preview
+articleRouter.post('/find-replace/preview', async (req, res) => {
+  try {
+    const { findText, replaceText } = req.body;
 
+    if (!findText) {
+      return res.status(400).json({ message: 'findText is required' });
+    }
 
+    console.log(`🔍 Preview find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}"`);
+
+    // Find all articles containing the text
+    const articles = await Article.find({
+      content: { $regex: findText, $options: 'i' }
+    }).select('_id title content').limit(1000);
+
+    const matchCount = articles.length;
+    const examples = articles.slice(0, 3).map(a => ({
+      id: a._id,
+      title: a.title
+    }));
+
+    console.log(`✅ Preview complete: ${matchCount} articles found`);
+
+    res.json({
+      matchCount,
+      totalChecked: await Article.countDocuments(),
+      examples,
+      findText,
+      replaceText: replaceText || ''
+    });
+  } catch (error) {
+    console.error('❌ Preview error:', error);
+    res.status(500).json({ message: 'Failed to preview changes', error: error.message });
+  }
+});
+
+// Find and Replace - Execute
+articleRouter.post('/find-replace/execute', async (req, res) => {
+  try {
+    const { findText, replaceText } = req.body;
+
+    if (!findText) {
+      return res.status(400).json({ message: 'findText is required' });
+    }
+
+    console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}"`);
+
+    // Find all articles containing the text
+    const articles = await Article.find({
+      content: { $regex: findText, $options: 'i' }
+    }).select('_id content');
+
+    let updatedCount = 0;
+    const regex = new RegExp(findText, 'gi');
+
+    for (const article of articles) {
+      const originalContent = article.content;
+      const newContent = originalContent.replace(regex, replaceText || '');
+
+      if (newContent !== originalContent) {
+        // Clean up excessive whitespace
+        article.content = newContent
+          .replace(/\n{3,}/g, '\n\n')
+          .replace(/[ \t]{2,}/g, ' ')
+          .trim();
+        
+        await article.save();
+        updatedCount++;
+
+        if (updatedCount % 10 === 0) {
+          console.log(`✅ Updated ${updatedCount} articles...`);
+        }
+      }
+    }
+
+    // Clear caches after update
+    await clearArticlesCache();
+
+    console.log(`✅ Find/replace complete: ${updatedCount} articles updated`);
+
+    res.json({
+      success: true,
+      updatedCount,
+      findText,
+      replaceText: replaceText || '',
+      message: `Successfully updated ${updatedCount} article(s)`
+    });
+  } catch (error) {
+    console.error('❌ Execute error:', error);
+    res.status(500).json({ message: 'Failed to replace text', error: error.message });
+  }
+});
 
 module.exports = articleRouter;
