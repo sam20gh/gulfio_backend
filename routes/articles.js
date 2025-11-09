@@ -2548,12 +2548,13 @@ articleRouter.post('/find-replace/preview', async (req, res) => {
       return res.status(400).json({ message: 'findText is required' });
     }
 
-    console.log(`🔍 Preview find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}"`);
+    console.log(`🔍 Preview find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only)`);
 
-    // Find all articles containing the text
+    // Find all markdown articles containing the text
     const articles = await Article.find({
-      content: { $regex: findText, $options: 'i' }
-    }).select('_id title content').limit(1000);
+      content: { $regex: findText, $options: 'i' },
+      contentFormat: 'markdown'
+    }).select('_id title content contentFormat').limit(1000);
 
     const matchCount = articles.length;
     const examples = articles.slice(0, 3).map(a => ({
@@ -2561,11 +2562,13 @@ articleRouter.post('/find-replace/preview', async (req, res) => {
       title: a.title
     }));
 
-    console.log(`✅ Preview complete: ${matchCount} articles found`);
+    const totalMarkdown = await Article.countDocuments({ contentFormat: 'markdown' });
+
+    console.log(`✅ Preview complete: ${matchCount} markdown articles found out of ${totalMarkdown} total`);
 
     res.json({
       matchCount,
-      totalChecked: await Article.countDocuments(),
+      totalChecked: totalMarkdown,
       examples,
       findText,
       replaceText: replaceText || ''
@@ -2585,15 +2588,16 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
       return res.status(400).json({ message: 'findText is required' });
     }
 
-    console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}"`);
+    console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only)`);
 
-    // Find all articles containing the text
+    // Find all markdown articles containing the text
     const articles = await Article.find({
-      content: { $regex: findText, $options: 'i' }
-    }).select('_id content');
+      content: { $regex: findText, $options: 'i' },
+      contentFormat: 'markdown'
+    }).select('_id content contentFormat');
 
     let updatedCount = 0;
-    const regex = new RegExp(findText, 'gi');
+    const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
 
     for (const article of articles) {
       const originalContent = article.content;
@@ -2610,7 +2614,7 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
         updatedCount++;
 
         if (updatedCount % 10 === 0) {
-          console.log(`✅ Updated ${updatedCount} articles...`);
+          console.log(`✅ Updated ${updatedCount} markdown articles...`);
         }
       }
     }
@@ -2618,14 +2622,14 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
     // Clear caches after update
     await clearArticlesCache();
 
-    console.log(`✅ Find/replace complete: ${updatedCount} articles updated`);
+    console.log(`✅ Find/replace complete: ${updatedCount} markdown articles updated`);
 
     res.json({
       success: true,
       updatedCount,
       findText,
       replaceText: replaceText || '',
-      message: `Successfully updated ${updatedCount} article(s)`
+      message: `Successfully updated ${updatedCount} markdown article(s)`
     });
   } catch (error) {
     console.error('❌ Execute error:', error);
