@@ -29,11 +29,11 @@ function question(query) {
 async function findReplaceMarkdown() {
     try {
         console.log('🚀 Interactive Find and Replace for Markdown Articles\n');
-        console.log('=' .repeat(60) + '\n');
+        console.log('='.repeat(60) + '\n');
 
         // Get user input
         const findText = await question('📝 Enter text to FIND: ');
-        
+
         if (!findText || findText.trim() === '') {
             console.log('❌ Error: Find text cannot be empty');
             rl.close();
@@ -41,16 +41,16 @@ async function findReplaceMarkdown() {
         }
 
         const replaceText = await question('📝 Enter REPLACEMENT text (press Enter to remove): ');
-        
-        console.log('\n' + '=' .repeat(60));
+
+        console.log('\n' + '='.repeat(60));
         console.log('📋 Summary:');
         console.log(`   Find: "${findText}"`);
         console.log(`   Replace with: "${replaceText || '[REMOVE]'}"`);
         console.log(`   Target: Articles with contentFormat='markdown'`);
-        console.log('=' .repeat(60) + '\n');
+        console.log('='.repeat(60) + '\n');
 
         const confirm = await question('⚠️  Continue? This will modify your database. (yes/no): ');
-        
+
         if (confirm.toLowerCase() !== 'yes') {
             console.log('❌ Operation cancelled');
             rl.close();
@@ -63,7 +63,7 @@ async function findReplaceMarkdown() {
 
         // Find markdown articles containing the text
         console.log('🔍 Searching for markdown articles with the specified text...');
-        
+
         const articles = await Article.find({
             content: { $exists: true, $ne: '' },
             contentFormat: 'markdown',
@@ -89,7 +89,7 @@ async function findReplaceMarkdown() {
         }
 
         const finalConfirm = await question(`⚠️  Update ${articles.length} article(s)? (yes/no): `);
-        
+
         if (finalConfirm.toLowerCase() !== 'yes') {
             console.log('❌ Operation cancelled');
             rl.close();
@@ -111,7 +111,7 @@ async function findReplaceMarkdown() {
         for (let i = 0; i < articles.length; i++) {
             const article = articles[i];
             const originalContent = article.content;
-            
+
             // Replace all occurrences
             let newContent = originalContent.replace(regex, replaceText);
 
@@ -140,14 +140,14 @@ async function findReplaceMarkdown() {
         }
 
         console.log('\n✅ Find and Replace Complete!');
-        console.log('=' .repeat(60));
+        console.log('='.repeat(60));
         console.log('📊 Statistics:');
         console.log(`   - Find text: "${findText}"`);
         console.log(`   - Replace with: "${replaceText || '[REMOVED]'}"`);
         console.log(`   - Total articles checked: ${articles.length}`);
         console.log(`   - Articles updated: ${updatedCount}`);
         console.log(`   - Articles skipped (no changes): ${skippedCount}`);
-        console.log('=' .repeat(60) + '\n');
+        console.log('='.repeat(60) + '\n');
 
     } catch (error) {
         console.error('❌ Error:', error);
