@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Source = require('../models/Source');
 const Reel = require('../models/Reel');
+const Article = require('../models/Article');
 
 const { scrapeReelsForSource } = require('../scraper/instagramReels');
 const { scrapeYouTubeForSource } = require('../scraper/youtubeScraper');
@@ -15,8 +16,34 @@ try {
 }
 
 router.get('/', auth, async (req, res) => {
-    const sources = await Source.find({ status: { $ne: 'blocked' } });
-    res.json(sources);
+    try {
+        const sources = await Source.find({ status: { $ne: 'blocked' } });
+
+        // Get article counts for each source
+        const sourceIds = sources.map(s => s._id);
+        const articleCounts = await Article.aggregate([
+            { $match: { sourceId: { $in: sourceIds } } },
+            { $group: { _id: '$sourceId', count: { $sum: 1 } } }
+        ]);
+
+        // Create a map for quick lookup
+        const countMap = {};
+        articleCounts.forEach(item => {
+            countMap[item._id.toString()] = item.count;
+        });
+
+        // Add article count to each source
+        const sourcesWithCounts = sources.map(source => {
+            const sourceObj = source.toObject();
+            sourceObj.articleCount = countMap[source._id.toString()] || 0;
+            return sourceObj;
+        });
+
+        res.json(sourcesWithCounts);
+    } catch (err) {
+        console.error('Error fetching sources with article counts:', err);
+        res.status(500).json({ message: err.message });
+    }
 });
 
 router.post('/', auth, async (req, res) => {
