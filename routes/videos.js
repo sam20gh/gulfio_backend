@@ -43,6 +43,43 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const router = express.Router();
 
+// Compatibility endpoint: provide recommendation system stats for mobile client
+// Used by mobile service call: GET /videos/reels/stats
+router.get('/videos/reels/stats', async (req, res) => {
+    try {
+        // Basic DB stats
+        const totalReels = await Reel.countDocuments({});
+        const reelsWithEmbeddings = await Reel.countDocuments({ embedding: { $exists: true, $ne: [] } });
+        const reelsWithPcaEmbeddings = await Reel.countDocuments({ embedding_pca: { $exists: true, $ne: [] } });
+
+        // Index/cache heuristics
+        const indexSize = reelsWithPcaEmbeddings; // proxy for index size
+        const isIndexBuilt = indexSize > 0;
+        const lastIndexUpdate = process.env.RECOMMENDATION_LAST_INDEX_UPDATE || new Date().toISOString();
+        const cacheSize = (redis && typeof redis.isConnected === 'function' && redis.isConnected()) ? 1 : 0;
+
+        const pcaProgress = totalReels > 0 ? `${Math.round((reelsWithPcaEmbeddings / totalReels) * 100)}%` : '0%';
+
+        return res.json({
+            indexStats: {
+                indexSize,
+                isIndexBuilt,
+                lastIndexUpdate,
+                cacheSize
+            },
+            databaseStats: {
+                totalReels,
+                reelsWithEmbeddings,
+                reelsWithPcaEmbeddings,
+                pcaProgress
+            }
+        });
+    } catch (err) {
+        console.error('Error in /videos/reels/stats:', err);
+        return res.status(500).json({ error: 'Failed to fetch recommendation stats' });
+    }
+});
+
 // You should have dotenv.config() in your main entrypoint (not needed here if already loaded)
 const {
     AWS_S3_REGION,
