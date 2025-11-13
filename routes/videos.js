@@ -906,6 +906,157 @@ router.get('/reels', async (req, res) => {
     }
 });
 
+// ===================== VIDEO ANALYTICS ROUTE =====================
+/**
+ * POST /analytics/videos
+ * Batch video analytics tracking
+ * Tracks watch time, completion rate, interactions, and engagement metrics
+ */
+router.post('/analytics/videos', async (req, res) => {
+    try {
+        const { batch, session } = req.body;
+
+        if (!batch || !Array.isArray(batch) || batch.length === 0) {
+            return res.status(400).json({ error: 'Invalid batch data' });
+        }
+
+        // Extract user information from token (if available)
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        let userId = null;
+
+        if (authToken) {
+            try {
+                const jwt = require('jsonwebtoken');
+                const decoded = jwt.decode(authToken);
+                userId = decoded?.sub || decoded?.user_id || decoded?.id;
+            } catch (err) {
+                console.warn('⚠️ Could not decode user token for analytics:', err.message);
+            }
+        }
+
+        // Use session userId if available, fallback to token userId
+        const effectiveUserId = session?.userId || userId;
+
+        console.log('📊 Received video analytics batch:', {
+            batchSize: batch.length,
+            userId: effectiveUserId,
+            sessionId: session?.sessionId,
+            avgCompletion: (batch.reduce((sum, a) => sum + (a.completionRate || 0), 0) / batch.length).toFixed(2) + '%'
+        });
+
+        // Process each video analytics entry
+        const analyticsPromises = batch.map(async (analytics) => {
+            try {
+                const {
+                    videoId,
+                    watchDuration,
+                    completionRate,
+                    interactions,
+                    engagement,
+                    metadata
+                } = analytics;
+
+                if (!videoId) {
+                    console.warn('⚠️ Skipping analytics entry without videoId');
+                    return null;
+                }
+
+                // Create UserActivity record for view tracking
+                if (effectiveUserId && watchDuration > 0) {
+                    await UserActivity.create({
+                        userId: effectiveUserId,
+                        eventType: 'view',
+                        articleId: videoId,
+                        duration: Math.round(watchDuration / 1000), // Convert ms to seconds
+                        timestamp: new Date(analytics.startTime || Date.now())
+                    }).catch(err => console.warn('Failed to create view activity:', err.message));
+                }
+
+                // Track interactions as separate activities
+                if (effectiveUserId && interactions) {
+                    const interactionPromises = [];
+
+                    if (interactions.liked) {
+                        interactionPromises.push(
+                            UserActivity.create({
+                                userId: effectiveUserId,
+                                eventType: 'like',
+                                articleId: videoId,
+                                timestamp: new Date()
+                            }).catch(err => console.warn('Failed to track like:', err.message))
+                        );
+                    }
+
+                    if (interactions.saved) {
+                        interactionPromises.push(
+                            UserActivity.create({
+                                userId: effectiveUserId,
+                                eventType: 'save',
+                                articleId: videoId,
+                                timestamp: new Date()
+                            }).catch(err => console.warn('Failed to track save:', err.message))
+                        );
+                    }
+
+                    if (interactions.disliked) {
+                        interactionPromises.push(
+                            UserActivity.create({
+                                userId: effectiveUserId,
+                                eventType: 'dislike',
+                                articleId: videoId,
+                                timestamp: new Date()
+                            }).catch(err => console.warn('Failed to track dislike:', err.message))
+                        );
+                    }
+
+                    await Promise.all(interactionPromises);
+                }
+
+                // Update reel completion rate if video exists
+                if (completionRate > 0) {
+                    await Reel.findByIdAndUpdate(
+                        videoId,
+                        {
+                            $push: { completionRates: completionRate },
+                            $set: { updatedAt: new Date() }
+                        }
+                    ).catch(err => console.warn('Failed to update completion rate:', err.message));
+                }
+
+                return {
+                    videoId,
+                    processed: true,
+                    completionRate: completionRate || 0,
+                    watchDuration: watchDuration || 0
+                };
+
+            } catch (err) {
+                console.error('❌ Error processing analytics entry:', err.message);
+                return { videoId: analytics.videoId, processed: false, error: err.message };
+            }
+        });
+
+        const results = await Promise.all(analyticsPromises);
+        const successful = results.filter(r => r && r.processed).length;
+        const failed = results.filter(r => r && !r.processed).length;
+
+        console.log(`✅ Video analytics batch processed: ${successful} successful, ${failed} failed`);
+
+        res.json({
+            success: true,
+            processed: successful,
+            failed,
+            batchSize: batch.length,
+            sessionId: session?.sessionId,
+            userId: effectiveUserId ? effectiveUserId.substring(0, 8) + '...' : 'anonymous'
+        });
+
+    } catch (err) {
+        console.error('❌ Error processing video analytics:', err.message);
+        res.status(500).json({ error: 'Failed to process video analytics' });
+    }
+});
+
 // ===================== NEW: ENHANCED VIEW TRACKING ROUTE =====================
 router.post('/reels/:reelId/view', async (req, res) => {
     try {
