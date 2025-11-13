@@ -951,9 +951,15 @@ router.get('/reels', async (req, res) => {
  */
 router.post('/analytics/videos', async (req, res) => {
     try {
+        console.log('📊 ====== RECEIVED VIDEO ANALYTICS BATCH ======');
+        console.log('📊 Request body keys:', Object.keys(req.body));
+        console.log('📊 Batch size:', req.body.batch?.length);
+        console.log('📊 Session data:', req.body.session);
+        
         const { batch, session } = req.body;
 
         if (!batch || !Array.isArray(batch) || batch.length === 0) {
+            console.error('❌ Invalid batch data:', { batch: typeof batch, isArray: Array.isArray(batch), length: batch?.length });
             return res.status(400).json({ error: 'Invalid batch data' });
         }
 
@@ -1056,7 +1062,15 @@ router.post('/analytics/videos', async (req, res) => {
                         const reel = await Reel.findById(videoId).select('completionRates totalWatchTime viewCount');
 
                         if (reel) {
-                            const updates = { updatedAt: new Date() };
+                            const updates = { 
+                                updatedAt: new Date(),
+                                $inc: { viewCount: 1 } // INCREMENT VIEW COUNT
+                            };
+
+                            // Add user to viewedBy if authenticated
+                            if (effectiveUserId) {
+                                updates.$addToSet = { viewedBy: effectiveUserId };
+                            }
 
                             // Update completion rate
                             if (completionRate > 0) {
@@ -1073,8 +1087,9 @@ router.post('/analytics/videos', async (req, res) => {
                             // Update watch time
                             if (watchDuration > 0) {
                                 const newTotalWatchTime = (reel.totalWatchTime || 0) + watchDuration;
-                                const viewCountForAvg = Math.max(reel.viewCount || 1, 1); // Avoid division by zero
-                                const avgWatchTime = newTotalWatchTime / viewCountForAvg;
+                                // Use the NEW viewCount for average calculation (after increment)
+                                const newViewCount = (reel.viewCount || 0) + 1;
+                                const avgWatchTime = newTotalWatchTime / newViewCount;
 
                                 updates.$set = {
                                     ...updates.$set,
@@ -1084,6 +1099,10 @@ router.post('/analytics/videos', async (req, res) => {
                             }
 
                             await Reel.findByIdAndUpdate(videoId, updates);
+                            
+                            console.log(`✅ Updated reel ${videoId}: viewCount +1, completion ${completionRate}%, watchTime ${Math.round(watchDuration/1000)}s`);
+                        } else {
+                            console.warn(`⚠️ Reel ${videoId} not found in database`);
                         }
                     } catch (err) {
                         console.warn('Failed to update reel analytics:', err.message);
