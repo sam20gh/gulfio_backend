@@ -955,7 +955,7 @@ router.post('/analytics/videos', async (req, res) => {
         console.log('📊 Request body keys:', Object.keys(req.body));
         console.log('📊 Batch size:', req.body.batch?.length);
         console.log('📊 Session data:', req.body.session);
-        
+
         const { batch, session } = req.body;
 
         if (!batch || !Array.isArray(batch) || batch.length === 0) {
@@ -1062,7 +1062,7 @@ router.post('/analytics/videos', async (req, res) => {
                         const reel = await Reel.findById(videoId).select('completionRates totalWatchTime viewCount');
 
                         if (reel) {
-                            const updates = { 
+                            const updates = {
                                 updatedAt: new Date(),
                                 $inc: { viewCount: 1 } // INCREMENT VIEW COUNT
                             };
@@ -1099,8 +1099,8 @@ router.post('/analytics/videos', async (req, res) => {
                             }
 
                             await Reel.findByIdAndUpdate(videoId, updates);
-                            
-                            console.log(`✅ Updated reel ${videoId}: viewCount +1, completion ${completionRate}%, watchTime ${Math.round(watchDuration/1000)}s`);
+
+                            console.log(`✅ Updated reel ${videoId}: viewCount +1, completion ${completionRate}%, watchTime ${Math.round(watchDuration / 1000)}s`);
                         } else {
                             console.warn(`⚠️ Reel ${videoId} not found in database`);
                         }
