@@ -691,6 +691,7 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             }
         };
 
+        // Debug logging to help diagnose data issues
         console.log('✅ Video analytics generated:', {
             totalVideos,
             totalViews: engagementData.totalViews,
@@ -699,8 +700,19 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             topVideosCount: formattedTopVideos.length,
             categoriesCount: categoryBreakdown.length,
             trendDataPoints: viewsTrendData.length,
-            userActivityViews: watchTimeData.viewCount
+            userActivityViews: watchTimeData.viewCount,
+            reelAvgWatchTime: (engagementData.avgWatchTime / 1000).toFixed(1) + 's',
+            reelCompletionRate: (engagementData.avgCompletionRate || 0).toFixed(1) + '%',
+            dataSource: watchTimeData.avgWatchTime > 0 ? 'UserActivity' : 'Reel'
         });
+
+        // Log warning if no data
+        if (totalVideos > 0 && actualAvgWatchTime === 0 && completionRateFormatted === 0) {
+            console.warn('⚠️ WARNING: Videos exist but no analytics data found!');
+            console.warn('   - Check if mobile app is sending analytics');
+            console.warn('   - Check UserActivity collection for view events');
+            console.warn('   - Check Reel completionRate and avgWatchTime fields');
+        }
 
         res.json(analytics);
 
