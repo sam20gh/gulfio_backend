@@ -451,7 +451,7 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
         // Get date range from query params
         const daysBack = parseInt(req.query.days) || 7;
         const category = req.query.category && req.query.category !== 'all' ? req.query.category : null;
-        
+
         const now = new Date();
         const timeWindowStart = new Date(now);
         timeWindowStart.setDate(now.getDate() - daysBack);
@@ -563,8 +563,8 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
         };
 
         const totalInteractions = engagementData.totalLikes + engagementData.totalDislikes + engagementData.totalShares;
-        const engagementRate = engagementData.totalViews > 0 
-            ? totalInteractions / engagementData.totalViews 
+        const engagementRate = engagementData.totalViews > 0
+            ? totalInteractions / engagementData.totalViews
             : 0;
 
         const likeDislikeRatio = engagementData.totalDislikes > 0
@@ -585,8 +585,8 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             dislikes: video.dislikes || 0,
             shares: video.saves || 0,
             avgWatchTime: 0, // We don't have this data yet
-            engagementRate: video.viewCount > 0 
-                ? ((video.likes || 0) + (video.saves || 0)) / video.viewCount 
+            engagementRate: video.viewCount > 0
+                ? ((video.likes || 0) + (video.saves || 0)) / video.viewCount
                 : 0
         }));
 
@@ -632,9 +632,9 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
 
     } catch (error) {
         console.error('❌ Error fetching video analytics:', error);
-        res.status(500).json({ 
-            message: 'Failed to fetch video analytics', 
-            error: error.message 
+        res.status(500).json({
+            message: 'Failed to fetch video analytics',
+            error: error.message
         });
     }
 });
