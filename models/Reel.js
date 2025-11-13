@@ -29,6 +29,11 @@ const ReelSchema = new Schema({
     engagement_score: { type: Number, default: 0 },
     categories: [{ type: String }],
     originalKey: { type: String }, // For R2 storage
+    // Analytics fields
+    completionRates: [{ type: Number }], // Array of completion percentages from user views
+    completionRate: { type: Number, default: 0 }, // Average completion rate
+    totalWatchTime: { type: Number, default: 0 }, // Total watch time in milliseconds
+    avgWatchTime: { type: Number, default: 0 }, // Average watch time in milliseconds
 }, { timestamps: true });
 
 // Performance indexes

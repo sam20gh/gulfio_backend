@@ -1012,15 +1012,45 @@ router.post('/analytics/videos', async (req, res) => {
                     await Promise.all(interactionPromises);
                 }
 
-                // Update reel completion rate if video exists
-                if (completionRate > 0) {
-                    await Reel.findByIdAndUpdate(
-                        videoId,
-                        {
-                            $push: { completionRates: completionRate },
-                            $set: { updatedAt: new Date() }
+                // Update reel completion rate and watch time if video exists
+                if (completionRate > 0 || watchDuration > 0) {
+                    try {
+                        // Get current reel data to calculate averages
+                        const reel = await Reel.findById(videoId).select('completionRates totalWatchTime viewCount');
+
+                        if (reel) {
+                            const updates = { updatedAt: new Date() };
+
+                            // Update completion rate
+                            if (completionRate > 0) {
+                                const newCompletionRates = [...(reel.completionRates || []), completionRate];
+                                const avgCompletionRate = newCompletionRates.reduce((sum, rate) => sum + rate, 0) / newCompletionRates.length;
+
+                                updates.$push = { completionRates: completionRate };
+                                updates.$set = {
+                                    ...updates.$set,
+                                    completionRate: avgCompletionRate
+                                };
+                            }
+
+                            // Update watch time
+                            if (watchDuration > 0) {
+                                const newTotalWatchTime = (reel.totalWatchTime || 0) + watchDuration;
+                                const viewCountForAvg = Math.max(reel.viewCount || 1, 1); // Avoid division by zero
+                                const avgWatchTime = newTotalWatchTime / viewCountForAvg;
+
+                                updates.$set = {
+                                    ...updates.$set,
+                                    totalWatchTime: newTotalWatchTime,
+                                    avgWatchTime: avgWatchTime
+                                };
+                            }
+
+                            await Reel.findByIdAndUpdate(videoId, updates);
                         }
-                    ).catch(err => console.warn('Failed to update completion rate:', err.message));
+                    } catch (err) {
+                        console.warn('Failed to update reel analytics:', err.message);
+                    }
                 }
 
                 return {

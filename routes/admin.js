@@ -476,20 +476,24 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             reelFilter.source = { $in: publisherSources };
         }
 
+        // Get all reel IDs in the filter for UserActivity lookups
+        const reelIds = await Reel.find(reelFilter).distinct('_id');
+
         // Fetch analytics data in parallel
         const [
             totalVideos,
             topVideos,
             categoryStats,
             engagementStats,
-            viewsTrendData
+            viewsTrendData,
+            watchTimeStats
         ] = await Promise.all([
             // Total videos count
             Reel.countDocuments(reelFilter),
 
             // Top performing videos
             Reel.find(reelFilter)
-                .select('reelId caption categories viewCount likes dislikes saves completionRate')
+                .select('reelId caption categories viewCount likes dislikes saves completionRate avgWatchTime')
                 .populate('source', 'name')
                 .sort({ viewCount: -1 })
                 .limit(10)
@@ -505,7 +509,8 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
                         count: { $sum: 1 },
                         views: { $sum: '$viewCount' },
                         likes: { $sum: '$likes' },
-                        avgCompletion: { $avg: '$completionRate' }
+                        avgCompletion: { $avg: '$completionRate' },
+                        avgWatchTime: { $avg: '$avgWatchTime' }
                     }
                 },
                 { $sort: { views: -1 } }
@@ -521,7 +526,9 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
                         totalLikes: { $sum: '$likes' },
                         totalDislikes: { $sum: '$dislikes' },
                         totalShares: { $sum: '$saves' },
-                        avgCompletionRate: { $avg: '$completionRate' }
+                        avgCompletionRate: { $avg: '$completionRate' },
+                        avgWatchTime: { $avg: '$avgWatchTime' },
+                        totalWatchTime: { $sum: '$totalWatchTime' }
                     }
                 }
             ]),
@@ -550,6 +557,26 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
                         _id: 0
                     }
                 }
+            ]),
+
+            // Get watch time from UserActivity for accurate metrics
+            UserActivity.aggregate([
+                {
+                    $match: {
+                        articleId: { $in: reelIds },
+                        eventType: 'view',
+                        duration: { $exists: true, $gt: 0 },
+                        timestamp: { $gte: timeWindowStart }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalWatchTime: { $sum: '$duration' },
+                        viewCount: { $sum: 1 },
+                        avgWatchTime: { $avg: '$duration' }
+                    }
+                }
             ])
         ]);
 
@@ -559,8 +586,22 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             totalLikes: 0,
             totalDislikes: 0,
             totalShares: 0,
-            avgCompletionRate: 0
+            avgCompletionRate: 0,
+            avgWatchTime: 0,
+            totalWatchTime: 0
         };
+
+        // Get watch time from UserActivity (more accurate than reel aggregates)
+        const watchTimeData = watchTimeStats[0] || {
+            totalWatchTime: 0,
+            viewCount: 0,
+            avgWatchTime: 0
+        };
+
+        // Use UserActivity data if available, otherwise fall back to Reel data
+        const actualAvgWatchTime = watchTimeData.avgWatchTime > 0
+            ? watchTimeData.avgWatchTime
+            : engagementData.avgWatchTime / 1000; // Convert ms to seconds
 
         const totalInteractions = engagementData.totalLikes + engagementData.totalDislikes + engagementData.totalShares;
         const engagementRate = engagementData.totalViews > 0
@@ -575,6 +616,30 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             ? engagementData.totalShares / engagementData.totalViews
             : 0;
 
+        // Get individual video watch times from UserActivity
+        const videoWatchTimes = await UserActivity.aggregate([
+            {
+                $match: {
+                    articleId: { $in: topVideos.map(v => v._id) },
+                    eventType: 'view',
+                    duration: { $exists: true, $gt: 0 },
+                    timestamp: { $gte: timeWindowStart }
+                }
+            },
+            {
+                $group: {
+                    _id: '$articleId',
+                    avgWatchTime: { $avg: '$duration' }
+                }
+            }
+        ]);
+
+        // Create a map for quick lookup
+        const watchTimeMap = {};
+        videoWatchTimes.forEach(item => {
+            watchTimeMap[item._id.toString()] = item.avgWatchTime;
+        });
+
         // Format top videos
         const formattedTopVideos = topVideos.map(video => ({
             _id: video._id,
@@ -584,7 +649,7 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             likes: video.likes || 0,
             dislikes: video.dislikes || 0,
             shares: video.saves || 0,
-            avgWatchTime: 0, // We don't have this data yet
+            avgWatchTime: watchTimeMap[video._id.toString()] || (video.avgWatchTime / 1000) || 0, // Convert ms to seconds
             engagementRate: video.viewCount > 0
                 ? ((video.likes || 0) + (video.saves || 0)) / video.viewCount
                 : 0
@@ -596,15 +661,21 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
             count: cat.count,
             views: cat.views,
             likes: cat.likes,
-            avgCompletion: cat.avgCompletion || 0
+            avgCompletion: (cat.avgCompletion || 0) / 100, // Convert to 0-1 range if stored as 0-100
+            avgWatchTime: (cat.avgWatchTime || 0) / 1000 // Convert ms to seconds
         }));
+
+        // Calculate proper completion rate (0-1 range)
+        const completionRateFormatted = engagementData.avgCompletionRate
+            ? (engagementData.avgCompletionRate > 1 ? engagementData.avgCompletionRate / 100 : engagementData.avgCompletionRate)
+            : 0;
 
         // Response object matching frontend expectations
         const analytics = {
             overview: {
                 totalVideos,
                 totalViews: engagementData.totalViews,
-                avgWatchTime: 0, // TODO: Calculate from UserActivity when implemented
+                avgWatchTime: Math.round(actualAvgWatchTime), // In seconds
                 engagementRate
             },
             topVideos: formattedTopVideos,
@@ -614,7 +685,7 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
                 totalLikes: engagementData.totalLikes,
                 totalDislikes: engagementData.totalDislikes,
                 totalShares: engagementData.totalShares,
-                completionRate: engagementData.avgCompletionRate || 0,
+                completionRate: completionRateFormatted,
                 likeDislikeRatio,
                 shareRate
             }
@@ -623,9 +694,12 @@ router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
         console.log('✅ Video analytics generated:', {
             totalVideos,
             totalViews: engagementData.totalViews,
+            avgWatchTime: Math.round(actualAvgWatchTime) + 's',
+            completionRate: (completionRateFormatted * 100).toFixed(1) + '%',
             topVideosCount: formattedTopVideos.length,
             categoriesCount: categoryBreakdown.length,
-            trendDataPoints: viewsTrendData.length
+            trendDataPoints: viewsTrendData.length,
+            userActivityViews: watchTimeData.viewCount
         });
 
         res.json(analytics);
