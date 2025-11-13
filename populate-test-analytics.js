@@ -17,7 +17,7 @@ async function populateTestData() {
 
         // Get some existing reels (prioritize recent ones)
         const reels = await Reel.find().sort({ scrapedAt: -1 }).limit(20).lean();
-        
+
         if (reels.length === 0) {
             console.error('❌ No reels found in database!');
             process.exit(1);
@@ -32,15 +32,15 @@ async function populateTestData() {
             // Generate random analytics data
             const numViews = Math.floor(Math.random() * 50) + 10; // 10-60 views
             const completionRates = [];
-            
+
             for (let i = 0; i < numViews; i++) {
                 // Generate completion rates (30-100%)
                 const completionRate = Math.floor(Math.random() * 70) + 30;
                 completionRates.push(completionRate);
-                
+
                 // Generate watch duration (15-120 seconds)
                 const duration = Math.floor(Math.random() * 105) + 15;
-                
+
                 // Create UserActivity record
                 const activity = new UserActivity({
                     userId: `test_user_${Math.floor(Math.random() * 20)}`,
@@ -49,7 +49,7 @@ async function populateTestData() {
                     duration: duration,
                     timestamp: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000) // Last 7 days
                 });
-                
+
                 await activity.save();
                 activitiesCreated++;
             }
@@ -72,7 +72,7 @@ async function populateTestData() {
             });
 
             reelsUpdated++;
-            console.log(`✅ Updated reel ${reel._id}: ${numViews} views, ${avgCompletionRate.toFixed(1)}% completion, ${(avgWatchTime/1000).toFixed(1)}s avg watch`);
+            console.log(`✅ Updated reel ${reel._id}: ${numViews} views, ${avgCompletionRate.toFixed(1)}% completion, ${(avgWatchTime / 1000).toFixed(1)}s avg watch`);
         }
 
         console.log('\n🎉 Test data populated successfully!');
