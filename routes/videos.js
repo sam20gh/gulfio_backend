@@ -1395,40 +1395,6 @@ router.post('/reels/:reelId/save', async (req, res) => {
     }
 });
 
-// Add completion endpoint
-router.post('/reels/:id/completion', async (req, res) => {
-    try {
-        const authToken = req.headers.authorization?.replace('Bearer ', '');
-        if (!authToken) {
-            return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const { percent } = req.body;
-        const reelId = req.params.id;
-        if (!percent || percent < 0 || percent > 100) {
-            return res.status(400).json({ error: 'Invalid completion percent' });
-        }
-
-        await Reel.updateOne(
-            { _id: reelId },
-            {
-                $push: { completionRates: percent },
-                $set: {
-                    completionRate: await Reel.aggregate([
-                        { $match: { _id: new mongoose.Types.ObjectId(reelId) } },
-                        { $unwind: '$completionRates' },
-                        { $group: { _id: null, avg: { $avg: '$completionRates' } } }
-                    ]).then(res => res[0]?.avg || percent)
-                }
-            }
-        );
-        res.json({ message: 'Completion recorded' });
-    } catch (err) {
-        console.error('Error recording completion:', err.message);
-        res.status(500).json({ error: 'Failed to record completion' });
-    }
-});
-
 // ===================== USER PREFERENCES AND STATS ROUTES =====================
 router.get('/user/preferences', async (req, res) => {
     try {
