@@ -440,4 +440,203 @@ router.put('/users/:userId/role', auth, ensureMongoUser, async (req, res) => {
     }
 });
 
+// GET /api/admin/video-analytics - Video analytics dashboard
+router.get('/video-analytics', auth, ensureMongoUser, async (req, res) => {
+    try {
+        const currentUser = req.mongoUser;
+        const Reel = require('../models/Reel');
+
+        console.log('🎥 Video analytics request started for user:', currentUser.email);
+
+        // Get date range from query params
+        const daysBack = parseInt(req.query.days) || 7;
+        const category = req.query.category && req.query.category !== 'all' ? req.query.category : null;
+        
+        const now = new Date();
+        const timeWindowStart = new Date(now);
+        timeWindowStart.setDate(now.getDate() - daysBack);
+
+        console.log(`📅 Video analytics for ${daysBack} days, category: ${category || 'all'}`);
+
+        // Build filter
+        let reelFilter = {
+            scrapedAt: { $gte: timeWindowStart }
+        };
+
+        if (category) {
+            reelFilter.categories = category;
+        }
+
+        // Check user permissions
+        if (currentUser.type === 'publisher' && currentUser.publisher_group?.length > 0) {
+            const Source = require('../models/Source');
+            const publisherSources = await Source.find({
+                sourceGroupName: { $in: currentUser.publisher_group }
+            }).distinct('_id');
+            reelFilter.source = { $in: publisherSources };
+        }
+
+        // Fetch analytics data in parallel
+        const [
+            totalVideos,
+            topVideos,
+            categoryStats,
+            engagementStats,
+            viewsTrendData
+        ] = await Promise.all([
+            // Total videos count
+            Reel.countDocuments(reelFilter),
+
+            // Top performing videos
+            Reel.find(reelFilter)
+                .select('reelId caption categories viewCount likes dislikes saves completionRate')
+                .populate('source', 'name')
+                .sort({ viewCount: -1 })
+                .limit(10)
+                .lean(),
+
+            // Category breakdown
+            Reel.aggregate([
+                { $match: reelFilter },
+                { $unwind: { path: '$categories', preserveNullAndEmptyArrays: true } },
+                {
+                    $group: {
+                        _id: '$categories',
+                        count: { $sum: 1 },
+                        views: { $sum: '$viewCount' },
+                        likes: { $sum: '$likes' },
+                        avgCompletion: { $avg: '$completionRate' }
+                    }
+                },
+                { $sort: { views: -1 } }
+            ]),
+
+            // Engagement metrics
+            Reel.aggregate([
+                { $match: reelFilter },
+                {
+                    $group: {
+                        _id: null,
+                        totalViews: { $sum: '$viewCount' },
+                        totalLikes: { $sum: '$likes' },
+                        totalDislikes: { $sum: '$dislikes' },
+                        totalShares: { $sum: '$saves' },
+                        avgCompletionRate: { $avg: '$completionRate' }
+                    }
+                }
+            ]),
+
+            // Views trend by day
+            Reel.aggregate([
+                { $match: reelFilter },
+                {
+                    $group: {
+                        _id: {
+                            $dateToString: {
+                                format: '%Y-%m-%d',
+                                date: '$scrapedAt'
+                            }
+                        },
+                        views: { $sum: '$viewCount' },
+                        videos: { $sum: 1 }
+                    }
+                },
+                { $sort: { _id: 1 } },
+                {
+                    $project: {
+                        date: '$_id',
+                        views: 1,
+                        videos: 1,
+                        _id: 0
+                    }
+                }
+            ])
+        ]);
+
+        // Calculate overview metrics
+        const engagementData = engagementStats[0] || {
+            totalViews: 0,
+            totalLikes: 0,
+            totalDislikes: 0,
+            totalShares: 0,
+            avgCompletionRate: 0
+        };
+
+        const totalInteractions = engagementData.totalLikes + engagementData.totalDislikes + engagementData.totalShares;
+        const engagementRate = engagementData.totalViews > 0 
+            ? totalInteractions / engagementData.totalViews 
+            : 0;
+
+        const likeDislikeRatio = engagementData.totalDislikes > 0
+            ? engagementData.totalLikes / engagementData.totalDislikes
+            : engagementData.totalLikes;
+
+        const shareRate = engagementData.totalViews > 0
+            ? engagementData.totalShares / engagementData.totalViews
+            : 0;
+
+        // Format top videos
+        const formattedTopVideos = topVideos.map(video => ({
+            _id: video._id,
+            title: video.caption?.substring(0, 100) || 'Untitled',
+            category: video.categories?.[0] || 'Uncategorized',
+            viewCount: video.viewCount || 0,
+            likes: video.likes || 0,
+            dislikes: video.dislikes || 0,
+            shares: video.saves || 0,
+            avgWatchTime: 0, // We don't have this data yet
+            engagementRate: video.viewCount > 0 
+                ? ((video.likes || 0) + (video.saves || 0)) / video.viewCount 
+                : 0
+        }));
+
+        // Format category breakdown
+        const categoryBreakdown = categoryStats.map(cat => ({
+            category: cat._id || 'Uncategorized',
+            count: cat.count,
+            views: cat.views,
+            likes: cat.likes,
+            avgCompletion: cat.avgCompletion || 0
+        }));
+
+        // Response object matching frontend expectations
+        const analytics = {
+            overview: {
+                totalVideos,
+                totalViews: engagementData.totalViews,
+                avgWatchTime: 0, // TODO: Calculate from UserActivity when implemented
+                engagementRate
+            },
+            topVideos: formattedTopVideos,
+            categoryBreakdown,
+            viewsTrend: viewsTrendData,
+            engagementMetrics: {
+                totalLikes: engagementData.totalLikes,
+                totalDislikes: engagementData.totalDislikes,
+                totalShares: engagementData.totalShares,
+                completionRate: engagementData.avgCompletionRate || 0,
+                likeDislikeRatio,
+                shareRate
+            }
+        };
+
+        console.log('✅ Video analytics generated:', {
+            totalVideos,
+            totalViews: engagementData.totalViews,
+            topVideosCount: formattedTopVideos.length,
+            categoriesCount: categoryBreakdown.length,
+            trendDataPoints: viewsTrendData.length
+        });
+
+        res.json(analytics);
+
+    } catch (error) {
+        console.error('❌ Error fetching video analytics:', error);
+        res.status(500).json({ 
+            message: 'Failed to fetch video analytics', 
+            error: error.message 
+        });
+    }
+});
+
 module.exports = router;
