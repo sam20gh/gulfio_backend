@@ -123,6 +123,381 @@ function cosineSimilarity(vec1, vec2) {
     return dotProduct / (magnitudeA * magnitudeB);
 }
 
+// ===================== CURSOR HELPERS FOR INFINITE SCROLL =====================
+/**
+ * Encode cursor data for pagination
+ * @param {Object} data - Cursor data containing lastId, excludedIds, timestamp
+ * @returns {string} Base64 encoded cursor
+ */
+function encodeCursor(data) {
+    return Buffer.from(JSON.stringify(data)).toString('base64');
+}
+
+/**
+ * Decode cursor data from base64 string
+ * @param {string} cursor - Base64 encoded cursor
+ * @returns {Object|null} Decoded cursor data or null if invalid
+ */
+function decodeCursor(cursor) {
+    try {
+        return JSON.parse(Buffer.from(cursor, 'base64').toString());
+    } catch (err) {
+        console.error('Invalid cursor:', err.message);
+        return null;
+    }
+}
+
+// ===================== REDIS-CACHED VIEW TRACKING =====================
+/**
+ * Get recently viewed reel IDs from Redis cache (or DB if cache miss)
+ * Uses Redis SET for O(1) lookups and automatic deduplication
+ * @param {string} userId - User ID
+ * @param {number} limit - Max number of IDs to return
+ * @returns {Array<mongoose.Types.ObjectId>} Array of viewed reel IDs
+ */
+async function getRecentlyViewedIds(userId, limit = 100) {
+    const key = `user:viewed:${userId}`;
+
+    try {
+        // Try Redis first (fast path)
+        const viewedIds = await redis.smembers(key);
+
+        if (viewedIds && viewedIds.length > 0) {
+            console.log(`✅ Cache hit: ${viewedIds.length} viewed reels for user ${userId.substring(0, 8)}...`);
+            return viewedIds.slice(0, limit).map(id => new mongoose.Types.ObjectId(id));
+        }
+
+        // Cache miss - warm from DB
+        console.log(`⚠️ Cache miss: Loading viewed reels from DB for user ${userId.substring(0, 8)}...`);
+        const activities = await UserActivity.find({
+            userId,
+            eventType: 'view'
+        })
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .select('articleId')
+            .lean();
+
+        const ids = activities.map(a => a.articleId.toString());
+
+        // Warm Redis cache for next request
+        if (ids.length > 0) {
+            await redis.sadd(key, ...ids);
+            await redis.expire(key, 86400); // 24h expiry
+            console.log(`✅ Warmed cache with ${ids.length} viewed reels`);
+        }
+
+        return ids.map(id => new mongoose.Types.ObjectId(id));
+    } catch (err) {
+        console.error('⚠️ Error in getRecentlyViewedIds:', err.message);
+        // Fallback to empty array on error
+        return [];
+    }
+}
+
+/**
+ * Track view in Redis cache (called from analytics endpoint)
+ * Keeps Redis cache in sync with view tracking
+ * @param {string} userId - User ID
+ * @param {string} reelId - Reel ID
+ */
+async function trackViewInCache(userId, reelId) {
+    const key = `user:viewed:${userId}`;
+
+    try {
+        await redis.sadd(key, reelId.toString());
+        await redis.expire(key, 86400); // Reset 24h expiry
+
+        // Keep max 200 items (prune oldest)
+        const count = await redis.scard(key);
+        if (count > 200) {
+            const toRemove = count - 200;
+            const members = await redis.smembers(key);
+            // Remove random oldest items (SPOP would work but might remove recent)
+            for (let i = 0; i < toRemove && i < members.length; i++) {
+                await redis.srem(key, members[i]);
+            }
+        }
+    } catch (err) {
+        console.warn('⚠️ Failed to track view in cache:', err.message);
+        // Non-critical: DB tracking still works
+    }
+}
+
+// ===================== OPTIMIZED FEED BUILDERS =====================
+/**
+ * Build optimized feed based on user and strategy
+ * Main orchestrator for new cursor-based feed system
+ */
+async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
+    // For logged-in users with personalized strategy
+    if (userId && strategy === 'personalized') {
+        // Get user embedding from CACHE first (not DB every time)
+        let userEmbedding = null;
+
+        try {
+            const cachedEmbedding = await redis.get(`user:emb:${userId}`);
+
+            if (cachedEmbedding) {
+                userEmbedding = JSON.parse(cachedEmbedding);
+                console.log(`✅ User embedding cache hit: ${userEmbedding.length}D`);
+            } else {
+                // Cache miss - load from DB and cache
+                console.log(`⚠️ User embedding cache miss, loading from DB...`);
+
+                // Try to get user embedding from User model or calculate from preferences
+                const userPrefs = await getUserPreferences(userId);
+                userEmbedding = userPrefs.averageEmbedding?.slice(0, 128);
+
+                if (userEmbedding) {
+                    // Cache for 24 hours
+                    await redis.set(`user:emb:${userId}`, JSON.stringify(userEmbedding), 'EX', 86400);
+                    console.log(`✅ Cached user embedding: ${userEmbedding.length}D`);
+                }
+            }
+        } catch (err) {
+            console.error('⚠️ Error loading user embedding:', err.message);
+        }
+
+        if (userEmbedding) {
+            return await getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit);
+        }
+    }
+
+    // Fallback to trending/mixed for non-personalized or no embedding
+    return await getTrendingFeedOptimized(cursor, limit, strategy);
+}
+
+/**
+ * Get optimized personalized feed using single Atlas Search compound query
+ * Combines vector similarity + trending + fresh content in ONE query
+ */
+async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit) {
+    try {
+        // Get excluded IDs from cursor or recent history
+        const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, 100);
+
+        console.log(`🔍 Personalized feed query:`, {
+            userIdShort: userId.substring(0, 8),
+            embeddingDim: userEmbedding.length,
+            excludedCount: excludedIds.length,
+            hasCursor: !!cursor
+        });
+
+        // Single optimized Atlas Search compound query
+        // Combines: Personalized (70%) + Trending (20%) + Fresh (10%)
+        const pipeline = [
+            {
+                $search: {
+                    index: 'default',
+                    compound: {
+                        should: [
+                            // Personalized: 70% weight (vector similarity)
+                            {
+                                knnBeta: {
+                                    vector: userEmbedding,
+                                    path: 'embedding_pca',
+                                    k: limit * 2,
+                                    score: { boost: { value: 0.7 } }
+                                }
+                            },
+                            // Trending: 20% weight (high engagement last 7 days)
+                            {
+                                range: {
+                                    path: 'scrapedAt',
+                                    gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+                                    score: { boost: { value: 0.2 } }
+                                }
+                            },
+                            // Fresh: 10% weight (new content last 24h)
+                            {
+                                range: {
+                                    path: 'scrapedAt',
+                                    gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+                                    score: { boost: { value: 0.1 } }
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                $match: {
+                    _id: { $nin: excludedIds },
+                    videoUrl: { $exists: true, $ne: null }
+                }
+            },
+            {
+                $addFields: {
+                    // Calculate engagement score in DB (not in app)
+                    engagementScore: {
+                        $add: [
+                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.3] },
+                            { $multiply: [{ $ifNull: ['$likes', 0] }, 0.5] },
+                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.2] }
+                        ]
+                    }
+                }
+            },
+            {
+                $sort: { engagementScore: -1, scrapedAt: -1 }
+            },
+            { $limit: limit + 1 }, // Get one extra for next cursor
+            {
+                $lookup: {
+                    from: 'sources',
+                    localField: 'source',
+                    foreignField: '_id',
+                    as: 'source',
+                    pipeline: [
+                        { $project: { name: 1, icon: 1, favicon: 1 } }
+                    ]
+                }
+            },
+            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    // Only send fields frontend needs
+                    reelId: 1,
+                    videoUrl: 1,
+                    thumbnailUrl: 1,
+                    caption: 1,
+                    likes: 1,
+                    dislikes: 1,
+                    viewCount: 1,
+                    saves: 1,
+                    completionRate: 1,
+                    avgWatchTime: 1,
+                    scrapedAt: 1,
+                    source: 1,
+                    engagementScore: 1,
+                    originalKey: 1
+                }
+            }
+        ];
+
+        const reels = await Reel.aggregate(pipeline);
+
+        // Check if there's more data
+        const hasMore = reels.length > limit;
+        const results = hasMore ? reels.slice(0, limit) : reels;
+
+        // Build next cursor
+        const nextCursor = hasMore ? encodeCursor({
+            lastId: results[results.length - 1]._id,
+            excludedIds: [...excludedIds, ...results.map(r => r._id)],
+            timestamp: Date.now()
+        }) : null;
+
+        console.log(`✅ Personalized feed: ${results.length} reels, hasMore: ${hasMore}`);
+
+        return {
+            reels: results,
+            cursor: nextCursor,
+            hasMore,
+            strategy: 'personalized'
+        };
+    } catch (err) {
+        console.error('❌ Personalized feed error:', err.message);
+        // Fallback to trending on error
+        return await getTrendingFeedOptimized(cursor, limit, 'trending');
+    }
+}
+
+/**
+ * Get optimized trending/mixed feed for anonymous users
+ * Uses engagement-based sorting with cursor pagination
+ */
+async function getTrendingFeedOptimized(cursor, limit, strategy) {
+    try {
+        const excludedIds = cursor?.excludedIds || [];
+
+        console.log(`🔥 Trending feed query:`, {
+            strategy,
+            excludedCount: excludedIds.length,
+            limit
+        });
+
+        const pipeline = [
+            {
+                $match: {
+                    _id: { $nin: excludedIds },
+                    videoUrl: { $exists: true, $ne: null },
+                    scrapedAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
+                }
+            },
+            {
+                $addFields: {
+                    trendingScore: {
+                        $add: [
+                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.4] },
+                            { $multiply: [{ $ifNull: ['$likes', 0] }, 0.4] },
+                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.2] }
+                        ]
+                    }
+                }
+            },
+            {
+                $sort: { trendingScore: -1, scrapedAt: -1 }
+            },
+            { $limit: limit + 1 },
+            {
+                $lookup: {
+                    from: 'sources',
+                    localField: 'source',
+                    foreignField: '_id',
+                    as: 'source',
+                    pipeline: [
+                        { $project: { name: 1, icon: 1, favicon: 1 } }
+                    ]
+                }
+            },
+            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    reelId: 1,
+                    videoUrl: 1,
+                    thumbnailUrl: 1,
+                    caption: 1,
+                    likes: 1,
+                    dislikes: 1,
+                    viewCount: 1,
+                    saves: 1,
+                    completionRate: 1,
+                    avgWatchTime: 1,
+                    scrapedAt: 1,
+                    source: 1,
+                    trendingScore: 1,
+                    originalKey: 1
+                }
+            }
+        ];
+
+        const reels = await Reel.aggregate(pipeline);
+
+        const hasMore = reels.length > limit;
+        const results = hasMore ? reels.slice(0, limit) : reels;
+
+        const nextCursor = hasMore ? encodeCursor({
+            lastId: results[results.length - 1]._id,
+            excludedIds: [...excludedIds, ...results.map(r => r._id)],
+            timestamp: Date.now()
+        }) : null;
+
+        console.log(`✅ Trending feed: ${results.length} reels, hasMore: ${hasMore}`);
+
+        return {
+            reels: results,
+            cursor: nextCursor,
+            hasMore,
+            strategy
+        };
+    } catch (err) {
+        console.error('❌ Trending feed error:', err.message);
+        throw err;
+    }
+}
+
 // Helper: Intelligent shuffle that maintains some structure while randomizing
 function intelligentShuffle(reels, seed = Date.now()) {
     // Use seed for consistent randomization if needed
@@ -297,77 +672,154 @@ async function getPersonalizedReels(req, res, userId, limit, page, skip) {
             return res.json(JSON.parse(cached));
         }
 
-        // Get user preferences
-        const userPrefs = await getUserPreferences(userId);
+        // Get user preferences with error handling
+        let userPrefs;
+        try {
+            userPrefs = await getUserPreferences(userId);
+            console.log(`👤 User prefs loaded:`, {
+                totalInteractions: userPrefs.totalInteractions,
+                hasEmbedding: !!userPrefs.averageEmbedding,
+                embeddingLength: userPrefs.averageEmbedding?.length || 0
+            });
+        } catch (prefError) {
+            console.error('❌ Error getting user preferences:', prefError);
+            userPrefs = {
+                sourcePreferences: [],
+                categoryPreferences: [],
+                averageEmbedding: null,
+                totalInteractions: 0,
+                recentActivityCount: 0
+            };
+        }
+
         const userEmbedding = userPrefs.averageEmbedding?.slice(0, 128); // Ensure 128D
-        const lastSeenReelIds = await UserActivity.find({ userId, eventType: 'view' })
-            .sort({ timestamp: -1 })
-            .limit(100)
-            .distinct('articleId');
+
+        let lastSeenReelIds = [];
+        try {
+            lastSeenReelIds = await UserActivity.find({ userId, eventType: 'view' })
+                .sort({ timestamp: -1 })
+                .limit(100)
+                .distinct('articleId');
+            console.log(`📊 Found ${lastSeenReelIds.length} previously seen reels for user`);
+        } catch (activityError) {
+            console.error('⚠️ Error fetching user activity:', activityError.message);
+            lastSeenReelIds = [];
+        }
 
         let reels = [];
         if (!userEmbedding || !Array.isArray(userEmbedding) || userEmbedding.length !== 128) {
-            console.warn('Falling back to engagement-based sorting');
-            reels = await Reel.find({
-                _id: { $nin: lastSeenReelIds.concat(userPrefs.disliked_videos || []) }
-            })
-                .populate('source')
-                .sort({ viewCount: -1, scrapedAt: -1 })
-                .skip(skip)
-                .limit(limit * 2)
-                .lean();
+            console.warn(`⚠️ Falling back to engagement-based sorting (embedding: ${userEmbedding ? 'invalid' : 'none'})`);
+            try {
+                reels = await Reel.find({
+                    _id: { $nin: lastSeenReelIds.concat(userPrefs.disliked_videos || []) }
+                })
+                    .populate('source')
+                    .sort({ viewCount: -1, scrapedAt: -1 })
+                    .skip(skip)
+                    .limit(limit * 2)
+                    .lean();
+                console.log(`✅ Fetched ${reels.length} reels using engagement-based sorting`);
+            } catch (fetchError) {
+                console.error('❌ Error fetching engagement-based reels:', fetchError);
+                throw fetchError;
+            }
         } else {
-            // Atlas Search kNN query
-            reels = await Reel.aggregate([
-                {
-                    $search: {
-                        index: 'reel_vector_index',
-                        knnBeta: {
-                            vector: userEmbedding,
-                            path: 'embedding_pca',
-                            k: limit * 2,
-                            filter: {
-                                compound: {
-                                    mustNot: [{ terms: { path: '_id', value: lastSeenReelIds.concat(userPrefs.disliked_videos || []) } }]
-                                }
+            // Atlas Search kNN query with error handling
+            console.log(`🔍 Using Atlas Search with ${userEmbedding.length}D embedding`);
+            try {
+                const excludedIds = lastSeenReelIds.concat(userPrefs.disliked_videos || []);
+                console.log(`📊 Excluding ${excludedIds.length} previously seen/disliked reels`);
+
+                // Build aggregation pipeline
+                const pipeline = [
+                    {
+                        $search: {
+                            index: 'default', // Atlas Search index name
+                            knnBeta: {
+                                vector: userEmbedding,
+                                path: 'embedding_pca',
+                                k: limit * 3 // Get more to account for filtering
                             }
                         }
-                    }
-                },
-                { $limit: limit * 2 },
-                { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
-                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
-            ]);
+                    },
+                    { $limit: limit * 3 }
+                ];
 
-            // Score reels
-            reels = reels.map(reel => scoreReel(reel, userPrefs, reel.scrapedAt > new Date(Date.now() - 24 * 60 * 60 * 1000)));
+                // Only add filter if we have excluded IDs
+                if (excludedIds.length > 0) {
+                    pipeline.push({
+                        $match: {
+                            _id: { $nin: excludedIds }
+                        }
+                    });
+                }
+
+                pipeline.push(
+                    { $limit: limit * 2 },
+                    { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
+                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
+                );
+
+                reels = await Reel.aggregate(pipeline);
+                console.log(`✅ Atlas Search returned ${reels.length} reels`);
+
+                // Score reels
+                reels = reels.map(reel => scoreReel(reel, userPrefs, reel.scrapedAt > new Date(Date.now() - 24 * 60 * 60 * 1000)));
+            } catch (searchError) {
+                console.error('❌ Atlas Search failed, falling back to engagement-based:', searchError.message);
+                // Fallback to engagement-based if Atlas Search fails
+                reels = await Reel.find({
+                    _id: { $nin: lastSeenReelIds.concat(userPrefs.disliked_videos || []) }
+                })
+                    .populate('source')
+                    .sort({ viewCount: -1, scrapedAt: -1 })
+                    .skip(skip)
+                    .limit(limit * 2)
+                    .lean();
+                console.log(`✅ Fallback fetched ${reels.length} reels`);
+            }
         }
 
         // Inject trending reels (10%)
+        // Inject trending reels (10%) with error handling
         const trendingLimit = Math.ceil(limit * 0.1);
-        const trendingReels = await Reel.find({
-            _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) },
-            viewCount: { $exists: true },
-            scrapedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-        })
-            .populate('source')
-            .sort({ viewCount: -1, scrapedAt: -1 })
-            .limit(trendingLimit)
-            .lean();
+        let trendingReels = [];
+        try {
+            trendingReels = await Reel.find({
+                _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) },
+                viewCount: { $exists: true },
+                scrapedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+            })
+                .populate('source')
+                .sort({ viewCount: -1, scrapedAt: -1 })
+                .limit(trendingLimit)
+                .lean();
+            console.log(`✅ Fetched ${trendingReels.length} trending reels`);
+        } catch (trendingError) {
+            console.error('⚠️ Error fetching trending reels:', trendingError.message);
+            trendingReels = [];
+        }
 
         const trendingEnhanced = trendingReels.map(reel => ({
             ...reel,
             isTrending: true
         }));
 
-        // Inject exploratory reels (20%)
+        // Inject exploratory reels (20%) with error handling
         const exploratoryLimit = Math.ceil(limit * 0.2);
-        const exploratoryReels = await Reel.aggregate([
-            { $match: { _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) } } },
-            { $sample: { size: exploratoryLimit } },
-            { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
-            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
-        ]);
+        let exploratoryReels = [];
+        try {
+            exploratoryReels = await Reel.aggregate([
+                { $match: { _id: { $nin: reels.map(r => r._id).concat(lastSeenReelIds, userPrefs.disliked_videos || []) } } },
+                { $sample: { size: exploratoryLimit } },
+                { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source' } },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } }
+            ]);
+            console.log(`✅ Fetched ${exploratoryReels.length} exploratory reels`);
+        } catch (exploratoryError) {
+            console.error('⚠️ Error fetching exploratory reels:', exploratoryError.message);
+            exploratoryReels = [];
+        }
 
         const exploratoryEnhanced = exploratoryReels.map(reel => ({
             ...reel,
@@ -674,6 +1126,67 @@ router.post('/related', async (req, res) => {
 
     if (bestMatch) return res.json(bestMatch);
     return res.status(404).json({ message: 'No related video found' });
+});
+
+// ===================== NEW: OPTIMIZED CURSOR-BASED FEED =====================
+/**
+ * GET /reels/feed
+ * New optimized cursor-based infinite scroll feed
+ * Features:
+ * - Cursor-based pagination (no skip/offset - faster & more reliable)
+ * - Redis caching for user embeddings and viewed reels
+ * - Single optimized Atlas Search compound query
+ * - Field projection (only send needed data)
+ * - Backward compatible with existing /reels route
+ * 
+ * Query params:
+ * - cursor: Base64 encoded cursor from previous response (optional)
+ * - limit: Number of reels to return (default: 20, max: 50)
+ * - strategy: 'personalized' | 'trending' | 'mixed' (default: personalized for logged users)
+ */
+router.get('/reels/feed', async (req, res) => {
+    try {
+        const {
+            cursor,
+            limit: requestedLimit = 20,
+            strategy = 'personalized'
+        } = req.query;
+
+        const limit = Math.min(parseInt(requestedLimit) || 20, 50); // Cap at 50
+
+        console.log(`🔄 New feed request:`, { cursor: cursor ? 'present' : 'none', limit, strategy });
+
+        // Extract user ID from token
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        let userId = null;
+
+        if (authToken) {
+            try {
+                const jwt = require('jsonwebtoken');
+                const decoded = jwt.decode(authToken);
+                userId = decoded?.sub || decoded?.user_id || decoded?.id;
+                console.log(`👤 Feed for user: ${userId?.substring(0, 8)}...`);
+            } catch (err) {
+                console.warn('⚠️ Token decode failed:', err.message);
+            }
+        }
+
+        // Decode cursor if provided
+        const decodedCursor = cursor ? decodeCursor(cursor) : null;
+
+        // Get feed based on strategy
+        const feed = await buildOptimizedFeed({
+            userId,
+            cursor: decodedCursor,
+            limit,
+            strategy: userId ? strategy : 'trending' // Force trending for anonymous
+        });
+
+        res.json(feed);
+    } catch (err) {
+        console.error('❌ Error in /reels/feed:', err.message);
+        res.status(500).json({ error: 'Failed to fetch feed' });
+    }
 });
 
 router.get('/reels', async (req, res) => {
@@ -1013,6 +1526,9 @@ router.post('/analytics/videos', async (req, res) => {
                         duration: Math.round(watchDuration / 1000), // Convert ms to seconds
                         timestamp: new Date(analytics.startTime || Date.now())
                     }).catch(err => console.warn('Failed to create view activity:', err.message));
+
+                    // Also track in Redis cache for fast lookups
+                    await trackViewInCache(effectiveUserId, videoId);
                 }
 
                 // Track interactions as separate activities

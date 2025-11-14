@@ -36,7 +36,7 @@ const ReelSchema = new Schema({
     avgWatchTime: { type: Number, default: 0 }, // Average watch time in milliseconds
 }, { timestamps: true });
 
-// Performance indexes
+// Performance indexes (existing - maintained for backward compatibility)
 ReelSchema.index({ scrapedAt: -1 }); // For sorted pagination
 ReelSchema.index({ viewCount: -1 }); // For trending reels
 ReelSchema.index({ likes: -1 }); // For popular reels
@@ -47,5 +47,35 @@ ReelSchema.index({ source: 1, scrapedAt: -1 }); // For source-specific queries
 ReelSchema.index({ reelId: 1 }); // For unique lookups
 ReelSchema.index({ embedding: 1 }); // For recommendation queries
 ReelSchema.index({ embedding_pca: 1 }); // For fast PCA-based recommendations
+
+// ===================== NEW OPTIMIZED INDEXES FOR CURSOR-BASED FEED =====================
+// These compound indexes significantly improve the new cursor-based feed queries
+// Added: Nov 2025 - Phase 3 optimization
+
+// Compound index for trending feed optimization (getTrendingFeedOptimized)
+// Supports: { scrapedAt: {$gte}, _id: {$nin} } with sort by trendingScore + scrapedAt
+// This eliminates the need for sorting in memory - MongoDB uses index for both filter and sort
+ReelSchema.index({
+    scrapedAt: -1,      // Filter: recent content (last 30 days) + sort secondary
+    viewCount: -1,      // Component of trendingScore calculation
+    engagement_score: -1 // Engagement-based scoring
+});
+
+// Compound index for cursor-based exclusion queries
+// Supports efficient $nin operations in cursor pagination
+// Improves performance when excluding viewed reels
+ReelSchema.index({
+    _id: 1,             // Primary filter for cursor exclusion
+    videoUrl: 1,        // Validation that video exists
+    scrapedAt: -1       // Sorting for consistent results
+});
+
+// Compound index for personalized feed with engagement
+// Supports: Atlas Search results + engagement scoring + date sorting
+ReelSchema.index({
+    engagement_score: -1, // Primary sort after vector search
+    scrapedAt: -1,       // Secondary sort for recency
+    viewCount: -1        // Tertiary for trending boost
+});
 
 module.exports = mongoose.model('Reel', ReelSchema);
