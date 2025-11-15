@@ -566,12 +566,12 @@ const INTERACTION_WEIGHTS = {
  */
 function applyInteractionWeights(interactions, decayRate = 0.95) {
     const now = Date.now();
-    
+
     return interactions.map(interaction => {
         const baseWeight = INTERACTION_WEIGHTS[interaction.type] || 1.0;
         const daysOld = (now - new Date(interaction.timestamp).getTime()) / (1000 * 60 * 60 * 24);
         const decayedWeight = baseWeight * Math.pow(decayRate, daysOld);
-        
+
         return {
             ...interaction,
             baseWeight,
@@ -585,13 +585,13 @@ function applyInteractionWeights(interactions, decayRate = 0.95) {
 async function getUserPreferences(userId) {
     try {
         console.log(`🔍 Getting user preferences for userId: ${userId}`);
-        
+
         // ⚡ PHASE 1 OPTIMIZATION: Try to use pre-calculated user embedding first (10-20x faster)
         const User = require('../models/User');
         const user = await User.findOne({ supabase_id: userId })
             .select('embedding_pca embedding following_sources')
             .lean();
-        
+
         if (user?.embedding_pca?.length === 128) {
             console.log(`⚡ Using pre-calculated user embedding (128D) - FAST PATH`);
             return {
@@ -612,9 +612,9 @@ async function getUserPreferences(userId) {
                 recentActivityCount: 0
             };
         }
-        
+
         console.log(`⚠️ No pre-calculated embedding found, falling back to calculation from interactions`);
-        
+
         const recentActivity = await UserActivity.find({
             userId,
             eventType: { $in: ['view', 'like', 'save'] }
@@ -640,7 +640,7 @@ async function getUserPreferences(userId) {
         }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
 
         console.log(`📊 User ${userId} interactions: ${likedReels.length} liked, ${savedReels.length} saved, ${viewedReels.length} viewed`);
-        
+
         // DEBUG: Check how many have embeddings
         const likedWithPCA = likedReels.filter(r => r.embedding_pca && r.embedding_pca.length > 0).length;
         const likedWithEmbedding = likedReels.filter(r => r.embedding && r.embedding.length > 0).length;
@@ -651,7 +651,7 @@ async function getUserPreferences(userId) {
         // Analyze preferences
         const sourcePreferences = {};
         const categoryPreferences = {};
-        
+
         // ⚡ PHASE 1.3: Apply TIME DECAY to interaction weights (5% daily decay)
         // Recent interactions (last 7 days) are more influential than old interactions (30+ days)
         const allInteractions = [
@@ -659,9 +659,9 @@ async function getUserPreferences(userId) {
             ...savedReels.map(r => ({ reel: r, type: 'save', timestamp: r.updatedAt || new Date() })),
             ...viewedReels.map(r => ({ reel: r, type: 'view', timestamp: r.updatedAt || new Date() }))
         ];
-        
+
         const decayedInteractions = applyInteractionWeights(allInteractions, 0.95); // 5% daily decay
-        
+
         console.log(`📉 Applied time decay to ${decayedInteractions.length} interactions (decay rate: 5%/day)`);
 
         // Process interactions with decayed weights
@@ -680,12 +680,12 @@ async function getUserPreferences(userId) {
                 });
             }
         });
-        
+
         // Calculate average days old for logging
-        const avgDaysOld = decayedInteractions.length > 0 
+        const avgDaysOld = decayedInteractions.length > 0
             ? (decayedInteractions.reduce((sum, i) => sum + i.daysOld, 0) / decayedInteractions.length).toFixed(1)
             : 0;
-        
+
         console.log(`⚖️ Time-decayed preferences calculated: ${Object.keys(sourcePreferences).length} sources, ${Object.keys(categoryPreferences).length} categories, avg age: ${avgDaysOld} days`);
 
         // Calculate average embedding for content-based recommendations (prefer PCA)
@@ -715,12 +715,12 @@ async function getUserPreferences(userId) {
                     .sort(([, a], [, b]) => b - a)
                     .slice(0, 5)
                     .map(([sourceName]) => sourceName);
-                
+
                 console.log(`🔍 Preferred sources: ${preferredSources.join(', ')}`);
-                
+
                 const sourceDocs = await Source.find({ name: { $in: preferredSources } }).select('_id').lean();
                 const sourceIds = sourceDocs.map(s => s._id);
-                
+
                 if (sourceIds.length > 0) {
                     const sampleReels = await Reel.find({
                         source: { $in: sourceIds },
@@ -732,11 +732,11 @@ async function getUserPreferences(userId) {
                         .select('embedding embedding_pca')
                         .limit(20)
                         .lean();
-                    
+
                     validEmbeddings = sampleReels
                         .filter(reel => (reel.embedding_pca || reel.embedding))
                         .map(reel => reel.embedding_pca || reel.embedding);
-                    
+
                     console.log(`✅ Cold start: Found ${validEmbeddings.length} reels from preferred sources`);
                 }
             } catch (coldStartError) {
@@ -755,7 +755,7 @@ async function getUserPreferences(userId) {
             });
 
             averageEmbedding = averageEmbedding.map(sum => sum / validEmbeddings.length);
-            
+
             console.log(`✅ Calculated ${embeddingSize}D average embedding for user ${userId} from ${validEmbeddings.length} reels`);
         } else {
             console.log(`⚠️ No embeddings found for user ${userId} (no likes/saves/views), will use trending fallback`);
@@ -772,9 +772,9 @@ async function getUserPreferences(userId) {
             totalInteractions: likedReels.length + savedReels.length + viewedReels.length,
             recentActivityCount: recentActivity.length
         };
-        
+
         console.log(`✅ User ${userId} preferences: ${prefs.totalInteractions} interactions, ${prefs.sourcePreferences.length} sources, embedding: ${averageEmbedding ? averageEmbedding.length + 'D' : 'none'}`);
-        
+
         return prefs;
     } catch (error) {
         console.error(`❌ Error getting user preferences for ${userId}:`, error);
@@ -1765,16 +1765,16 @@ router.post('/analytics/videos', async (req, res) => {
                             // RECALCULATE ENGAGEMENT SCORE after metrics update
                             // Note: viewCount is already incremented, completionRate is updated above
                             const newViewCount = (reel.viewCount || 0) + 1;
-                            const newCompletionRate = completionRate > 0 
+                            const newCompletionRate = completionRate > 0
                                 ? ([...(reel.completionRates || []), completionRate].reduce((s, r) => s + r, 0) / (reel.completionRates?.length + 1 || 1))
                                 : (reel.completionRate || 0);
-                            
+
                             const engagementScore = (
                                 newViewCount * 0.3 +
                                 (reel.likes || 0) * 0.5 +
                                 newCompletionRate * 0.2
                             );
-                            
+
                             // Update engagement_score separately
                             await Reel.findByIdAndUpdate(videoId, { engagement_score: engagementScore });
 
@@ -1967,7 +1967,7 @@ router.post('/reels/:reelId/like', async (req, res) => {
             (updatedReel.likes || 0) * 0.5 +
             (updatedReel.completionRate || 0) * 0.2
         );
-        
+
         await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
 
         // ⚡ PHASE 1: Invalidate user embedding cache on interaction
@@ -2061,7 +2061,7 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
             (updatedReel.likes || 0) * 0.5 +
             (updatedReel.completionRate || 0) * 0.2
         );
-        
+
         await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
 
         // ⚡ PHASE 1: Invalidate user embedding cache on interaction
