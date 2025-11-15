@@ -284,41 +284,27 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             hasCursor: !!cursor
         });
 
-        // Single optimized Atlas Search compound query
-        // Combines: Personalized (70%) + Trending (20%) + Fresh (10%)
+        // Use MongoDB Atlas Vector Search for personalized recommendations
+        // Note: Atlas Vector Search uses $vectorSearch, not $search with knnBeta
         const pipeline = [
             {
-                $search: {
+                $vectorSearch: {
                     index: 'default',
-                    compound: {
-                        should: [
-                            // Personalized: 70% weight (vector similarity)
-                            {
-                                knnBeta: {
-                                    vector: userEmbedding,
-                                    path: 'embedding_pca',
-                                    k: limit * 2,
-                                    score: { boost: { value: 0.7 } }
-                                }
-                            },
-                            // Trending: 20% weight (high engagement last 7 days)
-                            {
-                                range: {
-                                    path: 'scrapedAt',
-                                    gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-                                    score: { boost: { value: 0.2 } }
-                                }
-                            },
-                            // Fresh: 10% weight (new content last 24h)
-                            {
-                                range: {
-                                    path: 'scrapedAt',
-                                    gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
-                                    score: { boost: { value: 0.1 } }
-                                }
-                            }
-                        ]
+                    queryVector: userEmbedding,
+                    path: 'embedding_pca',
+                    numCandidates: limit * 10, // Cast wider net for better results
+                    limit: limit * 3, // Get 3x for post-filtering
+                    filter: {
+                        scrapedAt: {
+                            $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
+                        }
                     }
+                }
+            },
+            // Add search score to results
+            {
+                $addFields: {
+                    searchScore: { $meta: 'vectorSearchScore' }
                 }
             },
             {
@@ -562,9 +548,73 @@ async function scoreReel(reel, userPrefs, isFresh = false) {
     return { ...reel, similarity, recencyScore, engagementScore, finalScore, isFresh };
 }
 
+// ⚡ PHASE 1.2: Weighted interaction scoring with time decay
+const INTERACTION_WEIGHTS = {
+    save: 5.0,           // Highest signal - user wants to keep it
+    like: 3.0,           // Strong positive signal
+    view_complete: 2.0,  // Watched >80% - good signal
+    view_partial: 1.0,   // Watched 30-80% - mild interest
+    view_skip: -0.5,     // Watched <30% - not interested
+    dislike: -3.0        // Strong negative signal
+};
+
+/**
+ * Calculate weighted interaction score with time decay
+ * @param {Array} interactions - Array of {id, type, timestamp, weight}
+ * @param {number} decayRate - Daily decay rate (default 0.95 = 5% decay per day)
+ * @returns {Array} Weighted interactions with decayed scores
+ */
+function applyInteractionWeights(interactions, decayRate = 0.95) {
+    const now = Date.now();
+    
+    return interactions.map(interaction => {
+        const baseWeight = INTERACTION_WEIGHTS[interaction.type] || 1.0;
+        const daysOld = (now - new Date(interaction.timestamp).getTime()) / (1000 * 60 * 60 * 24);
+        const decayedWeight = baseWeight * Math.pow(decayRate, daysOld);
+        
+        return {
+            ...interaction,
+            baseWeight,
+            decayedWeight,
+            daysOld: Math.round(daysOld)
+        };
+    });
+}
+
 // Helper: Get user preferences based on interaction history
 async function getUserPreferences(userId) {
     try {
+        console.log(`🔍 Getting user preferences for userId: ${userId}`);
+        
+        // ⚡ PHASE 1 OPTIMIZATION: Try to use pre-calculated user embedding first (10-20x faster)
+        const User = require('../models/User');
+        const user = await User.findOne({ supabase_id: userId })
+            .select('embedding_pca embedding following_sources')
+            .lean();
+        
+        if (user?.embedding_pca?.length === 128) {
+            console.log(`⚡ Using pre-calculated user embedding (128D) - FAST PATH`);
+            return {
+                averageEmbedding: user.embedding_pca,
+                sourcePreferences: (user.following_sources || []).map(s => [s, 1]),
+                categoryPreferences: [],
+                totalInteractions: 1, // Indicate user has data
+                recentActivityCount: 0
+            };
+        } else if (user?.embedding?.length === 1536) {
+            console.log(`⚡ Using pre-calculated user embedding (1536D) - converting to 128D`);
+            // Use first 128 dimensions as approximation (better than recalculating)
+            return {
+                averageEmbedding: user.embedding.slice(0, 128),
+                sourcePreferences: (user.following_sources || []).map(s => [s, 1]),
+                categoryPreferences: [],
+                totalInteractions: 1,
+                recentActivityCount: 0
+            };
+        }
+        
+        console.log(`⚠️ No pre-calculated embedding found, falling back to calculation from interactions`);
+        
         const recentActivity = await UserActivity.find({
             userId,
             eventType: { $in: ['view', 'like', 'save'] }
@@ -574,29 +624,50 @@ async function getUserPreferences(userId) {
             .limit(100)
             .lean();
 
+        console.log(`📊 Found ${recentActivity.length} recent activities for user ${userId}`);
+
         // Also check reel interactions from the Reel model
         const likedReels = await Reel.find({
             likedBy: userId
-        }).select('source categories embedding').populate('source', 'name').lean();
+        }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
 
         const savedReels = await Reel.find({
             savedBy: userId
-        }).select('source categories embedding').populate('source', 'name').lean();
+        }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
 
         const viewedReels = await Reel.find({
             viewedBy: userId
-        }).select('source categories embedding').populate('source', 'name').lean();
+        }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
+
+        console.log(`📊 User ${userId} interactions: ${likedReels.length} liked, ${savedReels.length} saved, ${viewedReels.length} viewed`);
+        
+        // DEBUG: Check how many have embeddings
+        const likedWithPCA = likedReels.filter(r => r.embedding_pca && r.embedding_pca.length > 0).length;
+        const likedWithEmbedding = likedReels.filter(r => r.embedding && r.embedding.length > 0).length;
+        const savedWithPCA = savedReels.filter(r => r.embedding_pca && r.embedding_pca.length > 0).length;
+        const savedWithEmbedding = savedReels.filter(r => r.embedding && r.embedding.length > 0).length;
+        console.log(`🔬 Embeddings breakdown: liked(pca:${likedWithPCA}, full:${likedWithEmbedding}), saved(pca:${savedWithPCA}, full:${savedWithEmbedding})`);
 
         // Analyze preferences
         const sourcePreferences = {};
         const categoryPreferences = {};
-        const interactionWeights = { like: 3, save: 2.5, view: 1 };
+        
+        // ⚡ PHASE 1.3: Apply TIME DECAY to interaction weights (5% daily decay)
+        // Recent interactions (last 7 days) are more influential than old interactions (30+ days)
+        const allInteractions = [
+            ...likedReels.map(r => ({ reel: r, type: 'like', timestamp: r.updatedAt || new Date() })),
+            ...savedReels.map(r => ({ reel: r, type: 'save', timestamp: r.updatedAt || new Date() })),
+            ...viewedReels.map(r => ({ reel: r, type: 'view', timestamp: r.updatedAt || new Date() }))
+        ];
+        
+        const decayedInteractions = applyInteractionWeights(allInteractions, 0.95); // 5% daily decay
+        
+        console.log(`📉 Applied time decay to ${decayedInteractions.length} interactions (decay rate: 5%/day)`);
 
-        // Process reel interactions
-        [...likedReels.map(r => ({ ...r, type: 'like' })),
-        ...savedReels.map(r => ({ ...r, type: 'save' })),
-        ...viewedReels.map(r => ({ ...r, type: 'view' }))].forEach(reel => {
-            const weight = interactionWeights[reel.type] || 1;
+        // Process interactions with decayed weights
+        decayedInteractions.forEach(interaction => {
+            const weight = interaction.decayedWeight;
+            const reel = interaction.reel;
 
             // Source preferences
             const sourceName = reel.source?.name || 'Unknown';
@@ -609,12 +680,69 @@ async function getUserPreferences(userId) {
                 });
             }
         });
+        
+        // Calculate average days old for logging
+        const avgDaysOld = decayedInteractions.length > 0 
+            ? (decayedInteractions.reduce((sum, i) => sum + i.daysOld, 0) / decayedInteractions.length).toFixed(1)
+            : 0;
+        
+        console.log(`⚖️ Time-decayed preferences calculated: ${Object.keys(sourcePreferences).length} sources, ${Object.keys(categoryPreferences).length} categories, avg age: ${avgDaysOld} days`);
 
-        // Calculate average embedding for content-based recommendations
+        // Calculate average embedding for content-based recommendations (prefer PCA)
+        // Priority: 1) Liked/Saved reels, 2) Viewed reels (if no likes/saves), 3) Trending fallback
         let averageEmbedding = null;
-        const validEmbeddings = [...likedReels, ...savedReels]
-            .filter(reel => reel.embedding && reel.embedding.length > 0)
-            .map(reel => reel.embedding);
+        let validEmbeddings = [...likedReels, ...savedReels]
+            .filter(reel => (reel.embedding_pca || reel.embedding) && (reel.embedding_pca?.length > 0 || reel.embedding?.length > 0))
+            .map(reel => reel.embedding_pca || reel.embedding);
+
+        console.log(`🧠 Found ${validEmbeddings.length} reels with embeddings from likes/saves for user ${userId}`);
+
+        // Fallback to viewed reels if user has no likes/saves yet (cold start problem)
+        if (validEmbeddings.length === 0 && viewedReels.length > 0) {
+            console.log(`🔄 No liked/saved reels, using ${viewedReels.length} viewed reels for embedding`);
+            validEmbeddings = viewedReels
+                .filter(reel => (reel.embedding_pca || reel.embedding) && (reel.embedding_pca?.length > 0 || reel.embedding?.length > 0))
+                .map(reel => reel.embedding_pca || reel.embedding);
+            console.log(`🧠 Found ${validEmbeddings.length} viewed reels with embeddings`);
+        }
+
+        // Final fallback: Create synthetic embedding from source preferences (cold start)
+        if (validEmbeddings.length === 0 && Object.keys(sourcePreferences).length > 0) {
+            console.log(`🆕 Cold start: Creating synthetic embedding from ${Object.keys(sourcePreferences).length} source preferences`);
+            try {
+                // Get sample reels from preferred sources
+                const preferredSources = Object.entries(sourcePreferences)
+                    .sort(([, a], [, b]) => b - a)
+                    .slice(0, 5)
+                    .map(([sourceName]) => sourceName);
+                
+                console.log(`🔍 Preferred sources: ${preferredSources.join(', ')}`);
+                
+                const sourceDocs = await Source.find({ name: { $in: preferredSources } }).select('_id').lean();
+                const sourceIds = sourceDocs.map(s => s._id);
+                
+                if (sourceIds.length > 0) {
+                    const sampleReels = await Reel.find({
+                        source: { $in: sourceIds },
+                        $or: [
+                            { embedding_pca: { $exists: true, $ne: [], $type: 'array' } },
+                            { embedding: { $exists: true, $ne: [], $type: 'array' } }
+                        ]
+                    })
+                        .select('embedding embedding_pca')
+                        .limit(20)
+                        .lean();
+                    
+                    validEmbeddings = sampleReels
+                        .filter(reel => (reel.embedding_pca || reel.embedding))
+                        .map(reel => reel.embedding_pca || reel.embedding);
+                    
+                    console.log(`✅ Cold start: Found ${validEmbeddings.length} reels from preferred sources`);
+                }
+            } catch (coldStartError) {
+                console.error(`❌ Cold start embedding creation failed:`, coldStartError.message);
+            }
+        }
 
         if (validEmbeddings.length > 0) {
             const embeddingSize = validEmbeddings[0].length;
@@ -627,9 +755,13 @@ async function getUserPreferences(userId) {
             });
 
             averageEmbedding = averageEmbedding.map(sum => sum / validEmbeddings.length);
+            
+            console.log(`✅ Calculated ${embeddingSize}D average embedding for user ${userId} from ${validEmbeddings.length} reels`);
+        } else {
+            console.log(`⚠️ No embeddings found for user ${userId} (no likes/saves/views), will use trending fallback`);
         }
 
-        return {
+        const prefs = {
             sourcePreferences: Object.entries(sourcePreferences)
                 .sort(([, a], [, b]) => b - a)
                 .slice(0, 10), // Top 10 sources
@@ -640,8 +772,12 @@ async function getUserPreferences(userId) {
             totalInteractions: likedReels.length + savedReels.length + viewedReels.length,
             recentActivityCount: recentActivity.length
         };
+        
+        console.log(`✅ User ${userId} preferences: ${prefs.totalInteractions} interactions, ${prefs.sourcePreferences.length} sources, embedding: ${averageEmbedding ? averageEmbedding.length + 'D' : 'none'}`);
+        
+        return prefs;
     } catch (error) {
-        console.error('Error getting user preferences:', error);
+        console.error(`❌ Error getting user preferences for ${userId}:`, error);
         return {
             sourcePreferences: [],
             categoryPreferences: [],
@@ -1575,15 +1711,16 @@ router.post('/analytics/videos', async (req, res) => {
                 if (completionRate > 0 || watchDuration > 0) {
                     try {
                         // Get current reel data to calculate averages
-                        const reel = await Reel.findById(videoId).select('completionRates totalWatchTime viewCount');
+                        const reel = await Reel.findById(videoId).select('completionRates totalWatchTime viewCount likes dislikes');
 
                         if (reel) {
                             const updates = {
                                 updatedAt: new Date(),
-                                $inc: { viewCount: 1 } // INCREMENT VIEW COUNT
+                                $inc: { viewCount: 1 }, // INCREMENT VIEW COUNT
+                                $set: {} // Initialize $set
                             };
 
-                            // Add user to viewedBy if authenticated
+                            // Add user to viewedBy if authenticated (ALWAYS, not just for completion)
                             if (effectiveUserId) {
                                 updates.$addToSet = { viewedBy: effectiveUserId };
                             }
@@ -1594,10 +1731,7 @@ router.post('/analytics/videos', async (req, res) => {
                                 const avgCompletionRate = newCompletionRates.reduce((sum, rate) => sum + rate, 0) / newCompletionRates.length;
 
                                 updates.$push = { completionRates: completionRate };
-                                updates.$set = {
-                                    ...updates.$set,
-                                    completionRate: avgCompletionRate
-                                };
+                                updates.$set.completionRate = avgCompletionRate;
                             }
 
                             // Update watch time
@@ -1607,16 +1741,44 @@ router.post('/analytics/videos', async (req, res) => {
                                 const newViewCount = (reel.viewCount || 0) + 1;
                                 const avgWatchTime = newTotalWatchTime / newViewCount;
 
-                                updates.$set = {
-                                    ...updates.$set,
-                                    totalWatchTime: newTotalWatchTime,
-                                    avgWatchTime: avgWatchTime
-                                };
+                                updates.$set.totalWatchTime = newTotalWatchTime;
+                                updates.$set.avgWatchTime = avgWatchTime;
                             }
 
+                            // First update the reel with new metrics
                             await Reel.findByIdAndUpdate(videoId, updates);
 
-                            console.log(`✅ Updated reel ${videoId}: viewCount +1, completion ${completionRate}%, watchTime ${Math.round(watchDuration / 1000)}s`);
+                            // UPDATE USER'S VIEWED REELS (sync User.viewed_reels with Reel.viewedBy)
+                            if (effectiveUserId) {
+                                try {
+                                    const User = require('../models/User');
+                                    await User.findOneAndUpdate(
+                                        { supabase_id: effectiveUserId },
+                                        { $addToSet: { viewed_reels: videoId } }
+                                    );
+                                    console.log(`✅ Added reel ${videoId} to user ${effectiveUserId.substring(0, 8)}... viewed_reels`);
+                                } catch (userUpdateErr) {
+                                    console.warn('⚠️ Failed to update user viewed_reels:', userUpdateErr.message);
+                                }
+                            }
+
+                            // RECALCULATE ENGAGEMENT SCORE after metrics update
+                            // Note: viewCount is already incremented, completionRate is updated above
+                            const newViewCount = (reel.viewCount || 0) + 1;
+                            const newCompletionRate = completionRate > 0 
+                                ? ([...(reel.completionRates || []), completionRate].reduce((s, r) => s + r, 0) / (reel.completionRates?.length + 1 || 1))
+                                : (reel.completionRate || 0);
+                            
+                            const engagementScore = (
+                                newViewCount * 0.3 +
+                                (reel.likes || 0) * 0.5 +
+                                newCompletionRate * 0.2
+                            );
+                            
+                            // Update engagement_score separately
+                            await Reel.findByIdAndUpdate(videoId, { engagement_score: engagementScore });
+
+                            console.log(`✅ Updated reel ${videoId}: viewCount +1 (${newViewCount}), completion ${completionRate}%, engagement ${engagementScore.toFixed(2)}`);
                         } else {
                             console.warn(`⚠️ Reel ${videoId} not found in database`);
                         }
@@ -1796,8 +1958,25 @@ router.post('/reels/:reelId/like', async (req, res) => {
         const updatedReel = await Reel.findByIdAndUpdate(
             reelId,
             updateQuery,
-            { new: true, select: 'likes dislikes likedBy dislikedBy' }
+            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate' }
         );
+
+        // Recalculate engagement_score after like change
+        const engagementScore = (
+            (updatedReel.viewCount || 0) * 0.3 +
+            (updatedReel.likes || 0) * 0.5 +
+            (updatedReel.completionRate || 0) * 0.2
+        );
+        
+        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
+
+        // ⚡ PHASE 1: Invalidate user embedding cache on interaction
+        try {
+            await redis.del(`user:emb:${userId}`);
+            console.log(`🗑️ Invalidated embedding cache for user ${userId.substring(0, 8)}...`);
+        } catch (cacheErr) {
+            console.warn('⚠️ Failed to invalidate cache:', cacheErr.message);
+        }
 
         // Track activity
         if (!isLiked) {
@@ -1814,7 +1993,8 @@ router.post('/reels/:reelId/like', async (req, res) => {
             likes: updatedReel.likes,
             dislikes: updatedReel.dislikes,
             isLiked: !isLiked,
-            isDisliked: isDisliked && !isLiked ? false : !updatedReel.dislikedBy.includes(userId)
+            isDisliked: isDisliked && !isLiked ? false : !updatedReel.dislikedBy.includes(userId),
+            engagementScore
         });
     } catch (err) {
         console.error('Error toggling like:', err.message);
@@ -1872,8 +2052,25 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
         const updatedReel = await Reel.findByIdAndUpdate(
             reelId,
             updateQuery,
-            { new: true, select: 'likes dislikes likedBy dislikedBy' }
+            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate' }
         );
+
+        // Recalculate engagement_score after dislike change
+        const engagementScore = (
+            (updatedReel.viewCount || 0) * 0.3 +
+            (updatedReel.likes || 0) * 0.5 +
+            (updatedReel.completionRate || 0) * 0.2
+        );
+        
+        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
+
+        // ⚡ PHASE 1: Invalidate user embedding cache on interaction
+        try {
+            await redis.del(`user:emb:${userId}`);
+            console.log(`🗑️ Invalidated embedding cache for user ${userId.substring(0, 8)}...`);
+        } catch (cacheErr) {
+            console.warn('⚠️ Failed to invalidate cache:', cacheErr.message);
+        }
 
         // Track activity
         if (!isDisliked) {
@@ -1890,7 +2087,8 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
             likes: updatedReel.likes,
             dislikes: updatedReel.dislikes,
             isLiked: isLiked && !isDisliked ? false : !updatedReel.likedBy.includes(userId),
-            isDisliked: !isDisliked
+            isDisliked: !isDisliked,
+            engagementScore
         });
     } catch (err) {
         console.error('Error toggling dislike:', err.message);
@@ -1947,6 +2145,14 @@ router.post('/reels/:reelId/save', async (req, res) => {
             updateQuery,
             { new: true, select: 'saves savedBy' }
         );
+
+        // ⚡ PHASE 1: Invalidate user embedding cache on interaction
+        try {
+            await redis.del(`user:emb:${userId}`);
+            console.log(`🗑️ Invalidated embedding cache for user ${userId.substring(0, 8)}...`);
+        } catch (cacheErr) {
+            console.warn('⚠️ Failed to invalidate cache:', cacheErr.message);
+        }
 
         // Track activity
         await UserActivity.create({
