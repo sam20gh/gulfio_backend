@@ -465,7 +465,9 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
     try {
         // Get excluded IDs from cursor or recent history
         // REDUCED from 200 to 50 to allow more variety and prioritize recency boost
-        const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, 50);
+        // If no cursor (fresh feed), only exclude last 20 to maximize new content visibility
+        const exclusionLimit = cursor?.excludedIds ? 50 : 20;
+        const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, exclusionLimit);
 
         console.log(`🔍 Personalized feed query:`, {
             userIdShort: userId.substring(0, 8),

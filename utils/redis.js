@@ -3,12 +3,20 @@ const Redis = require('ioredis');
 let redis = null;
 
 // Only initialize Redis if URL is provided and valid
-if (process.env.REDIS_URL && !process.env.REDIS_URL.includes('red-d07c0eqli9vc73f5pbp0')) {
+if (process.env.REDIS_URL) {
     try {
         redis = new Redis(process.env.REDIS_URL, {
             connectTimeout: 10000,
-            maxRetriesPerRequest: 0,
-            enableOfflineQueue: false,
+            maxRetriesPerRequest: 3,
+            enableOfflineQueue: true, // Allow commands to queue while connecting
+            lazyConnect: false, // Connect immediately
+            retryStrategy: (times) => {
+                if (times > 3) {
+                    console.warn('⚠️ Redis max retries reached, disabling cache');
+                    return null; // Stop retrying
+                }
+                return Math.min(times * 100, 2000); // Exponential backoff
+            }
         });
 
         redis.on('error', (err) => {
@@ -38,24 +46,65 @@ module.exports = {
             return null;
         }
     },
-    set: async (key, value, ex) => {
+    set: async (key, value, ...args) => {
         if (!redis) return;
         try {
-            if (ex) {
-                await redis.set(key, value, 'EX', ex);
-            } else {
-                await redis.set(key, value);
-            }
+            await redis.set(key, value, ...args);
         } catch (error) {
             console.warn('Redis SET error:', error.message);
         }
     },
-    del: async (key) => {
-        if (!redis) return;
+    del: async (...keys) => {
+        if (!redis) return 0;
         try {
-            await redis.del(key);
+            return await redis.del(...keys);
         } catch (error) {
             console.warn('Redis DEL error:', error.message);
+            return 0;
+        }
+    },
+    sadd: async (key, ...members) => {
+        if (!redis) return 0;
+        try {
+            return await redis.sadd(key, ...members);
+        } catch (error) {
+            console.warn('Redis SADD error:', error.message);
+            return 0;
+        }
+    },
+    smembers: async (key) => {
+        if (!redis) return [];
+        try {
+            return await redis.smembers(key);
+        } catch (error) {
+            console.warn('Redis SMEMBERS error:', error.message);
+            return [];
+        }
+    },
+    scard: async (key) => {
+        if (!redis) return 0;
+        try {
+            return await redis.scard(key);
+        } catch (error) {
+            console.warn('Redis SCARD error:', error.message);
+            return 0;
+        }
+    },
+    expire: async (key, seconds) => {
+        if (!redis) return;
+        try {
+            await redis.expire(key, seconds);
+        } catch (error) {
+            console.warn('Redis EXPIRE error:', error.message);
+        }
+    },
+    keys: async (pattern) => {
+        if (!redis) return [];
+        try {
+            return await redis.keys(pattern);
+        } catch (error) {
+            console.warn('Redis KEYS error:', error.message);
+            return [];
         }
     },
     isConnected: () => redis && redis.status === 'ready'
