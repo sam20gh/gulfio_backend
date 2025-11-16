@@ -26,6 +26,12 @@ const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
 const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
+
+// PHASE 2: Background job endpoints
+console.log('📂 Loading jobs router...');
+const jobsRouter = require('./routes/jobs');
+console.log('✅ Jobs router loaded successfully');
+
 const { recommendationIndex } = require('./recommendation/fastIndex');
 // const cacheWarmer = require('./services/cacheWarmer'); // Temporarily disabled for deployment
 require('dotenv').config();
@@ -238,6 +244,11 @@ app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
 app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
 app.use('/api/ai', aiAgentRoutes); // AI Agent routes
+
+// PHASE 2: Background jobs
+console.log('🔧 Registering jobs router at /api/jobs');
+app.use('/api/jobs', jobsRouter);
+console.log('✅ Jobs router registered successfully');
 
 // Image proxy endpoint for SSL certificate issues
 app.get('/api/proxy-image', async (req, res) => {

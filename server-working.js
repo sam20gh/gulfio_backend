@@ -74,7 +74,11 @@ app.get('/', (req, res) => {
             admin: '/api/admin',
             scrape: '/api/scrape',
             debug: '/api/debug',
-            puppeteer_debug: '/api/puppeteer'
+            puppeteer_debug: '/api/puppeteer',
+
+            // Background Jobs (PHASE 2)
+            jobs_status: '/api/jobs/status',
+            jobs_update_embeddings: '/api/jobs/update-user-embeddings'
         },
         timestamp: new Date().toISOString()
     });
@@ -203,6 +207,10 @@ function loadRoutes() {
         const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
         console.log('✅ AI Agent routes loaded successfully');
 
+        console.log('🔧 Loading Jobs routes...');
+        const jobsRouter = require('./routes/jobs'); // PHASE 2: Background jobs
+        console.log('✅ Jobs routes loaded successfully');
+
         app.use('/api/scrape', scrapeRoute);
         app.use('/api/user', userActions);
         app.use('/api/recommendations', recommendations);
@@ -222,6 +230,9 @@ function loadRoutes() {
         console.log('🤖 Mounting AI Agent routes at /api/ai...');
         app.use('/api/ai', aiAgentRoutes); // AI Agent routes
         console.log('✅ AI Agent routes mounted successfully');
+        console.log('🔧 Mounting Jobs routes at /api/jobs...');
+        app.use('/api/jobs', jobsRouter); // PHASE 2: Background jobs
+        console.log('✅ Jobs routes mounted successfully');
 
         console.log('🎉 All API routes loaded successfully!');
 

@@ -43,6 +43,68 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const router = express.Router();
 
+// ============================================
+// PHASE 2.2: SMART CACHING
+// Activity-based TTL for user embeddings
+// ============================================
+
+/**
+ * Calculate smart cache TTL based on user activity level
+ * 
+ * @param {string} userId - Supabase user ID
+ * @returns {Promise<number>} Cache TTL in seconds
+ * 
+ * Activity Tiers:
+ * - Active users (10+ interactions/week): 6 hours
+ * - Moderate users (3-10 interactions/week): 24 hours
+ * - Inactive users (<3 interactions/week): 7 days
+ */
+async function getSmartCacheTTL(userId) {
+    try {
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+        // Count recent interactions (likes, saves, views) in last 7 days
+        const [likeCount, saveCount, viewCount] = await Promise.all([
+            Reel.countDocuments({
+                likedBy: userId,
+                updatedAt: { $gte: oneWeekAgo }
+            }),
+            Reel.countDocuments({
+                savedBy: userId,
+                updatedAt: { $gte: oneWeekAgo }
+            }),
+            UserActivity.countDocuments({
+                userId,
+                eventType: 'reel_view',
+                timestamp: { $gte: oneWeekAgo }
+            })
+        ]);
+
+        const totalInteractions = likeCount + saveCount + viewCount;
+
+        // Determine activity tier
+        let ttl, tier;
+        if (totalInteractions >= 10) {
+            ttl = 6 * 60 * 60; // 6 hours
+            tier = 'active';
+        } else if (totalInteractions >= 3) {
+            ttl = 24 * 60 * 60; // 24 hours
+            tier = 'moderate';
+        } else {
+            ttl = 7 * 24 * 60 * 60; // 7 days
+            tier = 'inactive';
+        }
+
+        console.log(`📊 Smart cache TTL for user ${userId.substring(0, 8)}: ${tier} (${totalInteractions} interactions/week) → ${ttl}s`);
+
+        return ttl;
+    } catch (error) {
+        console.error('⚠️ Error calculating smart cache TTL:', error.message);
+        // Fallback to 24 hours
+        return 24 * 60 * 60;
+    }
+}
+
 // Compatibility endpoint: provide recommendation system stats for mobile client
 // Used by mobile service call: GET /videos/reels/stats
 router.get('/videos/reels/stats', async (req, res) => {
@@ -160,18 +222,28 @@ async function getRecentlyViewedIds(userId, limit = 100) {
 
     try {
         // Try Redis first (fast path)
+        // Note: Redis sets don't have ordering, so we get all and limit in memory
         const viewedIds = await redis.smembers(key);
 
         if (viewedIds && viewedIds.length > 0) {
-            console.log(`✅ Cache hit: ${viewedIds.length} viewed reels for user ${userId.substring(0, 8)}...`);
-            return viewedIds.slice(0, limit).map(id => new mongoose.Types.ObjectId(id));
+            // Limit to prevent excluding too many reels
+            const limitedIds = viewedIds.slice(0, Math.min(limit, viewedIds.length));
+            console.log(`✅ Cache hit: ${limitedIds.length} viewed reels for user ${userId.substring(0, 8)} (total: ${viewedIds.length})`);
+            return limitedIds.map(id => {
+                try {
+                    return new mongoose.Types.ObjectId(id);
+                } catch (e) {
+                    console.warn(`⚠️ Invalid ObjectId in cache: ${id}`);
+                    return null;
+                }
+            }).filter(id => id !== null);
         }
 
         // Cache miss - warm from DB
         console.log(`⚠️ Cache miss: Loading viewed reels from DB for user ${userId.substring(0, 8)}...`);
         const activities = await UserActivity.find({
             userId,
-            eventType: 'view'
+            eventType: 'reel_view' // Changed from 'view' to 'reel_view' for specificity
         })
             .sort({ timestamp: -1 })
             .limit(limit)
@@ -180,11 +252,16 @@ async function getRecentlyViewedIds(userId, limit = 100) {
 
         const ids = activities.map(a => a.articleId.toString());
 
-        // Warm Redis cache for next request
+        // Warm Redis cache for next request (but cap at 500 to prevent bloat)
         if (ids.length > 0) {
-            await redis.sadd(key, ...ids);
+            // Use sorted set instead of set to maintain order by timestamp
+            const maxCacheSize = 500;
+            const idsToCache = ids.slice(0, maxCacheSize);
+
+            await redis.del(key); // Clear old data
+            await redis.sadd(key, ...idsToCache);
             await redis.expire(key, 86400); // 24h expiry
-            console.log(`✅ Warmed cache with ${ids.length} viewed reels`);
+            console.log(`✅ Warmed cache with ${idsToCache.length} viewed reels (limited from ${ids.length})`);
         }
 
         return ids.map(id => new mongoose.Types.ObjectId(id));
@@ -230,8 +307,17 @@ async function trackViewInCache(userId, reelId) {
  * Main orchestrator for new cursor-based feed system
  */
 async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
+    console.log(`🔍 buildOptimizedFeed called:`, {
+        userId: userId?.substring(0, 8),
+        hasUserId: !!userId,
+        strategy,
+        limit
+    });
+
     // For logged-in users with personalized strategy
     if (userId && strategy === 'personalized') {
+        console.log(`🎯 Attempting personalized feed for user ${userId.substring(0, 8)}`);
+
         // Get user embedding from CACHE first (not DB every time)
         let userEmbedding = null;
 
@@ -247,58 +333,161 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
 
                 // Try to get user embedding from User model or calculate from preferences
                 const userPrefs = await getUserPreferences(userId);
-                userEmbedding = userPrefs.averageEmbedding?.slice(0, 128);
+                userEmbedding = userPrefs.averageEmbedding;
 
-                if (userEmbedding) {
-                    // Cache for 24 hours
-                    await redis.set(`user:emb:${userId}`, JSON.stringify(userEmbedding), 'EX', 86400);
-                    console.log(`✅ Cached user embedding: ${userEmbedding.length}D`);
+                console.log(`🧠 getUserPreferences returned embedding:`, {
+                    hasEmbedding: !!userEmbedding,
+                    embeddingLength: userEmbedding?.length || 0,
+                    totalInteractions: userPrefs.totalInteractions
+                });
+
+                if (userEmbedding && userEmbedding.length > 0) {
+                    // PHASE 2.2: Use smart cache TTL based on user activity
+                    const cacheTTL = await getSmartCacheTTL(userId);
+                    await redis.set(`user:emb:${userId}`, JSON.stringify(userEmbedding), 'EX', cacheTTL);
+                    console.log(`✅ Cached user embedding: ${userEmbedding.length}D with ${cacheTTL}s TTL`);
+                } else {
+                    console.log(`❌ No valid embedding returned from getUserPreferences`);
                 }
             }
         } catch (err) {
-            console.error('⚠️ Error loading user embedding:', err.message);
+            console.error('❌ Error loading user embedding:', err.message, err.stack);
         }
 
-        if (userEmbedding) {
-            return await getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit);
+        if (userEmbedding && userEmbedding.length > 0) {
+            console.log(`✅ Using PHASE 3.1 hybrid personalization with ${userEmbedding.length}D embedding`);
+            // PHASE 2.3: Get user preferences for negative signal filtering
+            const userPrefs = await getUserPreferences(userId);
+            return await getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit, userPrefs);
+        } else {
+            console.log(`⚠️ No embedding available, falling back to trending`);
         }
+    } else {
+        console.log(`ℹ️ Not using personalized strategy:`, { hasUserId: !!userId, strategy });
     }
 
     // Fallback to trending/mixed for non-personalized or no embedding
+    console.log(`📊 Returning trending feed as fallback`);
     return await getTrendingFeedOptimized(cursor, limit, strategy);
+}
+
+/**
+ * PHASE 3.1: Calculate hybrid personalization score with recency boost
+ * Blends three signals for better diversity and relevance:
+ * - 50% Embedding similarity (ML-based content understanding)
+ * - 30% Source preferences (user's preferred news sources)
+ * - 20% Category preferences (topic diversity)
+ * Plus a recency multiplier to boost newer content (up to 1.5x for content from last 3 days)
+ * 
+ * @param {Object} reel - Reel document with embedding, source, categories
+ * @param {Array} userEmbedding - User's average embedding vector
+ * @param {Object} userPrefs - User preferences object
+ * @returns {Object} Scoring breakdown and final hybrid score
+ */
+function calculateHybridScore(reel, userEmbedding, userPrefs) {
+    // 1. Embedding similarity score (50%)
+    let embeddingScore = 0;
+    if (userEmbedding && reel.embedding_pca) {
+        embeddingScore = cosineSimilarity(userEmbedding, reel.embedding_pca);
+    } else if (reel.searchScore) {
+        // Use Atlas Search score if available
+        embeddingScore = reel.searchScore;
+    }
+
+    // 2. Source preference score (30%)
+    let sourceScore = 0;
+    if (reel.source?.name && userPrefs.sourcePreferences?.length > 0) {
+        const sourceMap = new Map(userPrefs.sourcePreferences);
+        const maxSourceWeight = Math.max(...userPrefs.sourcePreferences.map(([, weight]) => weight), 1);
+        const sourceWeight = sourceMap.get(reel.source.name) || 0;
+        sourceScore = sourceWeight / maxSourceWeight; // Normalize to 0-1
+    }
+
+    // 3. Category preference score (20%)
+    let categoryScore = 0;
+    if (reel.categories?.length > 0 && userPrefs.categoryPreferences?.length > 0) {
+        const categoryMap = new Map(userPrefs.categoryPreferences);
+        const maxCategoryWeight = Math.max(...userPrefs.categoryPreferences.map(([, weight]) => weight), 1);
+
+        // Average category weight for reels with multiple categories
+        const categoryWeights = reel.categories
+            .map(cat => categoryMap.get(cat) || 0)
+            .filter(w => w > 0);
+
+        if (categoryWeights.length > 0) {
+            const avgCategoryWeight = categoryWeights.reduce((a, b) => a + b, 0) / categoryWeights.length;
+            categoryScore = avgCategoryWeight / maxCategoryWeight; // Normalize to 0-1
+        }
+    }
+
+    // 4. Recency boost: newer content gets higher scores
+    // 1.5x boost for last 3 days, 1.3x for last 7 days, 1.1x for last 14 days, 1.0x after that
+    let recencyMultiplier = 1.0;
+    if (reel.scrapedAt) {
+        const ageInDays = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60 * 24);
+        if (ageInDays <= 3) {
+            recencyMultiplier = 1.5; // 50% boost for very fresh content
+        } else if (ageInDays <= 7) {
+            recencyMultiplier = 1.3; // 30% boost for fresh content
+        } else if (ageInDays <= 14) {
+            recencyMultiplier = 1.1; // 10% boost for recent content
+        }
+        // else 1.0 (no boost for older content)
+    }
+
+    // Calculate base hybrid score (50/30/20)
+    const baseScore = (
+        embeddingScore * 0.5 +
+        sourceScore * 0.3 +
+        categoryScore * 0.2
+    );
+
+    // Apply recency multiplier
+    const hybridScore = baseScore * recencyMultiplier;
+
+    return {
+        hybridScore,
+        embeddingScore,
+        sourceScore,
+        categoryScore,
+        recencyMultiplier,
+        breakdown: `E:${(embeddingScore * 100).toFixed(0)}% S:${(sourceScore * 100).toFixed(0)}% C:${(categoryScore * 100).toFixed(0)}% R:${recencyMultiplier.toFixed(1)}x`
+    };
 }
 
 /**
  * Get optimized personalized feed using single Atlas Search compound query
  * Combines vector similarity + trending + fresh content in ONE query
+ * PHASE 2.3: Filters out disliked sources and categories
+ * PHASE 3.1: Hybrid scoring with 50/30/20 weighting (embedding/source/category)
  */
-async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit) {
+async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit, userPrefs = {}) {
     try {
         // Get excluded IDs from cursor or recent history
-        const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, 100);
+        // REDUCED from 200 to 50 to allow more variety and prioritize recency boost
+        const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, 50);
 
         console.log(`🔍 Personalized feed query:`, {
             userIdShort: userId.substring(0, 8),
             embeddingDim: userEmbedding.length,
             excludedCount: excludedIds.length,
-            hasCursor: !!cursor
+            hasCursor: !!cursor,
+            sourcePrefs: userPrefs.sourcePreferences?.length || 0,
+            categoryPrefs: userPrefs.categoryPreferences?.length || 0
         });
 
         // Use MongoDB Atlas Vector Search for personalized recommendations
         // Note: Atlas Vector Search uses $vectorSearch, not $search with knnBeta
+        // FIX: Remove filter from $vectorSearch as it requires special index config
+        // Instead, apply filters in $match stage after vector search
         const pipeline = [
             {
                 $vectorSearch: {
                     index: 'default',
                     queryVector: userEmbedding,
                     path: 'embedding_pca',
-                    numCandidates: limit * 10, // Cast wider net for better results
-                    limit: limit * 3, // Get 3x for post-filtering
-                    filter: {
-                        scrapedAt: {
-                            $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
-                        }
-                    }
+                    numCandidates: limit * 15, // Increased to compensate for post-filtering
+                    limit: limit * 8 // Get more results for date filtering
                 }
             },
             // Add search score to results
@@ -310,25 +499,10 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             {
                 $match: {
                     _id: { $nin: excludedIds },
-                    videoUrl: { $exists: true, $ne: null }
+                    videoUrl: { $exists: true, $ne: null },
+                    scrapedAt: { $gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) } // Last 6 months (extended from 30 days)
                 }
             },
-            {
-                $addFields: {
-                    // Calculate engagement score in DB (not in app)
-                    engagementScore: {
-                        $add: [
-                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.3] },
-                            { $multiply: [{ $ifNull: ['$likes', 0] }, 0.5] },
-                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.2] }
-                        ]
-                    }
-                }
-            },
-            {
-                $sort: { engagementScore: -1, scrapedAt: -1 }
-            },
-            { $limit: limit + 1 }, // Get one extra for next cursor
             {
                 $lookup: {
                     from: 'sources',
@@ -343,7 +517,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
             {
                 $project: {
-                    // Only send fields frontend needs
+                    // Include fields needed for hybrid scoring
                     reelId: 1,
                     videoUrl: 1,
                     thumbnailUrl: 1,
@@ -356,7 +530,9 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
                     avgWatchTime: 1,
                     scrapedAt: 1,
                     source: 1,
-                    engagementScore: 1,
+                    categories: 1,
+                    embedding_pca: 1,
+                    searchScore: 1,
                     originalKey: 1
                 }
             }
@@ -364,24 +540,71 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
 
         const reels = await Reel.aggregate(pipeline);
 
+        // PHASE 2.3: Filter out disliked sources and categories
+        let filteredReels = reels;
+        if (userPrefs.negativeSourcePreferences?.length > 0 || userPrefs.negativeCategoryPreferences?.length > 0) {
+            const beforeFilter = reels.length;
+            filteredReels = reels.filter(reel => {
+                // Filter out disliked sources
+                if (userPrefs.negativeSourcePreferences?.includes(reel.source?.name)) {
+                    return false;
+                }
+                // Filter out reels with disliked categories
+                if (reel.categories && userPrefs.negativeCategoryPreferences?.length > 0) {
+                    const hasDislikedCategory = reel.categories.some(cat =>
+                        userPrefs.negativeCategoryPreferences.includes(cat)
+                    );
+                    if (hasDislikedCategory) return false;
+                }
+                return true;
+            });
+            console.log(`🚫 Filtered ${beforeFilter - filteredReels.length} reels with negative signals (${beforeFilter} → ${filteredReels.length})`);
+        }
+
+        // PHASE 3.1: Apply hybrid scoring to all reels
+        const scoredReels = filteredReels.map(reel => {
+            const scoring = calculateHybridScore(reel, userEmbedding, userPrefs);
+            return {
+                ...reel,
+                ...scoring
+            };
+        });
+
+        // Sort by hybrid score (descending)
+        scoredReels.sort((a, b) => b.hybridScore - a.hybridScore);
+
+        // Log top 3 scores for debugging
+        if (scoredReels.length > 0) {
+            console.log(`🎯 PHASE 3.1 Hybrid scoring applied to ${scoredReels.length} reels`);
+            console.log(`📊 Top 3 scores:`, scoredReels.slice(0, 3).map(r => ({
+                source: r.source?.name,
+                hybrid: r.hybridScore.toFixed(3),
+                age: r.scrapedAt ? `${Math.floor((Date.now() - new Date(r.scrapedAt).getTime()) / (1000 * 60 * 60 * 24))}d` : 'N/A',
+                breakdown: r.breakdown
+            })));
+        }
+
         // Check if there's more data
-        const hasMore = reels.length > limit;
-        const results = hasMore ? reels.slice(0, limit) : reels;
+        const hasMore = scoredReels.length > limit;
+        const results = hasMore ? scoredReels.slice(0, limit) : scoredReels;
+
+        // Clean up results (remove embedding_pca to reduce payload)
+        const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, ...reel }) => reel);
 
         // Build next cursor
         const nextCursor = hasMore ? encodeCursor({
-            lastId: results[results.length - 1]._id,
-            excludedIds: [...excludedIds, ...results.map(r => r._id)],
+            lastId: cleanResults[cleanResults.length - 1]._id,
+            excludedIds: [...excludedIds, ...cleanResults.map(r => r._id)],
             timestamp: Date.now()
         }) : null;
 
-        console.log(`✅ Personalized feed: ${results.length} reels, hasMore: ${hasMore}`);
+        console.log(`✅ Personalized feed: ${cleanResults.length} reels, hasMore: ${hasMore}, strategy: hybrid (50/30/20)`);
 
         return {
-            reels: results,
+            reels: cleanResults,
             cursor: nextCursor,
             hasMore,
-            strategy: 'personalized'
+            strategy: 'hybrid-personalized'
         };
     } catch (err) {
         console.error('❌ Personalized feed error:', err.message);
@@ -639,7 +862,12 @@ async function getUserPreferences(userId) {
             viewedBy: userId
         }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
 
-        console.log(`📊 User ${userId} interactions: ${likedReels.length} liked, ${savedReels.length} saved, ${viewedReels.length} viewed`);
+        // PHASE 2.3: Get disliked reels for negative signal filtering
+        const dislikedReels = await Reel.find({
+            dislikedBy: userId
+        }).select('source categories embedding embedding_pca updatedAt').populate('source', 'name').lean();
+
+        console.log(`📊 User ${userId} interactions: ${likedReels.length} liked, ${savedReels.length} saved, ${viewedReels.length} viewed, ${dislikedReels.length} disliked`);
 
         // DEBUG: Check how many have embeddings
         const likedWithPCA = likedReels.filter(r => r.embedding_pca && r.embedding_pca.length > 0).length;
@@ -653,16 +881,18 @@ async function getUserPreferences(userId) {
         const categoryPreferences = {};
 
         // ⚡ PHASE 1.3: Apply TIME DECAY to interaction weights (5% daily decay)
+        // PHASE 2.3: Include disliked reels with NEGATIVE weights
         // Recent interactions (last 7 days) are more influential than old interactions (30+ days)
         const allInteractions = [
             ...likedReels.map(r => ({ reel: r, type: 'like', timestamp: r.updatedAt || new Date() })),
             ...savedReels.map(r => ({ reel: r, type: 'save', timestamp: r.updatedAt || new Date() })),
-            ...viewedReels.map(r => ({ reel: r, type: 'view', timestamp: r.updatedAt || new Date() }))
+            ...viewedReels.map(r => ({ reel: r, type: 'view', timestamp: r.updatedAt || new Date() })),
+            ...dislikedReels.map(r => ({ reel: r, type: 'dislike', timestamp: r.updatedAt || new Date() }))
         ];
 
         const decayedInteractions = applyInteractionWeights(allInteractions, 0.95); // 5% daily decay
 
-        console.log(`📉 Applied time decay to ${decayedInteractions.length} interactions (decay rate: 5%/day)`);
+        console.log(`📉 Applied time decay to ${decayedInteractions.length} interactions (${dislikedReels.length} negative signals, decay rate: 5%/day)`);
 
         // Process interactions with decayed weights
         decayedInteractions.forEach(interaction => {
@@ -761,6 +991,23 @@ async function getUserPreferences(userId) {
             console.log(`⚠️ No embeddings found for user ${userId} (no likes/saves/views), will use trending fallback`);
         }
 
+        // PHASE 2.3: Extract negative signals (disliked sources and categories)
+        const negativeSourcePreferences = {};
+        const negativeCategoryPreferences = {};
+
+        dislikedReels.forEach(reel => {
+            const sourceName = reel.source?.name || 'Unknown';
+            negativeSourcePreferences[sourceName] = (negativeSourcePreferences[sourceName] || 0) + 1;
+
+            if (reel.categories) {
+                reel.categories.forEach(category => {
+                    negativeCategoryPreferences[category] = (negativeCategoryPreferences[category] || 0) + 1;
+                });
+            }
+        });
+
+        console.log(`🚫 Negative signals: ${Object.keys(negativeSourcePreferences).length} sources, ${Object.keys(negativeCategoryPreferences).length} categories to filter`);
+
         const prefs = {
             sourcePreferences: Object.entries(sourcePreferences)
                 .sort(([, a], [, b]) => b - a)
@@ -768,6 +1015,8 @@ async function getUserPreferences(userId) {
             categoryPreferences: Object.entries(categoryPreferences)
                 .sort(([, a], [, b]) => b - a)
                 .slice(0, 10), // Top 10 categories
+            negativeSourcePreferences: Object.keys(negativeSourcePreferences), // Disliked sources
+            negativeCategoryPreferences: Object.keys(negativeCategoryPreferences), // Disliked categories
             averageEmbedding,
             totalInteractions: likedReels.length + savedReels.length + viewedReels.length,
             recentActivityCount: recentActivity.length
@@ -1281,6 +1530,12 @@ router.post('/related', async (req, res) => {
  * - strategy: 'personalized' | 'trending' | 'mixed' (default: personalized for logged users)
  */
 router.get('/reels/feed', async (req, res) => {
+    console.log('🎯🎯🎯 /reels/feed HIT - REQUEST RECEIVED');
+    console.log('📋 Headers:', JSON.stringify({
+        authorization: req.headers.authorization ? 'present' : 'none',
+        'x-api-key': req.headers['x-api-key'] ? 'present' : 'none'
+    }));
+
     try {
         const {
             cursor,
@@ -1352,9 +1607,31 @@ router.get('/reels', async (req, res) => {
             }
         }
 
-        // If user is logged in, provide personalized content
+        // If user is logged in, provide personalized content with PHASE 3.1 hybrid scoring
         if (userId && (sort === 'personalized' || sort === 'mixed')) {
-            return await getPersonalizedReels(req, res, userId, limit, page, actualSkip);
+            console.log(`🎯 Using Phase 3.1 hybrid personalization for user ${userId.substring(0, 8)}`);
+
+            try {
+                // Get user preferences for hybrid scoring
+                const userPrefs = await getUserPreferences(userId);
+                const userEmbedding = userPrefs.averageEmbedding;
+
+                if (!userEmbedding || userEmbedding.length === 0) {
+                    console.log(`⚠️ No user embedding, falling back to trending`);
+                    // Fallback to trending for users with no interaction history
+                    const trendingFeed = await getTrendingFeedOptimized(null, limit, 'trending');
+                    return res.json(trendingFeed.reels || trendingFeed);
+                }
+
+                // Use Phase 3.1 optimized feed with hybrid scoring
+                const feed = await getPersonalizedFeedOptimized(userId, userEmbedding, null, limit, userPrefs);
+                return res.json(feed.reels || feed);
+            } catch (error) {
+                console.error(`❌ Phase 3.1 personalization failed:`, error.message);
+                // Fallback to trending on error
+                const trendingFeed = await getTrendingFeedOptimized(null, limit, 'trending');
+                return res.json(trendingFeed.reels || trendingFeed);
+            }
         }
 
         // Fallback to original logic for anonymous users or specific sort requests
