@@ -18,4 +18,14 @@ const CommentSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
+// 🚀 Performance Optimization: Compound indexes for instant comment loading
+// Index for article comments with sort order
+CommentSchema.index({ articleId: 1, createdAt: -1 });
+
+// Index for reel comments with sort order
+CommentSchema.index({ reelId: 1, createdAt: -1 });
+
+// Index for user comments lookup
+CommentSchema.index({ userId: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Comment', CommentSchema);

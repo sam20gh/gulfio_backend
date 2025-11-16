@@ -6,25 +6,80 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const NotificationService = require('../utils/notificationService');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
+const redis = require('../utils/redis');
+
+// 🚀 Instagram-style instant comment loading with Redis caching
+const COMMENT_CACHE_TTL = 300; // 5 minutes cache for comment lists
 
 // GET comments for an article
 router.get('/:articleId', async (req, res) => {
     try {
         const { articleId } = req.params;
+        const cacheKey = `comments:article:${articleId}`;
+
+        // Try cache first for instant response
+        try {
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                console.log(`⚡ Comment cache HIT for article ${articleId}`);
+                return res.json(JSON.parse(cached));
+            }
+        } catch (cacheError) {
+            console.error('Redis get error:', cacheError.message);
+        }
+
+        // Cache miss - fetch from DB with optimized query
+        console.log(`🔍 Comment cache MISS for article ${articleId}`);
         const comments = await Comment.find({ articleId: articleId })
-            .sort({ createdAt: -1 });
+            .select('userId username comment likedBy dislikedBy replies createdAt') // Only select needed fields
+            .sort({ createdAt: -1 })
+            .lean(); // Use lean() for 20% faster queries
+
+        // Cache the result
+        try {
+            await redis.set(cacheKey, JSON.stringify(comments), 'EX', COMMENT_CACHE_TTL);
+        } catch (cacheError) {
+            console.error('Redis set error:', cacheError.message);
+        }
+
         res.json(comments);
     } catch (error) {
         console.error('GET /comments error:', error);
         res.status(500).json({ message: 'Failed to get comments' });
     }
 });
+
 // GET comments for a reel
 router.get('/reel/:reelId', async (req, res) => {
     try {
         const { reelId } = req.params;
+        const cacheKey = `comments:reel:${reelId}`;
+
+        // Try cache first for instant response
+        try {
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                console.log(`⚡ Comment cache HIT for reel ${reelId}`);
+                return res.json(JSON.parse(cached));
+            }
+        } catch (cacheError) {
+            console.error('Redis get error:', cacheError.message);
+        }
+
+        // Cache miss - fetch from DB with optimized query
+        console.log(`🔍 Comment cache MISS for reel ${reelId}`);
         const comments = await Comment.find({ reelId })
-            .sort({ createdAt: -1 });
+            .select('userId username comment likedBy dislikedBy replies createdAt')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // Cache the result
+        try {
+            await redis.set(cacheKey, JSON.stringify(comments), 'EX', COMMENT_CACHE_TTL);
+        } catch (cacheError) {
+            console.error('Redis set error:', cacheError.message);
+        }
+
         res.json(comments);
     } catch (error) {
         console.error('GET /comments/reel/:reelId error:', error);
@@ -49,6 +104,20 @@ router.post('/', auth, async (req, res) => {
         });
 
         await newComment.save();
+
+        // 🚀 Invalidate cache for instant updates
+        try {
+            if (articleId) {
+                await redis.del(`comments:article:${articleId}`);
+                console.log(`🗑️ Cache invalidated for article ${articleId}`);
+            }
+            if (reelId) {
+                await redis.del(`comments:reel:${reelId}`);
+                console.log(`🗑️ Cache invalidated for reel ${reelId}`);
+            }
+        } catch (cacheError) {
+            console.error('Cache invalidation error:', cacheError.message);
+        }
 
         // Update user embedding after posting comment
         try {
@@ -95,6 +164,18 @@ router.patch('/:id', auth, async (req, res) => {
         const updated = await Comment.findByIdAndUpdate(req.params.id, { comment }, { new: true });
         if (!updated) return res.status(404).json({ message: 'Comment not found' });
 
+        // 🚀 Invalidate cache for instant updates
+        try {
+            if (updated.articleId) {
+                await redis.del(`comments:article:${updated.articleId}`);
+            }
+            if (updated.reelId) {
+                await redis.del(`comments:reel:${updated.reelId}`);
+            }
+        } catch (cacheError) {
+            console.error('Cache invalidation error:', cacheError.message);
+        }
+
         // Update user embedding after editing comment
         try {
             const user = await User.findOne({ supabase_id: updated.userId });
@@ -127,6 +208,18 @@ router.delete('/:id', auth, async (req, res) => {
         // Check if the user owns this comment
         if (comment.userId !== userId) {
             return res.status(403).json({ message: 'You can only delete your own comments' });
+        }
+
+        // 🚀 Invalidate cache before deletion for instant updates
+        try {
+            if (comment.articleId) {
+                await redis.del(`comments:article:${comment.articleId}`);
+            }
+            if (comment.reelId) {
+                await redis.del(`comments:reel:${comment.reelId}`);
+            }
+        } catch (cacheError) {
+            console.error('Cache invalidation error:', cacheError.message);
         }
 
         // Delete the comment

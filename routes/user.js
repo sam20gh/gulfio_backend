@@ -843,8 +843,31 @@ router.get('/search', auth, async (req, res) => {
     }
 });
 
+// Search users for mentions (by name)
+router.get('/search', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q || q.length < 1) {
+            return res.json([]);
+        }
+
+        const users = await User.find({
+            name: { $regex: q, $options: 'i' }
+        })
+            .select('_id name avatar_url')
+            .limit(10)
+            .lean();
+
+        res.json(users);
+    } catch (err) {
+        console.error('❌ User search error:', err);
+        res.status(500).json({ message: 'Search failed' });
+    }
+});
+
 // Suggested MongoDB indexes for optimal performance:
 // db.users.createIndex({ supabase_id: 1 })
 // db.users.createIndex({ email: 1 })
+// db.users.createIndex({ name: 1 })
 
 module.exports = router;
