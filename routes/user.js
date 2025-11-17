@@ -818,21 +818,21 @@ router.post('/admin/send-weekly-digest', auth, async (req, res) => {
     }
 });
 
-// Search users endpoint
-router.get('/search', auth, async (req, res) => {
+// Search users endpoint (supports both 'query' and 'q' params, no auth required for mentions)
+router.get('/search', async (req, res) => {
     try {
-        const query = req.query.query?.trim();
+        const searchText = req.query.query?.trim() || req.query.q?.trim();
 
-        if (!query) return res.status(400).json({ message: 'Missing search query' });
+        if (!searchText) return res.status(400).json({ message: 'Missing search query' });
 
-        const regex = new RegExp(query, 'i'); // case-insensitive
+        const regex = new RegExp(searchText, 'i'); // case-insensitive
         const results = await User.find({
             $or: [
                 { name: { $regex: regex } },
                 { email: { $regex: regex } }
             ]
         })
-            .select('supabase_id name email profile_image following_sources following_users') // Only return necessary fields
+            .select('_id supabase_id name email avatar_url profile_image following_sources following_users') // Return fields for both use cases
             .sort({ createdAt: -1 }) // Sort by creation date
             .limit(20); // Limit results
 
@@ -843,27 +843,7 @@ router.get('/search', auth, async (req, res) => {
     }
 });
 
-// Search users for mentions (by name)
-router.get('/search', async (req, res) => {
-    try {
-        const { q } = req.query;
-        if (!q || q.length < 1) {
-            return res.json([]);
-        }
-
-        const users = await User.find({
-            name: { $regex: q, $options: 'i' }
-        })
-            .select('_id name avatar_url')
-            .limit(10)
-            .lean();
-
-        res.json(users);
-    } catch (err) {
-        console.error('❌ User search error:', err);
-        res.status(500).json({ message: 'Search failed' });
-    }
-});
+// REMOVED: Duplicate /search endpoint below (was never reached due to first route match)
 
 // Suggested MongoDB indexes for optimal performance:
 // db.users.createIndex({ supabase_id: 1 })

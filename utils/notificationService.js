@@ -283,17 +283,19 @@ class NotificationService {
     }
 
     /**
-     * Extract mentioned users from text (looking for @username patterns)
+     * Extract mentioned users from text (looking for @Username patterns)
+     * Matches names starting with capital letters, supports multi-word names like "Gulf News"
      * @param {string} text - The text to scan for mentions
-     * @returns {Array} Array of mentioned usernames
+     * @returns {Array} Array of mentioned names
      */
     static extractMentions(text) {
-        const mentionRegex = /@([a-zA-Z0-9_]+)/g;
+        // Match @Name or @Multi Word Name (stops at lowercase word, punctuation, or another @)
+        const mentionRegex = /@([A-Z][^\s@]*(?:\s+[A-Z][^\s@]*)*?)(?=\s+[a-z]|\s*$|\s*[.,!?]|\s+@)/g;
         const mentions = [];
         let match;
 
         while ((match = mentionRegex.exec(text)) !== null) {
-            mentions.push(match[1]);
+            mentions.push(match[1].trim());
         }
 
         return mentions;
@@ -311,17 +313,15 @@ class NotificationService {
     static async sendMentionNotifications(text, mentionerId, mentionerName, context, contextId, articleId = null) {
         const mentions = this.extractMentions(text);
 
-        for (const username of mentions) {
+        for (const mentionName of mentions) {
             try {
-                // Find user by username (you might need to adjust this based on your user model)
+                // Find user by name (case-insensitive)
                 const mentionedUser = await User.findOne({
-                    $or: [
-                        { name: username },
-                        { email: { $regex: `^${username}@`, $options: 'i' } }
-                    ]
+                    name: { $regex: `^${mentionName}$`, $options: 'i' }
                 });
 
                 if (mentionedUser && mentionedUser.supabase_id !== mentionerId) {
+                    console.log(`📢 Sending mention notification to ${mentionedUser.name} (${mentionedUser.supabase_id})`);
                     await this.sendMentionNotification(
                         mentionedUser.supabase_id,
                         mentionerId,
@@ -330,9 +330,13 @@ class NotificationService {
                         contextId,
                         articleId
                     );
+                } else if (!mentionedUser) {
+                    console.log(`⚠️ User not found for mention: ${mentionName}`);
+                } else {
+                    console.log(`⏭️ Skipping self-mention for ${mentionName}`);
                 }
             } catch (error) {
-                console.error(`Error sending mention notification for ${username}:`, error);
+                console.error(`Error sending mention notification for ${mentionName}:`, error);
             }
         }
     }
