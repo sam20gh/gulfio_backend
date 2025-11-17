@@ -2032,7 +2032,7 @@ articleRouter.get('/', async (req, res) => {
   }
 });
 
-// React (like/dislike) - Optimized for performance
+// React (like/dislike) - Ultra-optimized for instant response
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   // Set a timeout for this specific route to prevent hanging
   req.setTimeout(10000); // 10 second timeout
@@ -2053,108 +2053,58 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
-    // Use MongoDB transactions for atomic updates or fallback to sequential operations
-    let updatedArticle;
+    // OPTIMIZATION: Use a single atomic update for each document instead of bulkWrite
+    // This is faster for single document updates
+    const updateField = action === 'like' ? 'likedBy' : 'dislikedBy';
+    const removeField = action === 'like' ? 'dislikedBy' : 'likedBy';
 
-    try {
-      // Use bulkWrite for better performance - combine pull and push in single operation
-      const articleUpdate = await Article.bulkWrite([
-        {
-          updateOne: {
-            filter: { _id: articleId },
-            update: { $pull: { likedBy: userId, dislikedBy: userId } }
-          }
-        },
-        {
-          updateOne: {
-            filter: { _id: articleId },
-            update: action === 'like'
-              ? { $push: { likedBy: userId } }
-              : { $push: { dislikedBy: userId } }
-          }
-        }
-      ]);
+    // Update article atomically - pull from both, then push to correct one
+    const articleUpdate = await Article.findByIdAndUpdate(
+      articleId,
+      {
+        $pull: { likedBy: userId, dislikedBy: userId },
+        $addToSet: { [updateField]: userId }
+      },
+      { new: true, select: 'likedBy dislikedBy likes dislikes' }
+    ).lean();
 
-      const userUpdate = await User.bulkWrite([
-        {
-          updateOne: {
-            filter: { _id: mongoUser._id },
-            update: { $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId } }
-          }
-        },
-        {
-          updateOne: {
-            filter: { _id: mongoUser._id },
-            update: action === 'like'
-              ? { $addToSet: { liked_articles: articleObjectId } }
-              : { $addToSet: { disliked_articles: articleObjectId } }
-          }
-        }
-      ]);
-
-      // Get the updated article with current reaction counts
-      updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy likes dislikes').lean();
-
-    } catch (bulkError) {
-      console.error('Bulk write failed, falling back to individual operations:', bulkError);
-
-      // Fallback to individual operations if bulk write fails
-      await Article.updateOne(
-        { _id: articleId },
-        { $pull: { likedBy: userId, dislikedBy: userId } }
-      );
-
-      await Article.updateOne(
-        { _id: articleId },
-        action === 'like'
-          ? { $push: { likedBy: userId } }
-          : { $push: { dislikedBy: userId } }
-      );
-
-      await User.updateOne(
-        { _id: mongoUser._id },
-        { $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId } }
-      );
-
-      await User.updateOne(
-        { _id: mongoUser._id },
-        action === 'like'
-          ? { $addToSet: { liked_articles: articleObjectId } }
-          : { $addToSet: { disliked_articles: articleObjectId } }
-      );
-
-      updatedArticle = await Article.findById(articleId, 'likedBy dislikedBy likes dislikes').lean();
-    }
-
-    if (!updatedArticle) {
+    if (!articleUpdate) {
       return res.status(404).json({ message: 'Article not found' });
     }
 
-    // Calculate current counts from arrays
-    const likes = updatedArticle.likedBy?.length || 0;
-    const dislikes = updatedArticle.dislikedBy?.length || 0;
+    // Update user atomically
+    const userUpdateField = action === 'like' ? 'liked_articles' : 'disliked_articles';
+    const userRemoveField = action === 'like' ? 'disliked_articles' : 'liked_articles';
+
+    await User.findByIdAndUpdate(
+      mongoUser._id,
+      {
+        $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId },
+        $addToSet: { [userUpdateField]: articleObjectId }
+      }
+    );
+
+    // Calculate current counts from the updated arrays
+    const likes = articleUpdate.likedBy?.length || 0;
+    const dislikes = articleUpdate.dislikedBy?.length || 0;
 
     const processingTime = Date.now() - startTime;
-    console.log(`✅ Like/dislike processed in ${processingTime}ms for user ${userId} on article ${articleId}`);
+    console.log(`✅ ${action} processed in ${processingTime}ms for user ${userId} on article ${articleId} (likes: ${likes}, dislikes: ${dislikes})`);
 
-    // Update the cached counts in the article document IMMEDIATELY (not fire-and-forget)
-    try {
-      await Article.updateOne(
-        { _id: articleId },
-        { $set: { likes, dislikes } }
-      );
-      console.log(`✅ Article counts updated in database: likes=${likes}, dislikes=${dislikes}`);
-    } catch (updateError) {
-      console.error('⚠️ Failed to update article counts in database:', updateError);
-      // Don't fail the request, but log the error
-    }
+    // Update the cached counts in the article document synchronously before responding
+    // This ensures the counts are immediately available for subsequent reads
+    await Article.findByIdAndUpdate(
+      articleId,
+      { $set: { likes, dislikes } }
+    );
 
-    // Respond immediately with the reaction data
+    // Respond with the confirmed reaction data
     res.json({
       userReact: action,
       likes,
       dislikes,
-      processingTime // Include timing for debugging
+      processingTime,
+      success: true
     });
 
     // Perform expensive operations asynchronously after responding
@@ -2166,7 +2116,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
         // Recompute user embedding asynchronously (this is expensive)
         await updateUserProfileEmbedding(mongoUser._id);
       } catch (asyncError) {
-        console.error('Error in async post-response operations:', asyncError);
+        console.error('⚠️ Error in async post-response operations:', asyncError);
         // Don't affect the user response - these operations can be retried later
       }
     });
@@ -2186,7 +2136,8 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     res.status(500).json({
       message: 'Error reacting to article',
       error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message,
-      processingTime
+      processingTime,
+      success: false
     });
   }
 });
