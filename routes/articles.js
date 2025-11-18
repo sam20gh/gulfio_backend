@@ -2037,8 +2037,9 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   // Set a timeout for this specific route to prevent hanging
   req.setTimeout(10000); // 10 second timeout
 
+  const startTime = Date.now(); // Move outside try block for catch access
+
   try {
-    const startTime = Date.now();
     const { action } = req.body;
     const userId = req.mongoUser.supabase_id;
     const articleId = req.params.id;
@@ -2053,18 +2054,20 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
-    // OPTIMIZATION: Use a single atomic update for each document instead of bulkWrite
-    // This is faster for single document updates
+    // OPTIMIZATION: Use two sequential operations to avoid MongoDB conflict
+    // First remove from both arrays, then add to the correct one
     const updateField = action === 'like' ? 'likedBy' : 'dislikedBy';
-    const removeField = action === 'like' ? 'dislikedBy' : 'likedBy';
 
-    // Update article atomically - pull from both, then push to correct one
+    // Step 1: Remove user from both likedBy and dislikedBy arrays
+    await Article.findByIdAndUpdate(
+      articleId,
+      { $pull: { likedBy: userId, dislikedBy: userId } }
+    );
+
+    // Step 2: Add user to the correct array and get updated document
     const articleUpdate = await Article.findByIdAndUpdate(
       articleId,
-      {
-        $pull: { likedBy: userId, dislikedBy: userId },
-        $addToSet: { [updateField]: userId }
-      },
+      { $addToSet: { [updateField]: userId } },
       { new: true, select: 'likedBy dislikedBy likes dislikes' }
     ).lean();
 
@@ -2072,16 +2075,19 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       return res.status(404).json({ message: 'Article not found' });
     }
 
-    // Update user atomically
+    // Update user with same two-step approach
     const userUpdateField = action === 'like' ? 'liked_articles' : 'disliked_articles';
-    const userRemoveField = action === 'like' ? 'disliked_articles' : 'liked_articles';
 
+    // Step 1: Remove article from both user arrays
     await User.findByIdAndUpdate(
       mongoUser._id,
-      {
-        $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId },
-        $addToSet: { [userUpdateField]: articleObjectId }
-      }
+      { $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId } }
+    );
+
+    // Step 2: Add article to the correct user array
+    await User.findByIdAndUpdate(
+      mongoUser._id,
+      { $addToSet: { [userUpdateField]: articleObjectId } }
     );
 
     // Calculate current counts from the updated arrays
@@ -2098,7 +2104,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       { $set: { likes, dislikes } }
     );
 
-    // Respond with the confirmed reaction data
+    // Respond with the confirmed reaction data with counts
     res.json({
       userReact: action,
       likes,
