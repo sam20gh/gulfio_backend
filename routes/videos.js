@@ -1501,8 +1501,16 @@ router.get('/reels/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
+        console.log(`🔍 Fetching reel with ID: ${id}`);
+
         if (!id) {
             return res.status(400).json({ error: 'Reel ID is required' });
+        }
+
+        // Validate ObjectId format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.error(`❌ Invalid ObjectId format: ${id}`);
+            return res.status(400).json({ error: 'Invalid reel ID format' });
         }
 
         // Find reel and populate source
@@ -1511,8 +1519,11 @@ router.get('/reels/:id', async (req, res) => {
             .lean();
 
         if (!reel) {
+            console.error(`❌ Reel not found: ${id}`);
             return res.status(404).json({ error: 'Reel not found' });
         }
+
+        console.log(`✅ Found reel: ${reel.caption?.substring(0, 50) || 'No caption'}`);
 
         // Extract user ID from token for interaction status (optional)
         const authToken = req.headers.authorization?.replace('Bearer ', '');
@@ -1537,8 +1548,8 @@ router.get('/reels/:id', async (req, res) => {
 
         res.json(reel);
     } catch (err) {
-        console.error('Error fetching reel:', err.message);
-        res.status(500).json({ error: 'Failed to fetch reel' });
+        console.error('❌ Error fetching reel:', err.message, err.stack);
+        res.status(500).json({ error: 'Failed to fetch reel', details: err.message });
     }
 });
 router.post('/related', async (req, res) => {
