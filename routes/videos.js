@@ -1496,62 +1496,6 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Get single reel by ID (for web sharing)
-router.get('/reels/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        console.log(`🔍 Fetching reel with ID: ${id}`);
-
-        if (!id) {
-            return res.status(400).json({ error: 'Reel ID is required' });
-        }
-
-        // Validate ObjectId format
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            console.error(`❌ Invalid ObjectId format: ${id}`);
-            return res.status(400).json({ error: 'Invalid reel ID format' });
-        }
-
-        // Find reel and populate source
-        const reel = await Reel.findById(id)
-            .populate('source', 'name icon favicon')
-            .lean();
-
-        if (!reel) {
-            console.error(`❌ Reel not found: ${id}`);
-            return res.status(404).json({ error: 'Reel not found' });
-        }
-
-        console.log(`✅ Found reel: ${reel.caption?.substring(0, 50) || 'No caption'}`);
-
-        // Extract user ID from token for interaction status (optional)
-        const authToken = req.headers.authorization?.replace('Bearer ', '');
-        let userId = null;
-
-        if (authToken) {
-            try {
-                const jwt = require('jsonwebtoken');
-                const decoded = jwt.decode(authToken);
-                userId = decoded?.sub || decoded?.user_id || decoded?.id;
-            } catch (err) {
-                // Non-critical - user just won't see their interaction status
-            }
-        }
-
-        // Add interaction status if user is authenticated
-        if (userId) {
-            reel.isLiked = reel.likedBy?.includes(userId) || false;
-            reel.isDisliked = reel.dislikedBy?.includes(userId) || false;
-            reel.isSaved = reel.savedBy?.includes(userId) || false;
-        }
-
-        res.json(reel);
-    } catch (err) {
-        console.error('❌ Error fetching reel:', err.message, err.stack);
-        res.status(500).json({ error: 'Failed to fetch reel', details: err.message });
-    }
-});
 router.post('/related', async (req, res) => {
     const { embedding, sourceId } = req.body;
     if (!embedding || !sourceId) return res.status(400).json({ error: 'Missing embedding or sourceId' });
