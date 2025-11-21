@@ -37,9 +37,9 @@ async function updateActiveUserEmbeddings() {
     try {
         // Find active users from UserActivity collection
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-        
+
         const UserActivity = require('../models/UserActivity');
-        
+
         // Get unique user IDs with recent activity
         const activeUserIds = await UserActivity.aggregate([
             {
@@ -95,7 +95,7 @@ async function updateActiveUserEmbeddings() {
                             skipped++;
                             return { userId: userId.substring(0, 8), status: 'skipped', reason: error.message };
                         }
-                        
+
                         failed++;
                         console.error(`❌ Failed to update user ${userId.substring(0, 8)}:`, error.message);
                         return { userId: userId.substring(0, 8), status: 'failed', error: error.message };

@@ -24,11 +24,11 @@ async function updateUserProfileEmbedding(userId) {
             // Assume Supabase UUID format
             user = await User.findOne({ supabase_id: userId });
         }
-        
+
         if (!user) {
             throw new Error(`User not found for ID: ${userId}`);
         }
-        
+
         console.log(`✅ Found user: ${user.email || user.supabase_id}, MongoDB ID: ${user._id}`);
 
         // Get user activities with different weights from BOTH sources
@@ -98,7 +98,7 @@ async function updateUserProfileEmbedding(userId) {
             // Get content ID (could be article or reel)
             const contentId = (activity.articleId || activity.reelId)?.toString();
             if (!contentId) continue;
-            
+
             const currentWeight = activityMap.get(contentId) || 0;
 
             let activityWeight = 0;
@@ -198,7 +198,7 @@ async function updateUserProfileEmbedding(userId) {
             const importance = Math.max(1, Math.floor(weight));
 
             // Handle both article and reel content formats
-            const text = content.content 
+            const text = content.content
                 ? `${content.title} - ${content.content.slice(0, 200)}` // Article
                 : `${content.title} - ${content.description?.slice(0, 200) || ''}`; // Reel
 
