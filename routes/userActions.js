@@ -104,28 +104,55 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
 router.post('/article/:articleId/view', async (req, res) => {
     const { articleId } = req.params;
 
+    // Enhanced validation with detailed logging
+    if (!articleId) {
+        console.error('❌ View tracking: articleId is missing');
+        return res.status(400).json({ message: 'Article ID is required' });
+    }
+
+    // Validate ObjectId format
     if (!validateObjectId(articleId)) {
-        return res.status(400).json({ message: 'Invalid article ID' });
+        console.error('❌ View tracking: Invalid article ID format:', articleId);
+        return res.status(400).json({ message: 'Invalid article ID format' });
     }
 
     try {
+        // Convert to ObjectId explicitly to avoid string comparison issues
+        const articleObjectId = new mongoose.Types.ObjectId(articleId);
+
         // Find the article and increment its view count
         const updatedArticle = await Article.findByIdAndUpdate(
-            articleId,
+            articleObjectId,
             { $inc: { viewCount: 1 } }, // Increment the viewCount field
-            { new: true } // Return the updated document
+            { new: true, select: 'viewCount' } // Return only the viewCount for performance
         );
 
         if (!updatedArticle) {
+            console.error('❌ View tracking: Article not found:', articleId);
             return res.status(404).json({ message: 'Article not found' });
         }
 
-        // Return success message and potentially the new view count
-        res.json({ message: 'Article view count incremented', viewCount: updatedArticle.viewCount });
+        console.log(`✅ View tracked for article ${articleId}, new count: ${updatedArticle.viewCount}`);
+
+        // Return success message and the new view count
+        res.json({
+            message: 'Article view count incremented',
+            viewCount: updatedArticle.viewCount,
+            success: true
+        });
 
     } catch (err) {
-        console.error('Error incrementing article view count:', err);
-        res.status(500).json({ message: 'Error updating article view count' });
+        console.error('❌ Error incrementing article view count:', err);
+        console.error('❌ Article ID that caused error:', articleId);
+        console.error('❌ Error details:', {
+            name: err.name,
+            message: err.message,
+            stack: err.stack?.split('\n').slice(0, 3).join('\n')
+        });
+        res.status(500).json({
+            message: 'Error updating article view count',
+            error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message
+        });
     }
 });
 
