@@ -1496,6 +1496,30 @@ router.get('/', async (req, res) => {
     }
 });
 
+// Simple route to get a single reel by ID (for web sharing)
+router.get('/reel/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid reel ID format' });
+        }
+        
+        const reel = await Reel.findById(id)
+            .populate('source', 'name icon favicon logo')
+            .lean();
+        
+        if (!reel) {
+            return res.status(404).json({ error: 'Reel not found' });
+        }
+        
+        res.json(reel);
+    } catch (err) {
+        console.error('Error fetching reel:', err.message);
+        res.status(500).json({ error: 'Failed to fetch reel' });
+    }
+});
+
 router.post('/related', async (req, res) => {
     const { embedding, sourceId } = req.body;
     if (!embedding || !sourceId) return res.status(400).json({ error: 'Missing embedding or sourceId' });
