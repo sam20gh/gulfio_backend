@@ -15,9 +15,21 @@ async function updateUserProfileEmbedding(userId) {
     try {
         console.log(`📊 Updating embeddings for user: ${userId}`);
 
-        // Fetch the user
-        const user = await User.findById(userId) || await User.findOne({ supabase_id: userId });
-        if (!user) throw new Error('User not found');
+        // Validate and fetch the user (support both MongoDB ObjectId and Supabase UUID)
+        let user;
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+            // MongoDB ObjectId format
+            user = await User.findById(userId);
+        } else {
+            // Assume Supabase UUID format
+            user = await User.findOne({ supabase_id: userId });
+        }
+        
+        if (!user) {
+            throw new Error(`User not found for ID: ${userId}`);
+        }
+        
+        console.log(`✅ Found user: ${user.email || user.supabase_id}, MongoDB ID: ${user._id}`);
 
         // Get user activities with different weights from BOTH sources
         const activityMap = new Map();
@@ -64,10 +76,13 @@ async function updateUserProfileEmbedding(userId) {
 
         // 2. COLLECT FROM UserActivity RECORDS (new behavior)
 
-        // Get recent user activities from UserActivity collection
+        // Get recent user activities from UserActivity collection (both articles and reels)
         const recentActivities = await UserActivity.find({
             userId: user.supabase_id, // UserActivity uses supabase_id
-            articleId: { $exists: true, $ne: null },
+            $or: [
+                { articleId: { $exists: true, $ne: null } },
+                { reelId: { $exists: true, $ne: null } }
+            ],
             timestamp: {
                 $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
             }
@@ -76,12 +91,15 @@ async function updateUserProfileEmbedding(userId) {
             .limit(500) // Limit to most recent 500 activities
             .lean();
 
-        console.log(`📈 Found ${recentActivities.length} recent activities from UserActivity collection`);
+        console.log(`📈 Found ${recentActivities.length} recent activities (articles + reels) from UserActivity collection`);
 
-        // Process UserActivity records
+        // Process UserActivity records (both articles and reels)
         for (const activity of recentActivities) {
-            const articleId = activity.articleId.toString();
-            const currentWeight = activityMap.get(articleId) || 0;
+            // Get content ID (could be article or reel)
+            const contentId = (activity.articleId || activity.reelId)?.toString();
+            if (!contentId) continue;
+            
+            const currentWeight = activityMap.get(contentId) || 0;
 
             let activityWeight = 0;
             switch (activity.eventType) {
@@ -107,8 +125,8 @@ async function updateUserProfileEmbedding(userId) {
                     continue;
             }
 
-            // Use the highest weight for each article
-            activityMap.set(articleId, Math.max(currentWeight, activityWeight));
+            // Use the highest weight for each piece of content
+            activityMap.set(contentId, Math.max(currentWeight, activityWeight));
         }
 
         console.log(`🎯 Total unique articles in activity map: ${activityMap.size}`);
@@ -149,28 +167,40 @@ async function updateUserProfileEmbedding(userId) {
             .sort(([, a], [, b]) => b - a)
             .slice(0, 30);
 
-        const articleIds = sortedActivities.map(([id]) => new mongoose.Types.ObjectId(id));
+        const contentIds = sortedActivities.map(([id]) => new mongoose.Types.ObjectId(id));
 
-        // Fetch articles
-        const articles = await Article.find({ _id: { $in: articleIds } })
-            .select('title content category publishedAt')
-            .sort({ publishedAt: -1 })
-            .lean();
+        // Fetch both articles and reels
+        const Reel = require('../models/Reel');
+        const [articles, reels] = await Promise.all([
+            Article.find({ _id: { $in: contentIds } })
+                .select('title content category publishedAt')
+                .sort({ publishedAt: -1 })
+                .lean(),
+            Reel.find({ _id: { $in: contentIds } })
+                .select('title description category createdAt')
+                .sort({ createdAt: -1 })
+                .lean()
+        ]);
 
-        if (articles.length === 0) {
-            console.log(`⚠️ No articles found for user activities: ${user.email || userId}`);
+        const allContent = [...articles, ...reels];
+
+        if (allContent.length === 0) {
+            console.log(`⚠️ No content found for user activities: ${user.email || userId}`);
             return;
         }
 
-        console.log(`📚 Using ${articles.length} articles for embedding generation`);
+        console.log(`📚 Using ${articles.length} articles + ${reels.length} reels (${allContent.length} total) for embedding generation`);
 
-        // Create weighted text based on activities
+        // Create weighted text based on activities (articles + reels)
         let weightedTexts = [];
-        for (const article of articles) {
-            const weight = activityMap.get(article._id.toString()) || 1.0;
+        for (const content of allContent) {
+            const weight = activityMap.get(content._id.toString()) || 1.0;
             const importance = Math.max(1, Math.floor(weight));
 
-            const text = `${article.title} - ${article.content?.slice(0, 200) || ''}`;
+            // Handle both article and reel content formats
+            const text = content.content 
+                ? `${content.title} - ${content.content.slice(0, 200)}` // Article
+                : `${content.title} - ${content.description?.slice(0, 200) || ''}`; // Reel
 
             // Repeat text based on weight for emphasis
             for (let i = 0; i < importance; i++) {

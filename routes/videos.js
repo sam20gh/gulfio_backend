@@ -2154,7 +2154,8 @@ router.post('/reels/:reelId/view', async (req, res) => {
                 const activityData = {
                     userId,
                     eventType: 'view',
-                    articleId: reelId, // We can reuse this field or rename it to contentId
+                    reelId: reelId, // Use reelId instead of articleId
+                    contentType: 'reel', // Specify content type
                     duration: duration || null,
                     timestamp: new Date()
                 };
@@ -2263,7 +2264,8 @@ router.post('/reels/:reelId/like', async (req, res) => {
             await UserActivity.create({
                 userId,
                 eventType: 'like',
-                articleId: reelId,
+                reelId: reelId, // Use reelId
+                contentType: 'reel', // Specify content type
                 timestamp: new Date()
             }).catch(err => console.warn('Activity tracking failed:', err.message));
         }
@@ -2357,7 +2359,8 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
             await UserActivity.create({
                 userId,
                 eventType: 'dislike',
-                articleId: reelId,
+                reelId: reelId, // Use reelId
+                contentType: 'reel', // Specify content type
                 timestamp: new Date()
             }).catch(err => console.warn('Activity tracking failed:', err.message));
         }
@@ -2438,7 +2441,8 @@ router.post('/reels/:reelId/save', async (req, res) => {
         await UserActivity.create({
             userId,
             eventType,
-            articleId: reelId,
+            reelId: reelId, // Use reelId
+            contentType: 'reel', // Specify content type
             timestamp: new Date()
         }).catch(err => console.warn('Activity tracking failed:', err.message));
 

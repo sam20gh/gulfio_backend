@@ -7,10 +7,10 @@ const User = require('../models/User');
 const Article = require('../models/Article'); // Import Article model
 const Reel = require('../models/Reel'); // Import Reel model
 const Source = require('../models/Source'); // Import Source model
+const UserActivity = require('../models/UserActivity'); // Import UserActivity model
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
-const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
-// Keep ensureMongoUser for other routes
+// Removed updateUserProfileEmbedding - now handled by daily cron job
 
 function validateObjectId(id) {
     return mongoose.Types.ObjectId.isValid(id);
@@ -62,13 +62,14 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
         await article.save();
     }
 
-    // Update user embedding after like/dislike action
-    try {
-        await updateUserProfileEmbedding(user._id);
-    } catch (embeddingError) {
-        console.error('Error updating user embedding:', embeddingError);
-        // Don't fail the request if embedding update fails
-    }
+    // Log activity for daily embedding update (non-blocking)
+    UserActivity.create({
+        userId: user.supabase_id,
+        eventType: action, // 'like' or 'dislike'
+        articleId: articleObjectId,
+        contentType: 'article', // Specify content type
+        timestamp: new Date()
+    }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
 
     // Send notification if this is a new like
     if (action === 'like' && wasNotLiked) {
@@ -134,6 +135,31 @@ router.post('/article/:articleId/view', async (req, res) => {
 
         console.log(`✅ View tracked for article ${articleId}, new count: ${updatedArticle.viewCount}`);
 
+        // Log activity for daily embedding update (optional - try to get userId from token if available)
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            try {
+                const token = authHeader.split(' ')[1];
+                const { createClient } = require('@supabase/supabase-js');
+                const supabase = createClient(
+                    process.env.SUPABASE_URL,
+                    process.env.SUPABASE_SERVICE_ROLE_KEY
+                );
+                const { data: { user } } = await supabase.auth.getUser(token);
+                if (user) {
+                    UserActivity.create({
+                        userId: user.id,
+                        eventType: 'view',
+                        articleId: articleObjectId,
+                        contentType: 'article', // Specify content type
+                        timestamp: new Date()
+                    }).catch(err => console.error('⚠️ Failed to log view activity:', err.message));
+                }
+            } catch (err) {
+                // Silent fail - view tracking still works without activity logging
+            }
+        }
+
         // Return success message and the new view count
         res.json({
             message: 'Article view count incremented',
@@ -177,7 +203,16 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
-        await updateUserProfileEmbedding(user._id);
+
+        // Log activity for daily embedding update (non-blocking)
+        UserActivity.create({
+            userId: user.supabase_id,
+            eventType: isSaved ? 'unsave' : 'save',
+            articleId: articleObjectId,
+            contentType: 'article', // Specify content type
+            timestamp: new Date()
+        }).catch(err => console.error('⚠️ Failed to log save activity:', err.message));
+
         res.json({
             isSaved: !isSaved,
             saved_articles: user.saved_articles,
@@ -210,7 +245,9 @@ router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
         }
 
         await user.save();
-        await updateUserProfileEmbedding(user._id);
+
+        // Note: Reel saves don't affect article embeddings, so no UserActivity log needed
+
         res.json({
             isSaved: !isSaved,
             saved_reels: user.saved_reels,
@@ -240,13 +277,8 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 
         await user.save();
 
-        // Update user embedding after following/unfollowing source
-        try {
-            await updateUserProfileEmbedding(user._id);
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
+        // Note: Source follows affect personalization but are tracked in User model,
+        // not UserActivity. The daily cron job will pick up changes from User.following_sources
 
         res.json({ following_sources: user.following_sources });
     } catch (err) {
@@ -310,13 +342,8 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
         // 6) Persist and respond
         await user.save();
 
-        // Update user embedding after follow/block action
-        try {
-            await updateUserProfileEmbedding(user._id);
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
+        // Note: User follows/blocks don't directly affect article embeddings
+        // The daily cron job will handle any necessary updates
 
         res.json({
             isFollowing: action === 'follow' ? true
@@ -376,13 +403,8 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
 
         await user.save();
 
-        // Update user embedding after following/unfollowing source group
-        try {
-            await updateUserProfileEmbedding(user._id);
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
+        // Note: Source group follows affect personalization but are tracked in User model
+        // The daily cron job will pick up changes from User.following_sources
 
         res.json({
             following_sources: user.following_sources,

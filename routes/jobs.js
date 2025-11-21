@@ -42,10 +42,15 @@ const verifyAdminKey = (req, res, next) => {
 
 /**
  * POST /api/jobs/update-user-embeddings
- * Update embeddings for active users
+ * Update embeddings for active users based on all their interactions
  * 
  * SCHEDULE: Daily at 2 AM UTC
  * IMPACT: Maintains 10x performance improvement for active users
+ * 
+ * CONTENT SUPPORT:
+ * - ✅ Articles (views, likes, dislikes, saves)
+ * - ✅ Reels/Videos (views, likes, dislikes, saves)
+ * - Unified embedding generation from all user activities
  * 
  * Request headers:
  * - x-api-key: ADMIN_API_KEY
@@ -100,7 +105,7 @@ router.get('/status', verifyAdminKey, (req, res) => {
                 name: 'update-user-embeddings',
                 endpoint: '/api/jobs/update-user-embeddings',
                 schedule: '0 2 * * *',
-                description: 'Update User.embedding_pca for active users daily'
+                description: 'Update User.embedding_pca for active users daily (Articles + Reels)'
             }
         ],
         timestamp: new Date().toISOString()
