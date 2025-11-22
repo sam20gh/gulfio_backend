@@ -1872,6 +1872,41 @@ router.get('/reels', async (req, res) => {
     }
 });
 
+// ===================== GET SINGLE REEL BY ID =====================
+router.get('/reel/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        console.log('🎬 Fetching single reel:', id);
+
+        // Validate MongoDB ObjectId format
+        if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+            return res.status(400).json({ error: 'Invalid reel ID format' });
+        }
+
+        const reel = await Reel.findById(id)
+            .populate('source', 'name icon favicon')
+            .lean();
+
+        if (!reel) {
+            console.log('❌ Reel not found:', id);
+            return res.status(404).json({ error: 'Reel not found' });
+        }
+
+        // Map engagement_score to engagementScore for frontend compatibility
+        const mappedReel = {
+            ...reel,
+            engagementScore: reel.engagement_score
+        };
+
+        console.log('✅ Reel found:', reel._id);
+        res.json(mappedReel);
+    } catch (err) {
+        console.error('❌ Error fetching single reel:', err.message);
+        res.status(500).json({ error: 'Failed to fetch reel' });
+    }
+});
+
 // ===================== VIDEO ANALYTICS ROUTE =====================
 /**
  * POST /analytics/videos
