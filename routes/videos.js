@@ -1876,7 +1876,7 @@ router.get('/reels', async (req, res) => {
 router.get('/reel/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        
+
         console.log('🎬 Fetching single reel:', id);
 
         // Validate MongoDB ObjectId format
