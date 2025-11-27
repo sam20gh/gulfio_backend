@@ -400,9 +400,9 @@ router.get('/notification-settings', auth, async (req, res) => {
     }
 });
 
-// LIKE or DISLIKE a Reel
+// LIKE or DISLIKE a Reel - OPTIMIZED with atomic operations
 router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
+    const userId = req.mongoUser.supabase_id;
     const reelId = req.params.id;
     const { action } = req.body; // 'like' or 'dislike'
 
@@ -411,64 +411,133 @@ router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
     }
 
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
-    const reel = await Reel.findById(reelObjectId);
-    if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id;
+    // Check if reel exists (lightweight query)
+    const reelExists = await Reel.exists({ _id: reelObjectId });
+    if (!reelExists) return res.status(404).json({ message: 'Reel not found' });
 
-    const isLiked = user.liked_reels?.some(id => id.equals(reelObjectId));
-    const isDisliked = user.disliked_reels?.some(id => id.equals(reelObjectId));
-    const wasLikedBy = reel.likedBy.includes(userId);
-    const wasDislikedBy = reel.dislikedBy.includes(userId);
+    // Prepare atomic updates based on action
+    let userUpdate, reelUpdate;
 
     if (action === 'like') {
-        // --- User ---
-        if (!isLiked) user.liked_reels.push(reelObjectId);
-        if (isDisliked) user.disliked_reels.pull(reelObjectId);
+        // Atomic user update: add to liked, remove from disliked
+        userUpdate = User.findOneAndUpdate(
+            { supabase_id: userId },
+            {
+                $addToSet: { liked_reels: reelObjectId },
+                $pull: { disliked_reels: reelObjectId }
+            },
+            { new: true, select: 'liked_reels disliked_reels' }
+        );
 
-        // --- Reel ---
-        if (!wasLikedBy) {
-            reel.likes += 1;
-            reel.likedBy.push(userId);
-        }
-        if (wasDislikedBy) {
-            reel.dislikes = Math.max(reel.dislikes - 1, 0);
-            reel.dislikedBy = reel.dislikedBy.filter(id => id !== userId);
-        }
+        // Atomic reel update: increment likes, add to likedBy, decrement dislikes, remove from dislikedBy
+        reelUpdate = Reel.findOneAndUpdate(
+            { _id: reelObjectId },
+            [
+                {
+                    $set: {
+                        likes: {
+                            $cond: [
+                                { $in: [userId, '$likedBy'] },
+                                '$likes',
+                                { $add: ['$likes', 1] }
+                            ]
+                        },
+                        dislikes: {
+                            $cond: [
+                                { $in: [userId, '$dislikedBy'] },
+                                { $max: [{ $subtract: ['$dislikes', 1] }, 0] },
+                                '$dislikes'
+                            ]
+                        },
+                        likedBy: {
+                            $cond: [
+                                { $in: [userId, '$likedBy'] },
+                                '$likedBy',
+                                { $concatArrays: ['$likedBy', [userId]] }
+                            ]
+                        },
+                        dislikedBy: {
+                            $filter: {
+                                input: '$dislikedBy',
+                                as: 'id',
+                                cond: { $ne: ['$$id', userId] }
+                            }
+                        }
+                    }
+                }
+            ],
+            { new: true, select: 'likes dislikes likedBy dislikedBy' }
+        );
     } else if (action === 'dislike') {
-        // --- User ---
-        if (!isDisliked) user.disliked_reels.push(reelObjectId);
-        if (isLiked) user.liked_reels.pull(reelObjectId);
+        // Atomic user update: add to disliked, remove from liked
+        userUpdate = User.findOneAndUpdate(
+            { supabase_id: userId },
+            {
+                $addToSet: { disliked_reels: reelObjectId },
+                $pull: { liked_reels: reelObjectId }
+            },
+            { new: true, select: 'liked_reels disliked_reels' }
+        );
 
-        // --- Reel ---
-        if (!wasDislikedBy) {
-            reel.dislikes += 1;
-            reel.dislikedBy.push(userId);
-        }
-        if (wasLikedBy) {
-            reel.likes = Math.max(reel.likes - 1, 0);
-            reel.likedBy = reel.likedBy.filter(id => id !== userId);
-        }
+        // Atomic reel update: increment dislikes, add to dislikedBy, decrement likes, remove from likedBy
+        reelUpdate = Reel.findOneAndUpdate(
+            { _id: reelObjectId },
+            [
+                {
+                    $set: {
+                        dislikes: {
+                            $cond: [
+                                { $in: [userId, '$dislikedBy'] },
+                                '$dislikes',
+                                { $add: ['$dislikes', 1] }
+                            ]
+                        },
+                        likes: {
+                            $cond: [
+                                { $in: [userId, '$likedBy'] },
+                                { $max: [{ $subtract: ['$likes', 1] }, 0] },
+                                '$likes'
+                            ]
+                        },
+                        dislikedBy: {
+                            $cond: [
+                                { $in: [userId, '$dislikedBy'] },
+                                '$dislikedBy',
+                                { $concatArrays: ['$dislikedBy', [userId]] }
+                            ]
+                        },
+                        likedBy: {
+                            $filter: {
+                                input: '$likedBy',
+                                as: 'id',
+                                cond: { $ne: ['$$id', userId] }
+                            }
+                        }
+                    }
+                }
+            ],
+            { new: true, select: 'likes dislikes likedBy dislikedBy' }
+        );
     } else {
         return res.status(400).json({ message: 'Invalid action type' });
     }
 
-    await user.save();
-    await reel.save();
+    // Execute both updates in parallel
+    const [updatedUser, updatedReel] = await Promise.all([userUpdate, reelUpdate]);
 
+    // Return minimal response immediately
     res.json({
-        liked_reels: user.liked_reels,
-        disliked_reels: user.disliked_reels,
-        likes: reel.likes,
-        dislikes: reel.dislikes,
-        likedBy: reel.likedBy,
-        dislikedBy: reel.dislikedBy,
+        likes: updatedReel.likes,
+        dislikes: updatedReel.dislikes,
+        isLiked: updatedUser.liked_reels.some(id => id.equals(reelObjectId)),
+        isDisliked: updatedUser.disliked_reels.some(id => id.equals(reelObjectId))
     });
 });
 
-// SAVE or UNSAVE a Reel
+// SAVE or UNSAVE a Reel - OPTIMIZED with atomic operations
 router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
+    const userId = req.mongoUser.supabase_id;
     const reelId = req.params.id;
 
     if (!mongoose.Types.ObjectId.isValid(reelId)) {
@@ -476,39 +545,88 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     }
 
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
-    const reel = await Reel.findById(reelObjectId);
-    if (!reel) return res.status(404).json({ message: 'Reel not found' });
 
-    const userId = user.supabase_id;
-    const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
-    const wasSavedBy = reel.savedBy.includes(userId);
+    // Check if currently saved (lightweight query)
+    const user = await User.findOne(
+        { supabase_id: userId },
+        { saved_reels: 1 }
+    ).lean();
+
+    const isSaved = user?.saved_reels?.some(id => id.equals(reelObjectId));
+
+    let userUpdate, reelUpdate;
 
     if (isSaved) {
-        // --- User ---
-        user.saved_reels.pull(reelObjectId);
-        // --- Reel ---
-        if (wasSavedBy) {
-            reel.saves = Math.max((reel.saves || 0) - 1, 0);
-            reel.savedBy = reel.savedBy.filter(id => id !== userId);
-        }
+        // UNSAVE: Remove from saved_reels and decrement saves
+        userUpdate = User.findOneAndUpdate(
+            { supabase_id: userId },
+            { $pull: { saved_reels: reelObjectId } },
+            { new: true, select: 'saved_reels' }
+        );
+
+        reelUpdate = Reel.findOneAndUpdate(
+            { _id: reelObjectId },
+            [
+                {
+                    $set: {
+                        saves: { $max: [{ $subtract: ['$saves', 1] }, 0] },
+                        savedBy: {
+                            $filter: {
+                                input: '$savedBy',
+                                as: 'id',
+                                cond: { $ne: ['$$id', userId] }
+                            }
+                        }
+                    }
+                }
+            ],
+            { new: true, select: 'saves savedBy' }
+        );
     } else {
-        // --- User ---
-        user.saved_reels.addToSet(reelObjectId);
-        // --- Reel ---
-        if (!wasSavedBy) {
-            reel.saves = (reel.saves || 0) + 1;
-            reel.savedBy.push(userId);
-        }
+        // SAVE: Add to saved_reels and increment saves
+        userUpdate = User.findOneAndUpdate(
+            { supabase_id: userId },
+            { $addToSet: { saved_reels: reelObjectId } },
+            { new: true, select: 'saved_reels' }
+        );
+
+        reelUpdate = Reel.findOneAndUpdate(
+            { _id: reelObjectId },
+            [
+                {
+                    $set: {
+                        saves: {
+                            $cond: [
+                                { $in: [userId, '$savedBy'] },
+                                '$saves',
+                                { $add: ['$saves', 1] }
+                            ]
+                        },
+                        savedBy: {
+                            $cond: [
+                                { $in: [userId, '$savedBy'] },
+                                '$savedBy',
+                                { $concatArrays: ['$savedBy', [userId]] }
+                            ]
+                        }
+                    }
+                }
+            ],
+            { new: true, select: 'saves savedBy' }
+        );
     }
 
-    await user.save();
-    await reel.save();
+    // Execute both updates in parallel
+    const [updatedUser, updatedReel] = await Promise.all([userUpdate, reelUpdate]);
 
+    if (!updatedReel) {
+        return res.status(404).json({ message: 'Reel not found' });
+    }
+
+    // Return minimal response immediately
     res.json({
         isSaved: !isSaved,
-        saved_reels: user.saved_reels,
-        saves: reel.saves,
-        savedBy: reel.savedBy,
+        saves: updatedReel.saves
     });
 });
 
