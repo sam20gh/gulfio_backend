@@ -319,11 +319,15 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
   try {
     const userId = req.mongoUser.supabase_id;
-    const language = req.query.language || 'english';
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
     const forceRefresh = req.query.noCache === 'true';
 
-    console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+    // Use user's language preference from database if not specified in query
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const defaultLang = userLanguagePref.toLowerCase();
+    const language = req.query.language || defaultLang;
+
+    console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref}), forceRefresh: ${forceRefresh}`);
 
     // Fetch user's preferred categories/sources for semi-personalization
     const user = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
@@ -688,10 +692,14 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     const userId = req.mongoUser.supabase_id;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
-    const language = req.query.language || 'english';
     const forceRefresh = req.query.noCache === 'true';
 
-    console.log(`⚡ ULTRA-FAST personalized-fast for user ${userId}, page ${page}, limit ${limit}, lang: ${language}, forceRefresh: ${forceRefresh}`);
+    // Use user's language preference from database if not specified in query
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const defaultLang = userLanguagePref.toLowerCase();
+    const language = req.query.language || defaultLang;
+
+    console.log(`⚡ ULTRA-FAST personalized-fast for user ${userId}, page ${page}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref}), forceRefresh: ${forceRefresh}`);
 
     // Fetch user's preferred categories/sources for semi-personalization
     const user = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
@@ -999,10 +1007,15 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     const userId = req.mongoUser.supabase_id;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
-    const language = req.query.language || 'english';
     const resetServed = req.query.resetServed === '1';
 
-    console.log(`🔥 PERSONALIZED ENDPOINT START for user ${userId}, page ${page}, limit ${limit}, lang: ${language}`);
+    // Use user's language preference from database if not specified in query
+    // Map 'Arabic' -> 'arabic', 'English' -> 'english' for consistency
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const defaultLang = userLanguagePref.toLowerCase(); // 'Arabic' -> 'arabic', 'English' -> 'english'
+    const language = req.query.language || defaultLang;
+
+    console.log(`🔥 PERSONALIZED ENDPOINT START for user ${userId}, page ${page}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref})`);
 
     // Enhanced cache key with user preferences
     const userPrefs = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
@@ -1651,15 +1664,19 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const language = req.query.language || 'english';
     const category = req.query.category;
     const userId = req.mongoUserId;
+
+    // Use user's language preference from database if not specified in query
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const defaultLang = userLanguagePref.toLowerCase();
+    const language = req.query.language || defaultLang;
 
     if (!category) {
       return res.status(400).json({ error: 'Category parameter is required' });
     }
 
-    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: "${category}", page: ${page}, limit: ${limit}`);
+    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: "${category}", page: ${page}, limit: ${limit}, lang: ${language} (user pref: ${userLanguagePref})`);
     console.log(`🔍 Raw query params:`, req.query);
 
     const startTime = Date.now();

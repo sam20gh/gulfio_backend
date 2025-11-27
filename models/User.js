@@ -33,6 +33,16 @@ const userSchema = new mongoose.Schema({
         default: [],
     },
     disliked_categories: [{ type: String }],
+    city: {
+        type: String,
+        enum: ['Dubai', 'Abu Dhabi', 'Jeddah', 'Riyadh', 'Doha', 'Kuwait', 'Manamah', 'Tehran', 'Baghdad', 'Amman'],
+        default: 'Dubai'
+    },
+    language: {
+        type: String,
+        enum: ['Arabic', 'English'],
+        default: 'English'
+    },
     notificationSettings: {
         type: mongoose.Schema.Types.Mixed,
         default: {

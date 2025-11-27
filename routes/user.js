@@ -286,22 +286,37 @@ router.get('/me', auth, ensureMongoUser, (req, res) => {
         dob: user.dob,
         type: user.type,
         publisher_group: user.publisher_group,
+        city: user.city,
+        language: user.language,
     })
 })
 
 router.put('/update', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
-    const { name, gender, dob, avatar_url, profile_image } = req.body;
+    try {
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
 
-    if (profile_image !== undefined) user.profile_image = profile_image;
-    else if (avatar_url !== undefined) user.profile_image = avatar_url;
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
-    if (name !== undefined) user.name = name;
-    if (gender !== undefined) user.gender = gender;
-    if (dob !== undefined) user.dob = new Date(dob);
+        const { name, gender, dob, avatar_url, profile_image, city, language } = req.body;
 
-    await user.save();
-    res.json({ message: 'Profile updated' });
+        if (profile_image !== undefined) user.profile_image = profile_image;
+        else if (avatar_url !== undefined) user.profile_image = avatar_url;
+
+        if (name !== undefined) user.name = name;
+        if (gender !== undefined) user.gender = gender;
+        if (dob !== undefined) user.dob = new Date(dob);
+        if (city !== undefined) user.city = city;
+        if (language !== undefined) user.language = language;
+
+        await user.save();
+        res.json({ message: 'Profile updated' });
+    } catch (error) {
+        console.error('Error updating user profile:', error);
+        res.status(500).json({ message: 'Failed to update profile', error: error.message });
+    }
 });
 
 

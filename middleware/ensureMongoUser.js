@@ -23,7 +23,7 @@ module.exports = async (req, res, next) => {
 
         console.log('👤 ensureMongoUser: Looking up user with Supabase ID:', supabase_id);
 
-        let user = await User.findOne({ supabase_id });
+        let user = await User.findOne({ supabase_id }).lean(); // Use .lean() for plain JS object with all fields
 
         if (!user) {
             console.log('📝 ensureMongoUser: User not found, creating new user...');
@@ -43,14 +43,16 @@ module.exports = async (req, res, next) => {
                 avatar_url: userData.avatar_url ? 'provided' : 'empty'
             });
 
-            user = await User.create(userData);
+            const newUser = await User.create(userData);
+            user = await User.findById(newUser._id).lean(); // Get the created user as plain object
             console.log('✅ ensureMongoUser: MongoDB user created for Supabase ID:', supabase_id, 'with MongoDB ID:', user._id);
         } else {
             console.log('✅ ensureMongoUser: Existing user found with MongoDB ID:', user._id);
+            console.log('🌍 ensureMongoUser: User language:', user.language, 'city:', user.city);
         }
 
         req.mongoUser = user; // attach it for downstream handlers
-        console.log('🎯 ensureMongoUser: User attached to request, proceeding to next middleware');
+        console.log('🎯 ensureMongoUser: User attached to request, language:', user.language, ', proceeding to next middleware');
         next();
     } catch (err) {
         console.error('🔥 ensureMongoUser error details:');
