@@ -37,6 +37,19 @@ function isElementVisible($, el) {
     return true;
 }
 
+// 🔧 Clean Next.js image proxy URLs - extract the real image URL
+function cleanImageUrl(url) {
+    if (!url) return null;
+
+    // If Next.js proxy URL → extract & decode the real image URL
+    if (url.includes('/_next/image')) {
+        const real = url.split('url=')[1]?.split('&')[0];
+        return real ? decodeURIComponent(real) : null;
+    }
+
+    return url;
+}
+
 function normalizeImages(imgs, baseUrl) {
     const EXCLUDE_FILES = new Set([
         'insta_icon_5.svg', 'facebook.svg', 'tiktok_icon.svg', 'x_logo_1.svg', 'whatsapp.svg', 'mail.svg'
@@ -56,6 +69,7 @@ function normalizeImages(imgs, baseUrl) {
     return Array.from(new Set(
         (imgs || [])
             .map(unwrapCssUrl)
+            .map(cleanImageUrl)                                     // Handle Next.js /_next/image proxy URLs
             .map(u => u && u.trim())
             .filter(Boolean)
             .filter(u => !/^data:/i.test(u))
