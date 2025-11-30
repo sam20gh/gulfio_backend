@@ -19,12 +19,17 @@ function validateObjectId(id) {
 // Like/Dislike Article
 
 router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
     const articleId = req.params.id;
     const { action } = req.body; // 'like' or 'dislike'
 
     if (!validateObjectId(articleId)) {
         return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+    const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+    if (!user) {
+        return res.status(404).json({ message: 'User not found' });
     }
 
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
@@ -184,7 +189,6 @@ router.post('/article/:articleId/view', async (req, res) => {
 
 // Save/Unsave Article (Requires auth and ensureMongoUser)
 router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
     const articleId = req.params.id;
 
     if (!mongoose.Types.ObjectId.isValid(articleId)) {
@@ -194,6 +198,12 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
     const articleObjectId = new mongoose.Types.ObjectId(articleId);
 
     try {
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const isSaved = user.saved_articles.some(id => id.equals(articleObjectId));
 
         if (isSaved) {
@@ -225,7 +235,6 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
 
 // Save/Unsave Reel (Requires auth and ensureMongoUser)
 router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
     const reelId = req.params.id;
 
     if (!mongoose.Types.ObjectId.isValid(reelId)) {
@@ -235,6 +244,12 @@ router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
     const reelObjectId = new mongoose.Types.ObjectId(reelId);
 
     try {
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const isSaved = user.saved_reels?.some(id => id.equals(reelObjectId));
 
         if (isSaved) {
@@ -260,14 +275,16 @@ router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
 
 // Follow/Unfollow Source (Requires auth and ensureMongoUser)
 router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser; // Use ensureMongoUser result
     const sourceId = req.params.id;
 
     if (!validateObjectId(sourceId)) return res.status(400).json({ message: 'Invalid source ID' });
 
     try {
-        // No need to find user again if ensureMongoUser is used
-        // const user = await User.findOne({ supabase_id: userId });
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
         if (user.following_sources.includes(sourceId)) {
             user.following_sources.pull(sourceId);
@@ -290,7 +307,12 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 // Follow/Block Another User (Requires auth and ensureMongoUser)
 router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res) => {
     try {
-        const user = req.mongoUser;
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const { targetSupabaseId } = req.params;
 
         // 1) Look up the target user first
@@ -377,12 +399,18 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
 
 // Follow/Unfollow Source Group
 router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
-    const user = req.mongoUser;
     const { groupName } = req.body;
 
     if (!groupName) return res.status(400).json({ message: 'groupName is required' });
 
     try {
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const sources = await Source.find({ groupName });
 
         if (!sources.length) return res.status(404).json({ message: 'No sources found for this group' });

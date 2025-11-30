@@ -5,7 +5,10 @@ class SafeCacheWarmer {
         this.lastWarmTime = new Map();
         this.WARM_INTERVAL = 15 * 60 * 1000; // 15 minutes
         this.USER_ACTIVITY_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+        this.MAX_ACTIVE_USERS = 1000; // Prevent memory bloat
+        this.WARMING_TIMEOUT = 30000; // 30 second max per user warming
         this.isStarted = false;
+        this.isInitialized = false;
         this.intervalId = null;
         this.cleanupIntervalId = null;
     }
@@ -18,7 +21,9 @@ class SafeCacheWarmer {
 
         try {
             // Dynamically import dependencies to avoid startup issues
-            const { User, Article, Source } = require('../models');
+            const User = require('../models/User');
+            const Article = require('../models/Article');
+            const Source = require('../models/Source');
             const redis = require('../utils/redis');
 
             this.User = User;
@@ -41,6 +46,13 @@ class SafeCacheWarmer {
      */
     markUserActive(userId) {
         try {
+            // Prevent memory bloat - remove oldest users if at max capacity
+            if (this.activeUsers.size >= this.MAX_ACTIVE_USERS && !this.activeUsers.has(userId)) {
+                const oldestUser = this.activeUsers.values().next().value;
+                this.activeUsers.delete(oldestUser);
+                this.lastWarmTime.delete(oldestUser);
+                console.log(`🧹 Cache Warmer: Removed oldest user ${oldestUser} to make room`);
+            }
             this.activeUsers.add(userId);
             console.log(`📊 Cache Warmer: User ${userId} marked as active. Total: ${this.activeUsers.size}`);
         } catch (error) {
@@ -152,10 +164,17 @@ class SafeCacheWarmer {
     async warmUserCache(userId) {
         if (!this.isInitialized || !userId) return;
 
-        // Prevent duplicate warming
-        if (this.warmingInProgress.get(userId)) {
-            console.log(`⏭️ Cache Warmer: Skipping ${userId}, already warming`);
-            return;
+        // Prevent duplicate warming - also check for stale warming entries
+        const warmingEntry = this.warmingInProgress.get(userId);
+        if (warmingEntry) {
+            // Check if warming has been stuck for too long (stale entry)
+            if (Date.now() - warmingEntry < this.WARMING_TIMEOUT) {
+                console.log(`⏭️ Cache Warmer: Skipping ${userId}, already warming`);
+                return;
+            } else {
+                console.log(`⚠️ Cache Warmer: Clearing stale warming entry for ${userId}`);
+                this.warmingInProgress.delete(userId);
+            }
         }
 
         // Check if recently warmed
@@ -166,31 +185,39 @@ class SafeCacheWarmer {
             return;
         }
 
-        this.warmingInProgress.set(userId, true);
+        this.warmingInProgress.set(userId, now); // Store timestamp instead of boolean
         this.lastWarmTime.set(userId, now);
 
         try {
             console.log(`🔥 Cache Warmer: Warming cache for user ${userId}`);
             const startTime = Date.now();
 
-            // Get user data with timeout
-            const user = await Promise.race([
-                this.User.findOne({ supabase_id: userId }).lean(),
+            // Wrap entire warming operation in timeout
+            await Promise.race([
+                (async () => {
+                    // Get user data with timeout
+                    const user = await Promise.race([
+                        this.User.findOne({ supabase_id: userId }).lean(),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('User query timeout')), 5000)
+                        )
+                    ]);
+
+                    if (!user) {
+                        console.log(`⚠️ Cache Warmer: User ${userId} not found`);
+                        return;
+                    }
+
+                    // Warm only the most critical cache - fast articles
+                    await this.warmFastArticles(userId);
+
+                    const duration = Date.now() - startTime;
+                    console.log(`✅ Cache Warmer: User ${userId} cache warmed in ${duration}ms`);
+                })(),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('User query timeout')), 5000)
+                    setTimeout(() => reject(new Error('Total warming timeout')), this.WARMING_TIMEOUT)
                 )
             ]);
-
-            if (!user) {
-                console.log(`⚠️ Cache Warmer: User ${userId} not found`);
-                return;
-            }
-
-            // Warm only the most critical cache - fast articles
-            await this.warmFastArticles(userId);
-
-            const duration = Date.now() - startTime;
-            console.log(`✅ Cache Warmer: User ${userId} cache warmed in ${duration}ms`);
 
         } catch (error) {
             console.error(`❌ Cache Warmer: Error warming cache for user ${userId}:`, error.message);
@@ -203,6 +230,12 @@ class SafeCacheWarmer {
      * Pre-warm fast articles cache only (most critical)
      */
     async warmFastArticles(userId) {
+        // Skip if redis is not available
+        if (!this.redis) {
+            console.log(`⚠️ Cache Warmer: Redis not available, skipping cache warming`);
+            return;
+        }
+
         const language = 'english';
         const limit = 20;
         const page = 1;

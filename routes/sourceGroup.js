@@ -160,10 +160,15 @@ router.get('/group/:groupName', async (req, res) => {
 // Follow/Unfollow Source Group
 router.post('/follow-group', auth, ensureMongoUser, async (req, res) => {
     const { groupName } = req.body;
-    const user = req.mongoUser;
 
     try {
         if (!groupName) return res.status(400).json({ message: 'groupName is required' });
+
+        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
+        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
         const isFollowing = user.following_sources.includes(groupName);
 
