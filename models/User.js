@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema({
     saved_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
     viewed_reels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Reel' }],
 
+    // Football follows
+    followed_teams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Team' }],
+    followed_competitions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Competition' }],
+
     embedding: {
         type: [Number],
         default: [],

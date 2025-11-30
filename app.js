@@ -26,6 +26,7 @@ const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
 const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
+const footballRoutes = require('./routes/football'); // Football follows routes
 
 // PHASE 2: Background job endpoints
 console.log('📂 Loading jobs router...');
@@ -244,6 +245,7 @@ app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
 app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
 app.use('/api/ai', aiAgentRoutes); // AI Agent routes
+app.use('/api/football', footballRoutes); // Football follows routes
 
 // PHASE 2: Background jobs
 console.log('🔧 Registering jobs router at /api/jobs');
