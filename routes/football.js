@@ -36,7 +36,7 @@ router.get('/teams', async (req, res) => {
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         let query = {};
-        
+
         if (search) {
             // Use regex for partial matching (case insensitive)
             query.$or = [
@@ -44,7 +44,7 @@ router.get('/teams', async (req, res) => {
                 { country: { $regex: search, $options: 'i' } }
             ];
         }
-        
+
         if (country) {
             query.country = { $regex: country, $options: 'i' };
         }
@@ -122,14 +122,14 @@ router.get('/competitions', async (req, res) => {
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         let query = {};
-        
+
         if (search) {
             query.$or = [
                 { name: { $regex: search, $options: 'i' } },
                 { country: { $regex: search, $options: 'i' } }
             ];
         }
-        
+
         if (country) {
             query.country = { $regex: country, $options: 'i' };
         }
@@ -234,7 +234,7 @@ router.get('/user/follows', auth, async (req, res) => {
 router.post('/user/follow/team', auth, async (req, res) => {
     try {
         const { teamId } = req.body;
-        
+
         if (!teamId) {
             return res.status(400).json({ message: 'teamId is required' });
         }
@@ -255,9 +255,9 @@ router.post('/user/follow/team', auth, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Team followed successfully',
-            followed_teams: user.followed_teams 
+            followed_teams: user.followed_teams
         });
     } catch (error) {
         console.error('❌ Error following team:', error);
@@ -269,7 +269,7 @@ router.post('/user/follow/team', auth, async (req, res) => {
 router.delete('/user/unfollow/team', auth, async (req, res) => {
     try {
         const { teamId } = req.body;
-        
+
         if (!teamId) {
             return res.status(400).json({ message: 'teamId is required' });
         }
@@ -284,9 +284,9 @@ router.delete('/user/unfollow/team', auth, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Team unfollowed successfully',
-            followed_teams: user.followed_teams 
+            followed_teams: user.followed_teams
         });
     } catch (error) {
         console.error('❌ Error unfollowing team:', error);
@@ -298,7 +298,7 @@ router.delete('/user/unfollow/team', auth, async (req, res) => {
 router.post('/user/follow/competition', auth, async (req, res) => {
     try {
         const { competitionId } = req.body;
-        
+
         if (!competitionId) {
             return res.status(400).json({ message: 'competitionId is required' });
         }
@@ -319,9 +319,9 @@ router.post('/user/follow/competition', auth, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Competition followed successfully',
-            followed_competitions: user.followed_competitions 
+            followed_competitions: user.followed_competitions
         });
     } catch (error) {
         console.error('❌ Error following competition:', error);
@@ -333,7 +333,7 @@ router.post('/user/follow/competition', auth, async (req, res) => {
 router.delete('/user/unfollow/competition', auth, async (req, res) => {
     try {
         const { competitionId } = req.body;
-        
+
         if (!competitionId) {
             return res.status(400).json({ message: 'competitionId is required' });
         }
@@ -348,9 +348,9 @@ router.delete('/user/unfollow/competition', auth, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Competition unfollowed successfully',
-            followed_competitions: user.followed_competitions 
+            followed_competitions: user.followed_competitions
         });
     } catch (error) {
         console.error('❌ Error unfollowing competition:', error);
@@ -374,7 +374,7 @@ router.post('/sync/teams', async (req, res) => {
         console.log(`🔄 Syncing teams for league ${leagueId}, season ${season}...`);
 
         const response = await apiSportsRequest('/teams', { league: leagueId, season });
-        
+
         if (!response.response || response.response.length === 0) {
             return res.status(404).json({ message: 'No teams found for this league/season' });
         }
@@ -412,10 +412,10 @@ router.post('/sync/teams', async (req, res) => {
         }
 
         console.log(`✅ Synced ${teams.length} teams (${created} created, ${updated} updated)`);
-        res.json({ 
+        res.json({
             message: `Synced ${teams.length} teams`,
             created,
-            updated 
+            updated
         });
     } catch (error) {
         console.error('❌ Error syncing teams:', error);
@@ -432,7 +432,7 @@ router.post('/sync/competitions', async (req, res) => {
 
         const params = country ? { country } : {};
         const response = await apiSportsRequest('/leagues', params);
-        
+
         if (!response.response || response.response.length === 0) {
             return res.status(404).json({ message: 'No competitions found' });
         }
@@ -443,7 +443,7 @@ router.post('/sync/competitions', async (req, res) => {
 
         for (const compData of competitions) {
             const currentSeason = compData.seasons?.find(s => s.current);
-            
+
             const compDoc = {
                 apiId: compData.league.id,
                 name: compData.league.name,
@@ -472,10 +472,10 @@ router.post('/sync/competitions', async (req, res) => {
         }
 
         console.log(`✅ Synced ${competitions.length} competitions (${created} created, ${updated} updated)`);
-        res.json({ 
+        res.json({
             message: `Synced ${competitions.length} competitions`,
             created,
-            updated 
+            updated
         });
     } catch (error) {
         console.error('❌ Error syncing competitions:', error);
@@ -508,11 +508,11 @@ router.post('/sync/all', async (req, res) => {
         // Sync competitions first
         console.log('🔄 Syncing competitions...');
         const compResponse = await apiSportsRequest('/leagues');
-        
+
         if (compResponse.response) {
             for (const compData of compResponse.response) {
                 const currentSeason = compData.seasons?.find(s => s.current);
-                
+
                 const compDoc = {
                     apiId: compData.league.id,
                     name: compData.league.name,
@@ -539,13 +539,13 @@ router.post('/sync/all', async (req, res) => {
         // Sync teams for each league
         for (const league of leagues) {
             console.log(`🔄 Syncing teams for ${league.name}...`);
-            
+
             try {
-                const response = await apiSportsRequest('/teams', { 
-                    league: league.id, 
-                    season: league.season 
+                const response = await apiSportsRequest('/teams', {
+                    league: league.id,
+                    season: league.season
                 });
-                
+
                 if (response.response) {
                     for (const teamData of response.response) {
                         const teamDoc = {
@@ -579,9 +579,9 @@ router.post('/sync/all', async (req, res) => {
         }
 
         console.log(`✅ Full sync completed: ${results.teams.total} teams, ${results.competitions.total} competitions`);
-        res.json({ 
+        res.json({
             message: 'Full sync completed',
-            results 
+            results
         });
     } catch (error) {
         console.error('❌ Error during full sync:', error);
