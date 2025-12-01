@@ -78,7 +78,13 @@ app.get('/', (req, res) => {
 
             // Background Jobs (PHASE 2)
             jobs_status: '/api/jobs/status',
-            jobs_update_embeddings: '/api/jobs/update-user-embeddings'
+            jobs_update_embeddings: '/api/jobs/update-user-embeddings',
+
+            // Football (Teams & Competitions)
+            football_teams: '/api/football/teams',
+            football_competitions: '/api/football/competitions',
+            football_user_follows: '/api/football/user/follows',
+            football_sync: '/api/football/sync/all'
         },
         timestamp: new Date().toISOString()
     });
@@ -207,6 +213,10 @@ function loadRoutes() {
         const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
         console.log('✅ AI Agent routes loaded successfully');
 
+        console.log('⚽ Loading Football routes...');
+        const footballRoutes = require('./routes/football'); // Football follows routes
+        console.log('✅ Football routes loaded successfully');
+
         console.log('🔧 Loading Jobs routes...');
         const jobsRouter = require('./routes/jobs'); // PHASE 2: Background jobs
         console.log('✅ Jobs routes loaded successfully');
@@ -230,6 +240,9 @@ function loadRoutes() {
         console.log('🤖 Mounting AI Agent routes at /api/ai...');
         app.use('/api/ai', aiAgentRoutes); // AI Agent routes
         console.log('✅ AI Agent routes mounted successfully');
+        console.log('⚽ Mounting Football routes at /api/football...');
+        app.use('/api/football', footballRoutes); // Football follows routes
+        console.log('✅ Football routes mounted successfully');
         console.log('🔧 Mounting Jobs routes at /api/jobs...');
         app.use('/api/jobs', jobsRouter); // PHASE 2: Background jobs
         console.log('✅ Jobs routes mounted successfully');

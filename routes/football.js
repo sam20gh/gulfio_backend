@@ -9,9 +9,16 @@ const axios = require('axios');
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const BASE_URL = process.env.API_FOOTBALL_BASE_URL || 'https://v3.football.api-sports.io';
 
+console.log('⚽ Football API Config:', {
+    hasApiKey: !!API_KEY,
+    apiKeyLength: API_KEY?.length,
+    baseUrl: BASE_URL
+});
+
 // Helper to make API-Sports requests
 const apiSportsRequest = async (endpoint, params = {}) => {
     try {
+        console.log(`🔄 API-Sports request: ${endpoint}`, { params, hasKey: !!API_KEY });
         const response = await axios.get(`${BASE_URL}${endpoint}`, {
             params,
             headers: {
@@ -20,7 +27,7 @@ const apiSportsRequest = async (endpoint, params = {}) => {
         });
         return response.data;
     } catch (error) {
-        console.error(`❌ API-Sports request failed: ${endpoint}`, error.message);
+        console.error(`❌ API-Sports request failed: ${endpoint}`, error.message, error.response?.status, error.response?.data);
         throw error;
     }
 };
@@ -358,6 +365,104 @@ router.delete('/user/unfollow/competition', auth, async (req, res) => {
     }
 });
 
+// POST /api/football/user/follow/team-by-api-id - Follow a team by API ID (API-Sports ID)
+router.post('/user/follow/team-by-api-id', auth, async (req, res) => {
+    try {
+        const { apiId } = req.body;
+
+        if (!apiId) {
+            return res.status(400).json({ message: 'apiId is required' });
+        }
+
+        // Find team by API ID
+        const team = await Team.findOne({ apiId: parseInt(apiId) });
+        if (!team) {
+            return res.status(404).json({ message: 'Team not found. It may need to be synced first.' });
+        }
+
+        const user = await User.findOneAndUpdate(
+            { supabase_id: req.user.sub },
+            { $addToSet: { followed_teams: team._id } },
+            { new: true }
+        ).populate('followed_teams');
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({
+            message: 'Team followed successfully',
+            team: team,
+            followed_teams: user.followed_teams
+        });
+    } catch (error) {
+        console.error('❌ Error following team by API ID:', error);
+        res.status(500).json({ message: 'Failed to follow team', error: error.message });
+    }
+});
+
+// DELETE /api/football/user/unfollow/team-by-api-id - Unfollow a team by API ID
+router.delete('/user/unfollow/team-by-api-id', auth, async (req, res) => {
+    try {
+        const { apiId } = req.body;
+
+        if (!apiId) {
+            return res.status(400).json({ message: 'apiId is required' });
+        }
+
+        // Find team by API ID
+        const team = await Team.findOne({ apiId: parseInt(apiId) });
+        if (!team) {
+            return res.status(404).json({ message: 'Team not found' });
+        }
+
+        const user = await User.findOneAndUpdate(
+            { supabase_id: req.user.sub },
+            { $pull: { followed_teams: team._id } },
+            { new: true }
+        ).populate('followed_teams');
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({
+            message: 'Team unfollowed successfully',
+            followed_teams: user.followed_teams
+        });
+    } catch (error) {
+        console.error('❌ Error unfollowing team by API ID:', error);
+        res.status(500).json({ message: 'Failed to unfollow team', error: error.message });
+    }
+});
+
+// GET /api/football/user/is-following-team/:apiId - Check if user follows a team
+router.get('/user/is-following-team/:apiId', auth, async (req, res) => {
+    try {
+        const { apiId } = req.params;
+
+        // Find team by API ID
+        const team = await Team.findOne({ apiId: parseInt(apiId) });
+        if (!team) {
+            return res.json({ isFollowing: false, teamExists: false });
+        }
+
+        const user = await User.findOne({ supabase_id: req.user.sub });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const isFollowing = user.followed_teams?.some(
+            (followedId) => followedId.toString() === team._id.toString()
+        ) || false;
+
+        res.json({ isFollowing, teamExists: true, teamId: team._id });
+    } catch (error) {
+        console.error('❌ Error checking team follow status:', error);
+        res.status(500).json({ message: 'Failed to check follow status', error: error.message });
+    }
+});
+
 // ============================================================
 // SYNC ENDPOINTS (Admin/Background Jobs)
 // ============================================================
@@ -586,6 +691,132 @@ router.post('/sync/all', async (req, res) => {
     } catch (error) {
         console.error('❌ Error during full sync:', error);
         res.status(500).json({ message: 'Failed to complete sync', error: error.message });
+    }
+});
+
+// POST /api/football/sync/teams-batch - Sync teams for multiple leagues (use this after competitions are synced)
+router.post('/sync/teams-batch', async (req, res) => {
+    try {
+        // All major leagues to sync teams from
+        const allLeagues = [
+            // Top 5 European Leagues
+            { id: 39, name: 'Premier League', season: 2024 },
+            { id: 140, name: 'La Liga', season: 2024 },
+            { id: 135, name: 'Serie A', season: 2024 },
+            { id: 78, name: 'Bundesliga', season: 2024 },
+            { id: 61, name: 'Ligue 1', season: 2024 },
+            // Gulf Leagues
+            { id: 301, name: 'UAE Pro League', season: 2024 },
+            { id: 307, name: 'Saudi Pro League', season: 2024 },
+            { id: 68, name: 'Qatar Stars League', season: 2024 },
+            { id: 188, name: 'Kuwait Premier League', season: 2024 },
+            // European Competitions
+            { id: 2, name: 'UEFA Champions League', season: 2024 },
+            { id: 3, name: 'UEFA Europa League', season: 2024 },
+            // Other Major Leagues  
+            { id: 94, name: 'Primeira Liga (Portugal)', season: 2024 },
+            { id: 88, name: 'Eredivisie (Netherlands)', season: 2024 },
+            { id: 144, name: 'Belgian Pro League', season: 2024 },
+        ];
+
+        // Get batch number from query (0-indexed)
+        const batchNum = parseInt(req.query.batch) || 0;
+        const batchSize = 3; // Process 3 leagues per request to avoid timeout
+
+        const startIdx = batchNum * batchSize;
+        const endIdx = Math.min(startIdx + batchSize, allLeagues.length);
+        const leaguesToSync = allLeagues.slice(startIdx, endIdx);
+
+        if (leaguesToSync.length === 0) {
+            return res.json({
+                message: 'All batches completed!',
+                totalLeagues: allLeagues.length,
+                batchesNeeded: Math.ceil(allLeagues.length / batchSize)
+            });
+        }
+
+        console.log(`🔄 Syncing teams batch ${batchNum + 1} (leagues ${startIdx + 1}-${endIdx} of ${allLeagues.length})...`);
+
+        let totalTeams = 0;
+        const syncedLeagues = [];
+
+        for (const league of leaguesToSync) {
+            console.log(`🔄 Syncing teams for ${league.name}...`);
+
+            try {
+                const response = await apiSportsRequest('/teams', {
+                    league: league.id,
+                    season: league.season
+                });
+
+                if (response.response && response.response.length > 0) {
+                    for (const teamData of response.response) {
+                        const teamDoc = {
+                            apiId: teamData.team.id,
+                            name: teamData.team.name,
+                            logo: teamData.team.logo,
+                            country: teamData.team.country,
+                            founded: teamData.team.founded,
+                            code: teamData.team.code,
+                            national: teamData.team.national,
+                            venueId: teamData.venue?.id,
+                            venueName: teamData.venue?.name,
+                            venueCity: teamData.venue?.city,
+                            venueCapacity: teamData.venue?.capacity,
+                        };
+
+                        await Team.findOneAndUpdate(
+                            { apiId: teamData.team.id },
+                            teamDoc,
+                            { upsert: true }
+                        );
+                        totalTeams++;
+                    }
+                    syncedLeagues.push({ name: league.name, teams: response.response.length });
+                    console.log(`✅ Synced ${response.response.length} teams from ${league.name}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️ Failed to sync ${league.name}:`, error.message);
+                syncedLeagues.push({ name: league.name, teams: 0, error: error.message });
+            }
+
+            // Delay between leagues to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        const hasMoreBatches = endIdx < allLeagues.length;
+
+        res.json({
+            message: `Batch ${batchNum + 1} completed`,
+            batch: batchNum + 1,
+            totalBatches: Math.ceil(allLeagues.length / batchSize),
+            teamsAdded: totalTeams,
+            leagues: syncedLeagues,
+            nextBatch: hasMoreBatches ? batchNum + 1 : null,
+            nextBatchUrl: hasMoreBatches ? `/api/football/sync/teams-batch?batch=${batchNum + 1}` : null
+        });
+
+    } catch (error) {
+        console.error('❌ Error syncing teams batch:', error);
+        res.status(500).json({ message: 'Failed to sync teams batch', error: error.message });
+    }
+});
+
+// GET /api/football/sync/status - Check sync status
+router.get('/sync/status', async (req, res) => {
+    try {
+        const [teamCount, competitionCount] = await Promise.all([
+            Team.countDocuments(),
+            Competition.countDocuments()
+        ]);
+
+        res.json({
+            teams: teamCount,
+            competitions: competitionCount,
+            status: teamCount > 100 ? 'good' : 'needs more teams'
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to get sync status', error: error.message });
     }
 });
 
