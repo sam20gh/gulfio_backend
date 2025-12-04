@@ -44,7 +44,7 @@ const userSchema = new mongoose.Schema({
     },
     language: {
         type: String,
-        enum: ['Arabic', 'English'],
+        enum: ['Arabic', 'English', 'Farsi'],
         default: 'English'
     },
     notificationSettings: {

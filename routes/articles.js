@@ -2375,7 +2375,7 @@ articleRouter.put('/:id', auth, async (req, res) => {
   }
 });
 
-// GET related articles based on similarity
+// GET related articles based on similarity (uses MongoDB Vector Search with language filtering)
 articleRouter.get('/related/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -2383,91 +2383,156 @@ articleRouter.get('/related/:id', async (req, res) => {
 
     console.log(`🔍 Fetching related articles for: ${id}, limit: ${limit}`);
 
-    // Get the base article
-    const baseArticle = await Article.findById(id).lean();
+    // Get the base article with its embedding
+    const baseArticle = await Article.findById(id).select('title category language sourceId embedding_pca').lean();
     if (!baseArticle) {
       return res.status(404).json({ message: 'Article not found' });
     }
 
-    console.log(`📰 Base article: "${baseArticle.title?.slice(0, 50)}..." Category: ${baseArticle.category}`);
+    // Use article's language, default to 'english' if not set
+    const articleLanguage = baseArticle.language || 'english';
+    console.log(`📰 Base article: "${baseArticle.title?.slice(0, 50)}..." Category: ${baseArticle.category}, Language: ${articleLanguage}`);
 
     let relatedArticles = [];
 
-    // Method 1: Try embedding-based similarity if embeddings exist
-    if (baseArticle.embedding_pca && baseArticle.embedding_pca.length > 0) {
-      console.log('🔍 Using PCA embedding-based similarity');
+    // Method 1: Try MongoDB Vector Search with $vectorSearch if embedding exists
+    if (baseArticle.embedding_pca && baseArticle.embedding_pca.length === 128) {
+      console.log('🔍 Using MongoDB Vector Search with PCA embeddings');
 
-      // Find articles with PCA embeddings in the same category
-      const candidateArticles = await Article.find({
-        _id: { $ne: id },
-        embedding_pca: { $exists: true, $not: { $size: 0 } },
-        category: baseArticle.category
-      })
-        .select('title content category sourceId publishedAt image url viewCount likes dislikes embedding_pca')
-        .limit(50) // Get more candidates for better similarity scoring
-        .lean();
+      try {
+        // Use $vectorSearch aggregation for efficient similarity search
+        const vectorResults = await Article.aggregate([
+          {
+            $vectorSearch: {
+              index: VECTOR_INDEX,
+              path: "embedding_pca",
+              queryVector: baseArticle.embedding_pca,
+              numCandidates: limit * 10,
+              limit: limit * 3,
+              filter: {
+                language: articleLanguage, // Filter by same language
+                _id: { $ne: new mongoose.Types.ObjectId(id) }
+              }
+            }
+          },
+          { $addFields: { similarity: { $meta: "vectorSearchScore" } } },
+          {
+            $lookup: {
+              from: 'sources',
+              localField: 'sourceId',
+              foreignField: '_id',
+              as: 'sourceInfo',
+              pipeline: [
+                { $project: { name: 1, icon: 1, groupName: 1 } }
+              ]
+            }
+          },
+          {
+            $addFields: {
+              sourceName: { $arrayElemAt: ['$sourceInfo.name', 0] },
+              sourceIcon: { $arrayElemAt: ['$sourceInfo.icon', 0] },
+              sourceGroupName: { $arrayElemAt: ['$sourceInfo.groupName', 0] }
+            }
+          },
+          {
+            $project: {
+              _id: 1,
+              title: 1,
+              content: 1,
+              category: 1,
+              language: 1,
+              sourceId: 1,
+              sourceName: 1,
+              sourceIcon: 1,
+              sourceGroupName: 1,
+              publishedAt: 1,
+              image: 1,
+              url: 1,
+              viewCount: 1,
+              likes: 1,
+              dislikes: 1,
+              similarity: 1
+            }
+          },
+          { $limit: limit }
+        ]);
 
-      console.log(`📊 Found ${candidateArticles.length} candidate articles with PCA embeddings`);
-
-      // Calculate cosine similarity with PCA embeddings
-      const similarities = candidateArticles.map(article => {
-        const similarity = cosineSimilarity(baseArticle.embedding_pca, article.embedding_pca);
-        return { ...article, similarity };
-      });
-
-      // Sort by similarity and take top results
-      relatedArticles = similarities
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, limit);
-
-      console.log(`🔍 Top similarities: ${relatedArticles.slice(0, 3).map(a => a.similarity.toFixed(3)).join(', ')}`);
+        relatedArticles = vectorResults;
+        console.log(`✅ Vector search returned ${relatedArticles.length} articles with similarities: ${relatedArticles.slice(0, 3).map(a => a.similarity?.toFixed(3) || 'N/A').join(', ')}`);
+      } catch (vectorError) {
+        console.warn(`⚠️ Vector search failed, falling back to category-based: ${vectorError.message}`);
+        // Fall through to fallback method
+      }
     }
 
-    // Method 2: If no embedding results or not enough, fall back to category/source similarity
+    // Method 2: Fallback - category + language based similarity
     if (relatedArticles.length < limit) {
-      console.log('🔍 Using category/source-based similarity as fallback');
+      console.log('🔍 Using category/language-based similarity as fallback');
 
       const remaining = limit - relatedArticles.length;
       const excludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
 
-      // First try same category, different source
+      // First try same category + language, different source
       let categoryArticles = await Article.find({
-        _id: { $nin: excludeIds },
+        _id: { $nin: excludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
         category: baseArticle.category,
+        language: articleLanguage,
         sourceId: { $ne: baseArticle.sourceId }
       })
-        .select('title content category sourceId publishedAt image url viewCount likes dislikes')
+        .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
         .sort({ publishedAt: -1 })
         .limit(remaining)
         .lean();
 
       relatedArticles = relatedArticles.concat(categoryArticles.map(a => ({ ...a, similarity: 0.7 })));
 
-      // If still not enough, try same source
+      // If still not enough, try same source + language
       if (relatedArticles.length < limit) {
         const stillRemaining = limit - relatedArticles.length;
         const newExcludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
 
         const sourceArticles = await Article.find({
-          _id: { $nin: newExcludeIds },
-          sourceId: baseArticle.sourceId
+          _id: { $nin: newExcludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
+          sourceId: baseArticle.sourceId,
+          language: articleLanguage
         })
-          .select('title content category sourceId publishedAt image url viewCount likes dislikes')
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
           .sort({ publishedAt: -1 })
           .limit(stillRemaining)
           .lean();
 
         relatedArticles = relatedArticles.concat(sourceArticles.map(a => ({ ...a, similarity: 0.5 })));
       }
+
+      // Last resort: same language, any category
+      if (relatedArticles.length < limit) {
+        const stillRemaining = limit - relatedArticles.length;
+        const newExcludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+
+        const languageArticles = await Article.find({
+          _id: { $nin: newExcludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
+          language: articleLanguage
+        })
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
+          .sort({ publishedAt: -1 })
+          .limit(stillRemaining)
+          .lean();
+
+        relatedArticles = relatedArticles.concat(languageArticles.map(a => ({ ...a, similarity: 0.3 })));
+      }
     }
 
     // Clean up the results - return complete article objects
-    const finalResults = relatedArticles.slice(0, limit).map(article => ({
-      ...article,
-      similarity: article.similarity || 0
-    }));
+    const finalResults = relatedArticles.slice(0, limit).map(article => {
+      // Remove embedding_pca from response to reduce payload size
+      const { embedding_pca, embedding, sourceInfo, ...cleanArticle } = article;
+      return {
+        ...cleanArticle,
+        similarity: article.similarity || 0
+      };
+    });
 
-    console.log(`✅ Returning ${finalResults.length} related articles with complete data`);
+    console.log(`✅ Returning ${finalResults.length} related articles (language: ${articleLanguage})`);
     res.json(finalResults);
 
   } catch (error) {
