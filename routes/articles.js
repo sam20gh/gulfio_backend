@@ -1668,7 +1668,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const category = req.query.category;
-    const userId = req.mongoUserId;
+    const userId = req.mongoUser._id;
 
     // Use user's language preference from database if not specified in query
     const userLanguagePref = req.mongoUser.language || 'English';
