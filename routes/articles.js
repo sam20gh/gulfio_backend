@@ -437,6 +437,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           dislikedBy: 1,
           sourceId: 1,
           sourceGroupName: 1, // Keep for internal filtering
+          language: 1, // ✅ Include language for RTL support
           isLight: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -816,6 +817,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           dislikedBy: 1,
           sourceId: 1,
           sourceGroupName: 1, // Keep for internal filtering
+          language: 1, // ✅ Include language for RTL support
           isFast: 1,
           fetchedAt: 1,
           isRefreshed: 1,
@@ -1214,6 +1216,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
             summary: 1,
             content: 1,
             contentFormat: 1, // ✅ Include contentFormat for markdown rendering
+            language: 1, // ✅ Include language for RTL support
             image: 1,
             sourceId: 1,
             source: 1,
@@ -1247,7 +1250,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       };
 
       const fallbackArticles = await Article.find(fallbackMatch)
-        .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
+        .select('title summary content contentFormat language image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
         .sort({ publishedAt: -1, viewCount: -1 })
         .limit(candidatePoolSize)
         .lean();
@@ -2410,9 +2413,14 @@ articleRouter.get('/related/:id', async (req, res) => {
               numCandidates: limit * 10,
               limit: limit * 3,
               filter: {
-                language: articleLanguage, // Filter by same language
-                _id: { $ne: new mongoose.Types.ObjectId(id) }
+                language: articleLanguage // Filter by same language (requires Atlas index to have language as filter field)
               }
+            }
+          },
+          // Exclude current article
+          {
+            $match: {
+              _id: { $ne: new mongoose.Types.ObjectId(id) }
             }
           },
           { $addFields: { similarity: { $meta: "vectorSearchScore" } } },
@@ -2439,6 +2447,7 @@ articleRouter.get('/related/:id', async (req, res) => {
               _id: 1,
               title: 1,
               content: 1,
+              contentFormat: 1,
               category: 1,
               language: 1,
               sourceId: 1,

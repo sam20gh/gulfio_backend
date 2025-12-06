@@ -87,6 +87,7 @@ articleRouter.get('/personalized-light-optimized', auth, ensureMongoUser, async 
                 $project: {
                     title: 1,
                     content: 1,
+                    contentFormat: 1,
                     url: 1,
                     category: 1,
                     publishedAt: 1,
@@ -100,6 +101,7 @@ articleRouter.get('/personalized-light-optimized', auth, ensureMongoUser, async 
                     sourceName: 1,
                     sourceIcon: 1,
                     sourceGroupName: 1,
+                    language: 1, // Include language for RTL support
                     // Add performance markers
                     isLight: { $literal: true },
                     fetchedAt: { $literal: new Date() },
