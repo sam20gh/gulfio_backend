@@ -239,14 +239,14 @@ router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
     if (!token) return res.status(400).json({ message: 'Push token is required' });
 
     try {
-        // Use the user from ensureMongoUser middleware
+        // Use findByIdAndUpdate since mongoUser is a lean object (no .save() method)
         const user = req.mongoUser;
-        user.pushToken = token;
-        await user.save();
+        await User.findByIdAndUpdate(user._id, { pushToken: token });
 
+        console.log('✅ Push token saved for user:', user._id);
         res.json({ success: true, message: 'Push token saved' });
     } catch (err) {
-        console.error('Error saving push token:', err);
+        console.error('❌ Error saving push token:', err);
         res.status(500).json({ message: 'Failed to save push token' });
     }
 });
