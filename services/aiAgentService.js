@@ -14,6 +14,34 @@ const BM25_LIMIT = 8; // Mobile optimized
 const RERANK_CANDIDATES = 8; // Mobile optimized
 
 /**
+ * Detect language of the query text
+ * Returns: 'arabic', 'farsi', or 'english'
+ */
+function detectQueryLanguage(query) {
+    // Arabic Unicode range: \u0600-\u06FF (Arabic), \u0750-\u077F (Arabic Supplement)
+    const arabicPattern = /[\u0600-\u06FF\u0750-\u077F]/;
+
+    // Farsi/Persian specific characters (not in standard Arabic)
+    // Persian-specific: پ چ ژ گ ک ی (\u067E, \u0686, \u0698, \u06AF, \u06A9, \u06CC)
+    const farsiSpecificPattern = /[\u067E\u0686\u0698\u06AF\u06A9\u06CC]/;
+
+    // Check for Farsi-specific characters first
+    if (farsiSpecificPattern.test(query)) {
+        console.log('🌍 Language detected: Farsi (Persian)');
+        return 'farsi';
+    }
+
+    // Check for Arabic script
+    if (arabicPattern.test(query)) {
+        console.log('🌍 Language detected: Arabic');
+        return 'arabic';
+    }
+
+    console.log('🌍 Language detected: English (default)');
+    return 'english';
+}
+
+/**
  * Generate embedding for user query using OpenAI
  */
 async function generateQueryEmbedding(query) {
@@ -46,11 +74,15 @@ async function generateQueryEmbedding(query) {
 
 /**
  * Search articles using Atlas Vector Search with embedding_pca field
+ * Now supports multi-language search (english, arabic, farsi)
  */
-async function searchArticles(query, category = null, userId = null, usePersonalization = true) {
+async function searchArticles(query, category = null, userId = null, usePersonalization = true, language = null) {
     try {
+        // Auto-detect language if not provided
+        const detectedLanguage = language || detectQueryLanguage(query);
+
         console.log('🔍 Searching articles for query:', query);
-        console.log('🔍 Search parameters:', { category, userId, usePersonalization });
+        console.log('🔍 Search parameters:', { category, userId, usePersonalization, language: detectedLanguage });
 
         // Extract location keywords from query for better filtering
         const locationKeywords = ['UAE', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah',
@@ -88,8 +120,9 @@ async function searchArticles(query, category = null, userId = null, usePersonal
             matchConditions.category = category;
         }
 
-        // Language filter (assuming English articles)
-        matchConditions.language = 'english';
+        // Language filter - use detected language
+        matchConditions.language = detectedLanguage;
+        console.log('🌍 Filtering articles by language:', detectedLanguage);
 
         // Location filtering - if location detected, prioritize those articles
         if (detectedLocation) {
@@ -218,7 +251,7 @@ async function searchArticles(query, category = null, userId = null, usePersonal
             } else {
                 console.log(`⚠️ Vector search returned ${articles.length} articles but scores too low (best: ${articles[0]?.relevanceScore}), falling back...`);
             }
-            return await fallbackTextSearch(query, category, detectedLocation);
+            return await fallbackTextSearch(query, category, detectedLocation, detectedLanguage);
         }
 
         console.log('📊 Articles found:', articles.map(a => ({
@@ -239,16 +272,17 @@ async function searchArticles(query, category = null, userId = null, usePersonal
         const queryLower = query.toLowerCase();
         const detectedLocation = locationKeywords.find(loc => queryLower.includes(loc.toLowerCase()));
 
-        return await fallbackTextSearch(query, category, detectedLocation);
+        return await fallbackTextSearch(query, category, detectedLocation, detectedLanguage);
     }
 }
 
 /**
- * Fallback text search if vector search fails - LOCATION AWARE
+ * Fallback text search if vector search fails - LOCATION AWARE & MULTI-LANGUAGE
  */
-async function fallbackTextSearch(query, category = null, detectedLocation = null) {
+async function fallbackTextSearch(query, category = null, detectedLocation = null, language = 'english') {
     try {
         console.log('🔄 Fallback text search for query:', query);
+        console.log('🌍 Fallback search language:', language);
 
         // If location not provided, try to detect it
         if (!detectedLocation) {
@@ -272,7 +306,7 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
                 { title: { $regex: keywordRegex, $options: 'i' } },
                 { content: { $regex: keywordRegex, $options: 'i' } }
             ],
-            language: 'english'
+            language: language // Use detected language
         };
 
         if (category && category !== 'all') {
@@ -328,7 +362,7 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
         // If still no results, get recent articles from relevant category
         if (articles.length === 0) {
             console.log('🔄 No keyword matches, getting recent articles...');
-            const recentConditions = { language: 'english' };
+            const recentConditions = { language: language }; // Use detected language
             if (category && category !== 'all') {
                 recentConditions.category = category;
             }
@@ -346,7 +380,7 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
                 sourceGroupName: article.sourceGroupName || article.sourceId?.groupName || article.sourceId?.name || 'Gulf.io'
             }));
 
-            console.log(`✅ Found ${recentArticles.length} recent articles as final fallback`);
+            console.log(`✅ Found ${recentArticles.length} recent ${language} articles as final fallback`);
             return recentArticles;
         }
 
@@ -359,11 +393,16 @@ async function fallbackTextSearch(query, category = null, detectedLocation = nul
 
 /**
  * Generate AI response using GPT-4o-mini with retrieved articles
+ * Responds in the same language as the query
  */
 async function generateResponse(query, articles, sessionId, userId) {
     try {
         console.log('🤖 Generating AI response for query:', query);
         const startTime = Date.now();
+
+        // Detect query language for response
+        const queryLanguage = detectQueryLanguage(query);
+        console.log('🌐 Response will be in:', queryLanguage);
 
         // Build context from articles
         const context = articles.map((article, idx) => {
@@ -385,8 +424,17 @@ Summary: ${preview}...
 URL: ${article.url}`;
         }).join('\n\n---\n\n');
 
+        // Language-specific instructions
+        const languageInstructions = {
+            arabic: 'IMPORTANT: The user asked in Arabic. You MUST respond in Arabic (العربية). Write your entire response in Arabic script.',
+            farsi: 'IMPORTANT: The user asked in Farsi/Persian. You MUST respond in Farsi (فارسی). Write your entire response in Persian script.',
+            english: 'Respond in English.'
+        };
+
         // Create system prompt
         const systemPrompt = `You are Gulf.io's AI assistant, an expert on Middle East news and current events. You have access to a database of over 23,000 recent articles from trusted Gulf region sources.
+
+${languageInstructions[queryLanguage]}
 
 Your role:
 - Answer questions based ONLY on the provided articles
@@ -574,5 +622,6 @@ module.exports = {
     searchArticles,
     generateResponse,
     generateQueryEmbedding,
-    getSuggestedQuestions
+    getSuggestedQuestions,
+    detectQueryLanguage
 };
