@@ -11,6 +11,7 @@ const auth = require('../middleware/auth');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { searchArticles, findInContent } = require('../utils/atlasSearch');
 
 const articleRouter = express.Router();
 
@@ -1891,16 +1892,70 @@ articleRouter.get('/', async (req, res) => {
       console.log('🏷️ Filtering articles by category:', category);
     }
 
-    // Add search functionality
+    // Handle search with Atlas Search (optimized) - early return for search queries
     if (search && search.trim()) {
       const searchTerm = search.trim();
-      console.log(`🔍 Searching for articles with term: "${searchTerm}"`);
+      console.log(`🔍 Using Atlas Search for: "${searchTerm}"`);
 
-      // Use MongoDB regex search for title and content
-      filter.$or = [
-        { title: { $regex: searchTerm, $options: 'i' } },
-        { content: { $regex: searchTerm, $options: 'i' } }
-      ];
+      // Get allowed source IDs for publisher filtering
+      let sourceIds = null;
+      if (userPublisherGroups) {
+        const publisherGroupsArray = Array.isArray(userPublisherGroups) ? userPublisherGroups : [userPublisherGroups];
+        const Source = require('../models/Source');
+        const allowedSources = await Source.find({
+          groupName: { $in: publisherGroupsArray.map(g => new RegExp(`^${g}$`, 'i')) }
+        }).select('_id').lean();
+        sourceIds = allowedSources.map(s => s._id);
+
+        if (sourceIds.length === 0) {
+          return res.json({ articles: [], pagination: { page, limit, total: 0, pages: 0, hasNext: false, hasPrev: false } });
+        }
+      }
+
+      // Use Atlas Search for optimized full-text search
+      const skip = (page - 1) * limit;
+      const { articles: searchResults, total } = await searchArticles({
+        searchTerm,
+        language,
+        category,
+        sourceIds,
+        limit,
+        skip
+      });
+
+      // Apply source group limiting for non-publisher users
+      let finalArticles = searchResults;
+      if (!userPublisherGroups) {
+        finalArticles = limitArticlesPerSourceGroup(searchResults, 2);
+      }
+
+      // Add engagement scores and fetchId
+      const enhancedArticles = finalArticles.map(a => ({
+        ...a,
+        fetchId: new mongoose.Types.ObjectId().toString(),
+        engagementScore: calculateEngagementScore(a),
+        finalScore: a.searchScore || 1
+      }));
+
+      const responseData = {
+        articles: enhancedArticles,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit),
+          hasNext: page < Math.ceil(total / limit),
+          hasPrev: page > 1
+        }
+      };
+
+      try {
+        await redis.set(cacheKey, JSON.stringify(responseData), 'EX', 300);
+      } catch (err) {
+        console.error('⚠️ Redis set error (safe to ignore):', err.message);
+      }
+
+      return res.json(responseData);
     }
 
     // Add publisher filtering if user is a publisher
@@ -2169,15 +2224,31 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 });
 
 // Related-by-embedding (small helper endpoint you already have)
+// ⚠️ DEPRECATED: Use /related/:id instead which uses Atlas Vector Search
+// This endpoint is kept for backward compatibility but is inefficient
 articleRouter.get('/related-embedding/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const target = await Article.findById(id);
+    const target = await Article.findById(id).select('embedding language').lean();
     if (!target?.embedding) return res.status(404).json({ error: 'No embedding found' });
 
-    const allArticles = await Article.find({ _id: { $ne: id }, embedding: { $exists: true } });
+    // OPTIMIZED: Use aggregation with $limit instead of loading all articles
+    // This still isn't ideal - should use Atlas Vector Search instead
+    const limit = parseInt(req.query.limit) || 5;
+
+    // Get a sample of recent articles with embeddings (not all articles!)
+    const sampleArticles = await Article.find({
+      _id: { $ne: id },
+      embedding: { $exists: true, $ne: [] },
+      language: target.language // Same language only
+    })
+      .select('_id title category publishedAt embedding image')
+      .sort({ publishedAt: -1 })
+      .limit(200) // Only check recent 200 articles, not ALL
+      .lean();
 
     const cosineSimilarity = (a, b) => {
+      if (!a || !b || a.length !== b.length) return 0;
       let dot = 0, magA = 0, magB = 0;
       for (let i = 0; i < a.length; i++) {
         dot += a[i] * b[i];
@@ -2187,10 +2258,13 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
       return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
     };
 
-    const related = allArticles
-      .map(a => ({ ...a.toObject(), similarity: cosineSimilarity(target.embedding, a.embedding) }))
+    const related = sampleArticles
+      .map(a => {
+        const { embedding, ...rest } = a;
+        return { ...rest, similarity: cosineSimilarity(target.embedding, embedding) };
+      })
       .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 5);
+      .slice(0, limit);
 
     res.json(related);
   } catch (err) {
@@ -2598,11 +2672,12 @@ articleRouter.post('/find-replace/preview', async (req, res) => {
 
     console.log(`🔍 Preview find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only)`);
 
-    // Find all markdown articles containing the text
-    const articles = await Article.find({
-      content: { $regex: findText, $options: 'i' },
-      contentFormat: 'markdown'
-    }).select('_id title content contentFormat').limit(1000);
+    // Use Atlas Search for optimized content search (with fallback)
+    const articles = await findInContent({
+      findText,
+      contentFormat: 'markdown',
+      limit: 1000
+    });
 
     const matchCount = articles.length;
     const examples = articles.slice(0, 3).map(a => ({
@@ -2638,11 +2713,16 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
 
     console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only)`);
 
-    // Find all markdown articles containing the text
-    const articles = await Article.find({
-      content: { $regex: findText, $options: 'i' },
-      contentFormat: 'markdown'
-    }).select('_id content contentFormat');
+    // Use Atlas Search to find articles (with fallback), then fetch full content for replacement
+    const searchResults = await findInContent({
+      findText,
+      contentFormat: 'markdown',
+      limit: 5000
+    });
+
+    // Fetch full articles for modification
+    const articleIds = searchResults.map(a => a._id);
+    const articles = await Article.find({ _id: { $in: articleIds } }).select('_id content contentFormat');
 
     let updatedCount = 0;
     const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');

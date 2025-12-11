@@ -505,6 +505,7 @@ async function testSingleSource(sourceId) {
                     source.name.toLowerCase().includes('alnassr') ||
                     source.name.toLowerCase().includes('al nassr') ||
                     source.name.toLowerCase().includes('doha') ||
+                    source.name.toLowerCase().includes('ajman media') ||
                     source.name.toLowerCase().includes('dohanews');
 
                 if (needsPuppeteer) {
