@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 const Article = require('../models/Article');
 
-const DEPLOYED_BACKEND_URL = 'https://gulfio-backend-180255041979.me-central1.run.app';
+const DEPLOYED_BACKEND_URL = 'https://api.gulfio.app';
 
 async function syncArticlesFromDeployedBackend() {
     try {
