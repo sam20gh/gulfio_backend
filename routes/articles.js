@@ -401,7 +401,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           as: 'source',
           pipeline: [
             { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
-            { $project: { groupName: 1, name: 1, status: 1 } } // Only get needed fields
+            { $project: { groupName: 1, name: 1, icon: 1, status: 1 } } // Include icon for display
           ]
         }
       },
@@ -414,6 +414,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         $addFields: {
           sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
           sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
           isLight: { $literal: true },
           fetchedAt: { $literal: new Date() },
           isRefreshed: { $literal: forceRefresh },
@@ -422,7 +423,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         }
       },
       {
-        // Stage 6: Project essential fields (keep sourceGroupName for filtering but don't expose sourceName to avoid conflicts)
+        // Stage 6: Project essential fields (keep sourceGroupName for filtering)
         $project: {
           title: 1,
           content: 1,
@@ -437,6 +438,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           likedBy: 1,
           dislikedBy: 1,
           sourceId: 1,
+          sourceName: 1, // ✅ Include sourceName for client display
+          sourceIcon: 1, // ✅ Include sourceIcon for client display
           sourceGroupName: 1, // Keep for internal filtering
           language: 1, // ✅ Include language for RTL support
           isLight: 1,
@@ -2652,9 +2655,17 @@ articleRouter.post('/cache/clear', async (req, res) => {
 // GET one - Must be last to avoid conflicts with specific routes
 articleRouter.get('/:id', async (req, res) => {
   try {
-    const article = await Article.findById(req.params.id);
+    const article = await Article.findById(req.params.id).populate('sourceId', 'name icon groupName');
     if (!article) return res.status(404).json({ message: 'Article not found' });
-    res.json(article);
+
+    // Add sourceName and sourceIcon from populated sourceId for client convenience
+    const articleObj = article.toObject();
+    if (article.sourceId && typeof article.sourceId === 'object') {
+      articleObj.sourceName = article.sourceId.name || null;
+      articleObj.sourceIcon = article.sourceId.icon || null;
+    }
+
+    res.json(articleObj);
   } catch (err) {
     console.error('GET /:id error:', err);
     res.status(500).json({ message: 'Server error' });
