@@ -57,7 +57,7 @@ gcloud run deploy $SERVICE_NAME \
     --project $PROJECT_ID \
     --allow-unauthenticated \
     --memory 4Gi \
-    --cpu 1 \
+    --cpu 2 \
     --min-instances 1 \
     --max-instances 10 \
     --port 8080 \
