@@ -2722,7 +2722,9 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
       return res.status(400).json({ message: 'findText is required' });
     }
 
-    console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only)`);
+    // Detect if text contains non-Latin characters (Arabic, Farsi, etc.)
+    const hasNonLatinChars = /[^\u0000-\u007F]/.test(findText);
+    console.log(`🔄 Executing find/replace: "${findText}" -> "${replaceText || '[REMOVE]'}" (markdown only, Unicode: ${hasNonLatinChars})`);
 
     // Use Atlas Search to find articles (with fallback), then fetch full content for replacement
     const searchResults = await findInContent({
@@ -2736,7 +2738,13 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
     const articles = await Article.find({ _id: { $in: articleIds } }).select('_id content contentFormat');
 
     let updatedCount = 0;
-    const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    
+    // Build regex with proper Unicode support
+    // For non-Latin text, use 'gu' flags for proper Unicode handling
+    const escapedText = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = hasNonLatinChars 
+      ? new RegExp(escapedText, 'gu')  // Unicode-aware global replace
+      : new RegExp(escapedText, 'gi'); // Case-insensitive for Latin text
 
     for (const article of articles) {
       const originalContent = article.content;

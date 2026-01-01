@@ -277,6 +277,7 @@ async function fallbackRegexSearch({ searchTerm, language, category, sourceIds, 
 /**
  * Search for content within articles (for find/replace feature)
  * Uses Atlas Search for better performance on large datasets
+ * Supports Unicode characters (Farsi, Arabic, etc.)
  * @param {Object} options - Search options
  * @param {string} options.findText - Text to find
  * @param {string} options.contentFormat - Filter by content format (optional)
@@ -289,7 +290,18 @@ async function findInContent({ findText, contentFormat, limit = 1000 }) {
     }
 
     const cleanedText = findText.trim();
-    console.log(`🔍 Atlas Search find in content: "${cleanedText}"`);
+    
+    // Detect if text contains non-Latin characters (Arabic, Farsi, etc.)
+    const hasNonLatinChars = /[^\u0000-\u007F]/.test(cleanedText);
+    
+    console.log(`🔍 Find in content: "${cleanedText}" (Unicode: ${hasNonLatinChars})`);
+
+    // For non-Latin text (Farsi, Arabic), use regex directly as Atlas Search
+    // may not be properly configured for these languages
+    if (hasNonLatinChars) {
+        console.log('🌐 Using regex search for non-Latin characters');
+        return findInContentRegex({ findText: cleanedText, contentFormat, limit });
+    }
 
     const filter = contentFormat ? [{ text: { query: contentFormat, path: 'contentFormat' } }] : [];
 
@@ -326,14 +338,40 @@ async function findInContent({ findText, contentFormat, limit = 1000 }) {
     } catch (error) {
         // Fallback to regex if Atlas Search unavailable
         console.warn('⚠️ Atlas Search unavailable, using regex fallback');
+        return findInContentRegex({ findText: cleanedText, contentFormat, limit });
+    }
+}
 
-        const filter = { content: { $regex: cleanedText, $options: 'i' } };
-        if (contentFormat) filter.contentFormat = contentFormat;
+/**
+ * Regex-based content search with proper Unicode support
+ * Used for non-Latin characters (Farsi, Arabic, etc.) and as fallback
+ */
+async function findInContentRegex({ findText, contentFormat, limit = 1000 }) {
+    console.log(`🔍 Regex search for: "${findText}"`);
+    
+    // Escape special regex characters but preserve Unicode
+    const escapedText = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // Build filter - use $regex without 'i' flag for Unicode, exact match is better for RTL languages
+    const filter = {
+        content: { $regex: escapedText }
+    };
+    
+    if (contentFormat) {
+        filter.contentFormat = contentFormat;
+    }
 
-        return Article.find(filter)
+    try {
+        const results = await Article.find(filter)
             .select('_id title content contentFormat')
             .limit(limit)
             .lean();
+        
+        console.log(`✅ Regex found ${results.length} articles containing "${findText}"`);
+        return results;
+    } catch (error) {
+        console.error('❌ Regex search error:', error.message);
+        return [];
     }
 }
 
@@ -341,5 +379,6 @@ module.exports = {
     searchArticles,
     autocompleteArticles,
     findInContent,
+    findInContentRegex,
     fallbackRegexSearch
 };
