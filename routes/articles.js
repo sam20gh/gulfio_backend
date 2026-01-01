@@ -144,7 +144,7 @@ async function warmArticleCountCache() {
       const filter = { language: lang };
       const filterKey = JSON.stringify(filter);
       const countCacheKey = `articles_count_${simpleHash(filterKey)}`;
-      
+
       // Check if cache exists and is recent
       const existingCache = await redis.get(countCacheKey);
       if (!existingCache) {
