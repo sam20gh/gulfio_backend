@@ -1987,9 +1987,16 @@ articleRouter.get('/', async (req, res) => {
       }
     }
 
-    // Fetch more articles to allow for source group filtering and pagination
-    // Publishers need more articles since they have higher per-source limits
-    const fetchMultiplier = userPublisherGroups ? 8 : 5;
+    // Get actual total count from database for proper pagination
+    const totalCount = await Article.countDocuments(filter);
+    console.log(`📊 Total articles in database matching filter: ${totalCount}`);
+
+    // Calculate skip for proper pagination
+    const skip = (page - 1) * limit;
+
+    // Fetch articles with proper skip/limit for the current page
+    // Fetch extra to allow for source group filtering
+    const fetchMultiplier = userPublisherGroups ? 4 : 3;
     const fetchLimit = limit * fetchMultiplier;
 
     const raw = await Article.find(filter)
@@ -1999,7 +2006,8 @@ articleRouter.get('/', async (req, res) => {
         match: { status: { $ne: 'blocked' } } // Only populate non-blocked sources
       })
       .sort({ publishedAt: -1 })
-      .limit(fetchLimit) // Get more articles for source filtering and pagination
+      .skip(skip)
+      .limit(fetchLimit) // Get extra articles for source filtering
       .lean();
 
     // Filter out articles from blocked sources (where sourceId population returned null)
@@ -2032,8 +2040,7 @@ articleRouter.get('/', async (req, res) => {
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
 
-    // Apply pagination with source group limiting (general users only - publishers skip this)
-    const startIndex = (page - 1) * limit;
+    // Apply source group limiting (general users only - publishers skip this)
     let processedArticles = [];
     const sourceGroupCounts = {};
 
@@ -2050,7 +2057,7 @@ articleRouter.get('/', async (req, res) => {
     } else {
       // General users: Apply source group limiting (max 2 per source group)
       const maxPerSourceGroup = 2;
-      console.log(`🔀 GENERAL MODE: Applying source group limiting: page ${page}, startIndex ${startIndex}, target limit ${limit}, maxPerGroup ${maxPerSourceGroup}`);
+      console.log(`🔀 GENERAL MODE: Applying source group limiting: target limit ${limit}, maxPerGroup ${maxPerSourceGroup}`);
 
       for (let i = 0; i < enhancedArticles.length; i++) {
         const article = enhancedArticles[i];
@@ -2065,9 +2072,10 @@ articleRouter.get('/', async (req, res) => {
       }
     }
 
-    // Now apply proper pagination to the filtered list
-    const finalArticles = processedArticles.slice(startIndex, startIndex + limit); console.log(`🔀 Step 1: ${userPublisherGroups ? 'Skipped source group limits (publisher)' : 'Applied source group limits'} to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
-    console.log(`🔀 Step 2: Applied pagination (${startIndex}-${startIndex + limit}) to get ${finalArticles.length} final articles`);
+    // Take only the requested limit from processed articles
+    const finalArticles = processedArticles.slice(0, limit);
+    console.log(`🔀 Step 1: ${userPublisherGroups ? 'Skipped source group limits (publisher)' : 'Applied source group limits'} to ${enhancedArticles.length} articles, got ${processedArticles.length} filtered articles`);
+    console.log(`🔀 Step 2: Taking first ${limit} articles, got ${finalArticles.length} final articles`);
 
     console.log(`🔀 PUBLIC: Selected ${finalArticles.length} articles from ${processedArticles.length} candidates ${userPublisherGroups ? '(publisher - no source limits)' : '(general - source limited)'}`);
     console.log(`📊 Total source group distribution:`, Object.entries(sourceGroupCounts).map(([group, count]) => `${group}:${count}`).join(', '));
@@ -2080,8 +2088,8 @@ articleRouter.get('/', async (req, res) => {
     });
     console.log(`📊 Page ${page} source distribution:`, Object.entries(pageSourceCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
-    // Create pagination metadata
-    const totalPages = Math.ceil(processedArticles.length / limit);
+    // Create pagination metadata using actual database count
+    const totalPages = Math.ceil(totalCount / limit);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
 
@@ -2090,7 +2098,7 @@ articleRouter.get('/', async (req, res) => {
       pagination: {
         page,
         limit,
-        total: processedArticles.length,
+        total: totalCount,
         pages: totalPages,
         hasNext: hasNextPage,
         hasPrev: hasPrevPage
