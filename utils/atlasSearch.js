@@ -290,10 +290,10 @@ async function findInContent({ findText, contentFormat, limit = 1000 }) {
     }
 
     const cleanedText = findText.trim();
-    
+
     // Detect if text contains non-Latin characters (Arabic, Farsi, etc.)
     const hasNonLatinChars = /[^\u0000-\u007F]/.test(cleanedText);
-    
+
     console.log(`🔍 Find in content: "${cleanedText}" (Unicode: ${hasNonLatinChars})`);
 
     // For non-Latin text (Farsi, Arabic), use regex directly as Atlas Search
@@ -348,15 +348,15 @@ async function findInContent({ findText, contentFormat, limit = 1000 }) {
  */
 async function findInContentRegex({ findText, contentFormat, limit = 1000 }) {
     console.log(`🔍 Regex search for: "${findText}"`);
-    
+
     // Escape special regex characters but preserve Unicode
     const escapedText = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    
+
     // Build filter - use $regex without 'i' flag for Unicode, exact match is better for RTL languages
     const filter = {
         content: { $regex: escapedText }
     };
-    
+
     if (contentFormat) {
         filter.contentFormat = contentFormat;
     }
@@ -366,7 +366,7 @@ async function findInContentRegex({ findText, contentFormat, limit = 1000 }) {
             .select('_id title content contentFormat')
             .limit(limit)
             .lean();
-        
+
         console.log(`✅ Regex found ${results.length} articles containing "${findText}"`);
         return results;
     } catch (error) {

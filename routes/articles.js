@@ -2738,11 +2738,11 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
     const articles = await Article.find({ _id: { $in: articleIds } }).select('_id content contentFormat');
 
     let updatedCount = 0;
-    
+
     // Build regex with proper Unicode support
     // For non-Latin text, use 'gu' flags for proper Unicode handling
     const escapedText = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = hasNonLatinChars 
+    const regex = hasNonLatinChars
       ? new RegExp(escapedText, 'gu')  // Unicode-aware global replace
       : new RegExp(escapedText, 'gi'); // Case-insensitive for Latin text
 
