@@ -130,6 +130,41 @@ function simpleHash(str) {
   return Math.abs(hash);
 }
 
+/**
+ * OPTIMIZED COUNT CACHING
+ * Pre-warm common article counts in background to avoid expensive countDocuments() calls
+ */
+const COMMON_LANGUAGES = ['english', 'arabic'];
+const COUNT_CACHE_TTL = 900; // 15 minutes
+
+async function warmArticleCountCache() {
+  console.log('🔥 Warming article count cache...');
+  try {
+    for (const lang of COMMON_LANGUAGES) {
+      const filter = { language: lang };
+      const filterKey = JSON.stringify(filter);
+      const countCacheKey = `articles_count_${simpleHash(filterKey)}`;
+      
+      // Check if cache exists and is recent
+      const existingCache = await redis.get(countCacheKey);
+      if (!existingCache) {
+        const count = await Article.countDocuments(filter);
+        await redis.set(countCacheKey, count.toString(), 'EX', COUNT_CACHE_TTL);
+        console.log(`📊 Cached count for ${lang}: ${count}`);
+      }
+    }
+    console.log('✅ Article count cache warmed');
+  } catch (error) {
+    console.error('⚠️ Error warming count cache:', error.message);
+  }
+}
+
+// Warm cache on startup (after 30 seconds to let DB connect)
+setTimeout(warmArticleCountCache, 30000);
+
+// Refresh cache every 15 minutes
+setInterval(warmArticleCountCache, COUNT_CACHE_TTL * 1000);
+
 /** ---- Routes ---- **/
 
 // GET: Quick performance test endpoint
@@ -1987,17 +2022,41 @@ articleRouter.get('/', async (req, res) => {
       }
     }
 
-    // Get actual total count from database for proper pagination
-    const totalCount = await Article.countDocuments(filter);
-    console.log(`📊 Total articles in database matching filter: ${totalCount}`);
+    // OPTIMIZED PAGINATION: Use cached counts or estimate instead of countDocuments()
+    // This avoids expensive full collection scans on 100K+ documents
+    const filterKey = JSON.stringify(filter);
+    const countCacheKey = `articles_count_${simpleHash(filterKey)}`;
+    let totalCount = null;
+
+    // Try to get cached count first
+    try {
+      const cachedCount = await redis.get(countCacheKey);
+      if (cachedCount) {
+        totalCount = parseInt(cachedCount, 10);
+        console.log(`📊 Using cached count: ${totalCount}`);
+      }
+    } catch (err) {
+      console.error('⚠️ Redis count cache error (safe to ignore):', err.message);
+    }
+
+    // If no cached count and it's a simple filter (no category, no sourceId filter), use estimatedDocumentCount
+    if (totalCount === null) {
+      const isSimpleFilter = !category && !filter.sourceId && filter.language;
+      if (isSimpleFilter) {
+        // Use fast estimated count for simple queries
+        totalCount = await Article.estimatedDocumentCount();
+        console.log(`📊 Using estimated count (fast): ${totalCount}`);
+      }
+      // Note: For filtered queries, we'll determine hasNext from fetched results instead
+    }
 
     // Calculate skip for proper pagination
     const skip = (page - 1) * limit;
 
     // Fetch articles with proper skip/limit for the current page
-    // Fetch extra to allow for source group filtering
+    // Fetch extra to allow for source group filtering AND to detect if there's a next page
     const fetchMultiplier = userPublisherGroups ? 4 : 3;
-    const fetchLimit = limit * fetchMultiplier;
+    const fetchLimit = limit * fetchMultiplier + 1; // +1 to detect hasNext without counting
 
     const raw = await Article.find(filter)
       .populate({
@@ -2007,7 +2066,7 @@ articleRouter.get('/', async (req, res) => {
       })
       .sort({ publishedAt: -1 })
       .skip(skip)
-      .limit(fetchLimit) // Get extra articles for source filtering
+      .limit(fetchLimit) // Get extra articles for source filtering + hasNext detection
       .lean();
 
     // Filter out articles from blocked sources (where sourceId population returned null)
@@ -2088,18 +2147,47 @@ articleRouter.get('/', async (req, res) => {
     });
     console.log(`📊 Page ${page} source distribution:`, Object.entries(pageSourceCounts).map(([group, count]) => `${group}:${count}`).join(', '));
 
-    // Create pagination metadata using actual database count
-    const totalPages = Math.ceil(totalCount / limit);
-    const hasNextPage = page < totalPages;
+    // OPTIMIZED PAGINATION: Determine hasNext from fetched results instead of counting
+    // If we fetched more articles than we need after filtering, there's likely more
+    const hasNextPage = processedArticles.length > limit;
     const hasPrevPage = page > 1;
+
+    // Calculate total and pages - use cached/estimated count if available, otherwise estimate from current page
+    let effectiveTotal = totalCount;
+    let totalPages;
+
+    if (totalCount !== null) {
+      // We have a count (cached or estimated)
+      totalPages = Math.ceil(totalCount / limit);
+    } else {
+      // No count available - estimate based on current results
+      // If we got a full page + extras, assume there's more content
+      if (hasNextPage) {
+        // Estimate: current position + what we know exists
+        effectiveTotal = (page * limit) + processedArticles.length;
+        totalPages = page + 1; // At least one more page
+      } else {
+        // This is likely the last page
+        effectiveTotal = ((page - 1) * limit) + finalArticles.length;
+        totalPages = page;
+      }
+
+      // Cache this count estimate for future requests (shorter TTL for estimates)
+      try {
+        await redis.set(countCacheKey, effectiveTotal.toString(), 'EX', 600); // 10 min cache for count
+        console.log(`📊 Cached estimated count: ${effectiveTotal}`);
+      } catch (err) {
+        console.error('⚠️ Redis count cache set error:', err.message);
+      }
+    }
 
     const responseData = {
       articles: finalArticles,
       pagination: {
         page,
         limit,
-        total: totalCount,
-        pages: totalPages,
+        total: effectiveTotal || 0,
+        pages: totalPages || 1,
         hasNext: hasNextPage,
         hasPrev: hasPrevPage
       }
