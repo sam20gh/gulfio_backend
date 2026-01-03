@@ -9,9 +9,15 @@
  * 
  * PERFORMANCE IMPACT:
  * - Eliminates slow embedding updates during user actions (500ms → 0ms)
- * - Processes all activities (views, likes, dislikes, saves) in batch
+ * - Processes all activities (views, likes, dislikes, saves, comments) in batch
  * - Maintains 10x performance improvement for active users
  * - Reduced response times for /article/:id/like, /article/:id/save, etc.
+ * 
+ * CONTENT SUPPORT:
+ * - ✅ Articles (views, likes, dislikes, saves)
+ * - ✅ Reels/Videos (views, likes, dislikes, saves)
+ * - ✅ Comments (strong engagement signal, weight: 3.5)
+ * - Unified embedding generation from all user activities
  * 
  * SCHEDULING:
  * gcloud scheduler jobs create http update-user-embeddings \

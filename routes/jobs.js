@@ -50,6 +50,7 @@ const verifyAdminKey = (req, res, next) => {
  * CONTENT SUPPORT:
  * - ✅ Articles (views, likes, dislikes, saves)
  * - ✅ Reels/Videos (views, likes, dislikes, saves)
+ * - ✅ Comments (strong engagement signal)
  * - Unified embedding generation from all user activities
  * 
  * Request headers:
@@ -105,7 +106,7 @@ router.get('/status', verifyAdminKey, (req, res) => {
                 name: 'update-user-embeddings',
                 endpoint: '/api/jobs/update-user-embeddings',
                 schedule: '0 2 * * *',
-                description: 'Update User.embedding_pca for active users daily (Articles + Reels)'
+                description: 'Update User.embedding_pca for active users daily (Articles + Reels + Comments)'
             }
         ],
         timestamp: new Date().toISOString()

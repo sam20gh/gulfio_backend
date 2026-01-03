@@ -5,7 +5,8 @@ const Comment = require('../models/Comment'); // You'll need to create this mode
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const NotificationService = require('../utils/notificationService');
-const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
+// Note: User embeddings are updated via daily cron job at 2 AM
+// Endpoint: /api/jobs/update-user-embeddings
 const redis = require('../utils/redis');
 
 // 🚀 Instagram-style instant comment loading with Redis caching
@@ -119,17 +120,6 @@ router.post('/', auth, async (req, res) => {
             console.error('Cache invalidation error:', cacheError.message);
         }
 
-        // Update user embedding after posting comment
-        try {
-            const commenterUser = await User.findOne({ supabase_id: userId });
-            if (commenterUser) {
-                await updateUserProfileEmbedding(commenterUser._id);
-            }
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
-
         // Check for mentions in the comment and send notifications
         try {
             const commenterUser = await User.findOne({ supabase_id: userId });
@@ -176,17 +166,6 @@ router.patch('/:id', auth, async (req, res) => {
             console.error('Cache invalidation error:', cacheError.message);
         }
 
-        // Update user embedding after editing comment
-        try {
-            const user = await User.findOne({ supabase_id: updated.userId });
-            if (user) {
-                await updateUserProfileEmbedding(user._id);
-            }
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
-
         res.json(updated);
     } catch (error) {
         console.error('PATCH /comments/:id error:', error);
@@ -223,18 +202,7 @@ router.delete('/:id', auth, async (req, res) => {
         }
 
         // Delete the comment
-        const deleted = await Comment.findByIdAndDelete(req.params.id);
-
-        // Update user embedding after deleting comment
-        try {
-            const user = await User.findOne({ supabase_id: deleted.userId });
-            if (user) {
-                await updateUserProfileEmbedding(user._id);
-            }
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
+        await Comment.findByIdAndDelete(req.params.id);
 
         res.json({ message: 'Comment deleted' });
     } catch (error) {
@@ -309,17 +277,6 @@ router.post('/:id/react', auth, async (req, res) => {
         let userReact = null;
         if (updated.likedBy.includes(userId)) userReact = 'like';
         else if (updated.dislikedBy.includes(userId)) userReact = 'dislike';
-
-        // Update user embedding after comment reaction
-        try {
-            const reactingUser = await User.findOne({ supabase_id: userId });
-            if (reactingUser) {
-                await updateUserProfileEmbedding(reactingUser._id);
-            }
-        } catch (embeddingError) {
-            console.error('Error updating user embedding:', embeddingError);
-            // Don't fail the request if embedding update fails
-        }
 
         return res.json({ likes, dislikes, userReact });
 
@@ -472,16 +429,31 @@ router.delete('/:commentId/reply/:replyId', auth, async (req, res) => {
 router.get('/:id/comments', async (req, res) => {
     try {
         const userId = req.params.id; // This is the Supabase ID
+        const cacheKey = `user:comments:${userId}`;
 
-        // Verify user exists
-        const user = await User.findOne({ supabase_id: userId });
+        // Try cache first for instant response
+        try {
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                console.log(`⚡ User comments cache HIT for ${userId}`);
+                return res.json(JSON.parse(cached));
+            }
+        } catch (cacheError) {
+            console.error('Redis get error:', cacheError.message);
+        }
+
+        // Verify user exists (use lean for performance)
+        const user = await User.findOne({ supabase_id: userId }).select('_id').lean();
         if (!user) return res.status(404).send({ message: 'User not found' });
 
         // Fetch comments using userId (which stores Supabase ID)
+        // OPTIMIZATION: Limit results and select only needed fields
         const comments = await Comment
             .find({ userId: userId })
+            .select('_id comment articleId createdAt')
             .sort({ createdAt: -1 })
-            .lean(); // Use lean for better performance
+            .limit(100) // Limit to prevent excessive data loading
+            .lean();
 
         // Fetch article titles for comments with articleIds
         const Article = require('../models/Article');
@@ -489,30 +461,41 @@ router.get('/:id/comments', async (req, res) => {
             .filter(c => c.articleId)
             .map(c => c.articleId);
 
-        const articles = await Article
-            .find({ _id: { $in: articleIds } })
-            .select('_id title')
-            .lean();
+        // Only fetch if there are articleIds
+        let articleMap = {};
+        if (articleIds.length > 0) {
+            const articles = await Article
+                .find({ _id: { $in: articleIds } })
+                .select('_id title')
+                .lean();
 
-        const articleMap = {};
-        articles.forEach(a => {
-            articleMap[a._id.toString()] = a.title;
-        });
+            articles.forEach(a => {
+                articleMap[a._id.toString()] = a.title;
+            });
+        }
 
         // Map comments to frontend format
         const mappedComments = comments.map(c => ({
             _id: c._id,
-            text: c.comment, // Map 'comment' field to 'text'
+            text: c.comment,
             articleId: c.articleId,
             articleTitle: articleMap[c.articleId] || 'Unknown Article',
             createdAt: c.createdAt
         }));
 
-        // Return with count for frontend
-        res.json({
+        const response = {
             count: mappedComments.length,
             comments: mappedComments
-        });
+        };
+
+        // Cache the result
+        try {
+            await redis.set(cacheKey, JSON.stringify(response), 'EX', COMMENT_CACHE_TTL);
+        } catch (cacheError) {
+            console.error('Redis set error:', cacheError.message);
+        }
+
+        res.json(response);
     } catch (err) {
         console.error('Error fetching user comments:', err);
         res.status(500).send({ message: 'Server error' });

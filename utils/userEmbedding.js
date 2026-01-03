@@ -3,6 +3,7 @@ const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
 const User = require('../models/User');
 const Article = require('../models/Article');
 const UserActivity = require('../models/UserActivity');
+const Comment = require('../models/Comment');
 const mongoose = require('mongoose');
 
 /**
@@ -38,7 +39,8 @@ async function updateUserProfileEmbedding(userId) {
             viewed: 1.0,    // Basic engagement
             saved: 2.5,     // High interest  
             disliked: -1.0, // Negative signal
-            read_time: 1.5  // Reading engagement (between view and like)
+            read_time: 1.5, // Reading engagement (between view and like)
+            commented: 3.5  // Commenting = very strong engagement signal
         };
 
         // 1. COLLECT FROM DIRECT USER ARRAYS (existing behavior)
@@ -129,7 +131,32 @@ async function updateUserProfileEmbedding(userId) {
             activityMap.set(contentId, Math.max(currentWeight, activityWeight));
         }
 
-        console.log(`🎯 Total unique articles in activity map: ${activityMap.size}`);
+        // 3. COLLECT FROM COMMENTS (strong engagement signal)
+        // Comments indicate the user is highly engaged with the content
+        const recentComments = await Comment.find({
+            userId: user.supabase_id,
+            createdAt: {
+                $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
+            }
+        })
+            .select('articleId reelId')
+            .sort({ createdAt: -1 })
+            .limit(200) // Limit to most recent 200 comments
+            .lean();
+
+        console.log(`💬 Found ${recentComments.length} recent comments from user`);
+
+        // Process comments - commenting is a strong engagement signal
+        for (const comment of recentComments) {
+            const contentId = (comment.articleId || comment.reelId)?.toString();
+            if (!contentId) continue;
+
+            const currentWeight = activityMap.get(contentId) || 0;
+            // Use the highest weight - commenting is very strong engagement
+            activityMap.set(contentId, Math.max(currentWeight, weights.commented));
+        }
+
+        console.log(`🎯 Total unique content in activity map: ${activityMap.size}`);
 
         // Track disliked categories for future filtering
         const dislikedCategories = new Set(user.disliked_categories || []);
