@@ -139,7 +139,7 @@ async function initializeApp() {
         await mongoose.connect(process.env.MONGO_URI, {
             serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for Cloud Run
             connectTimeoutMS: 30000,
-            bufferCommands: false,
+            bufferCommands: true, // Enable command buffering to queue requests while connecting
             maxPoolSize: 10,
             minPoolSize: 2,
             retryWrites: true,

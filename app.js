@@ -35,6 +35,7 @@ console.log('✅ Jobs router loaded successfully');
 
 const { recommendationIndex } = require('./recommendation/fastIndex');
 // const cacheWarmer = require('./services/cacheWarmer'); // Temporarily disabled for deployment
+const { warmSourceCache } = require('./utils/sourceCache'); // Source caching for performance
 require('dotenv').config();
 const app = express();
 
@@ -92,7 +93,7 @@ mongoose.connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 30000, // Increased for dedicated cluster
     socketTimeoutMS: 45000, // 45 seconds socket timeout for dedicated cluster
     connectTimeoutMS: 30000, // 30 seconds to establish connection
-    bufferCommands: false, // Disable buffering to fail fast
+    bufferCommands: true, // Enable buffering to queue requests until connected
     maxPoolSize: 10, // Increased pool size for dedicated cluster
     minPoolSize: 2, // Maintain at least 2 socket connections
     maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
@@ -123,6 +124,15 @@ mongoose.connect(process.env.MONGO_URI, {
                 console.error('⚠️ Failed to initialize recommendation system (non-critical):', error.message);
             }
         }, 10000); // Wait 10 seconds after startup
+
+        // Warm source cache for faster article enrichment (avoids $lookup)
+        setTimeout(async () => {
+            try {
+                await warmSourceCache();
+            } catch (error) {
+                console.error('⚠️ Failed to warm source cache (non-critical):', error.message);
+            }
+        }, 3000); // Warm early for faster first requests
 
         // Initialize cache warmer service
         setTimeout(() => {
@@ -158,9 +168,9 @@ app.use(express.json());
 // Serve static files from public directory
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
-// Middleware to log MongoDB connection status (removed blocking check)
+// Middleware to log MongoDB connection status (debug only)
 app.use('/api', (req, res, next) => {
-    if (mongoose.connection.readyState !== 1 && process.env.NODE_ENV !== 'production') {
+    if (mongoose.connection.readyState !== 1) {
         console.log(`⚠️ API route ${req.path} accessed with MongoDB readyState: ${mongoose.connection.readyState}`);
     }
     next();

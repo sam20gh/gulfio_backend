@@ -12,6 +12,7 @@ const ensureMongoUser = require('../middleware/ensureMongoUser');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { searchArticles, findInContent } = require('../utils/atlasSearch');
+const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
 
 const articleRouter = express.Router();
 
@@ -2058,19 +2059,34 @@ articleRouter.get('/', async (req, res) => {
     const fetchMultiplier = userPublisherGroups ? 4 : 3;
     const fetchLimit = limit * fetchMultiplier + 1; // +1 to detect hasNext without counting
 
+    // OPTIMIZED: Use cached source map instead of .populate() for faster queries
+    // This avoids the slow $lookup operation that was causing 3.66s avg query times
+    const sourceMap = await getSourceMap();
+    
     const raw = await Article.find(filter)
-      .populate({
-        path: 'sourceId',
-        select: 'name icon groupName status',
-        match: { status: { $ne: 'blocked' } } // Only populate non-blocked sources
-      })
+      .select('title content contentFormat url category publishedAt image viewCount likes dislikes likedBy dislikedBy sourceId language')
       .sort({ publishedAt: -1 })
       .skip(skip)
-      .limit(fetchLimit) // Get extra articles for source filtering + hasNext detection
+      .limit(fetchLimit)
       .lean();
 
-    // Filter out articles from blocked sources (where sourceId population returned null)
-    const filteredArticles = raw.filter(article => article.sourceId !== null);
+    // Enrich with source data from cache and filter blocked sources
+    const filteredArticles = raw.filter(article => {
+      const sourceId = article.sourceId?.toString();
+      if (!sourceId) return false;
+      const source = sourceMap.get(sourceId);
+      // Include article only if source exists in cache (non-blocked sources)
+      return !!source;
+    }).map(article => {
+      const source = sourceMap.get(article.sourceId?.toString());
+      return {
+        ...article,
+        sourceName: source?.name || 'Unknown Source',
+        sourceIcon: source?.icon || null,
+        sourceGroupName: source?.groupName || null
+      };
+    });
+    
     console.log(`📊 Found ${raw.length} raw articles, ${filteredArticles.length} after filtering blocked sources${userPublisherGroups ? ' (publisher filtered)' : ''}`);
 
     // Re-rank by page-aware recency+engagement for better first page feel
@@ -2090,11 +2106,8 @@ articleRouter.get('/', async (req, res) => {
           ...a,
           fetchId: new mongoose.Types.ObjectId().toString(),
           engagementScore: engagement,
-          finalScore,
-          // Extract source info from populated data
-          sourceName: a.sourceId?.name || 'Unknown Source',
-          sourceIcon: a.sourceId?.icon || null,
-          sourceGroupName: a.sourceId?.groupName || null
+          finalScore
+          // Note: sourceName, sourceIcon, sourceGroupName already added from cache above
         };
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
@@ -2323,48 +2336,145 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 });
 
 // Related-by-embedding (small helper endpoint you already have)
-// ⚠️ DEPRECATED: Use /related/:id instead which uses Atlas Vector Search
-// This endpoint is kept for backward compatibility but is inefficient
+// ⚠️ OPTIMIZED: Now uses embedding_pca with Atlas Vector Search for better performance
+// Falls back to manual cosine similarity if vector search unavailable
 articleRouter.get('/related-embedding/:id', async (req, res) => {
   const { id } = req.params;
+  const startTime = Date.now();
+  
   try {
-    const target = await Article.findById(id).select('embedding language').lean();
-    if (!target?.embedding) return res.status(404).json({ error: 'No embedding found' });
-
-    // OPTIMIZED: Use aggregation with $limit instead of loading all articles
-    // This still isn't ideal - should use Atlas Vector Search instead
-    const limit = parseInt(req.query.limit) || 5;
-
-    // Get a sample of recent articles with embeddings (not all articles!)
-    const sampleArticles = await Article.find({
-      _id: { $ne: id },
-      embedding: { $exists: true, $ne: [] },
-      language: target.language // Same language only
-    })
-      .select('_id title category publishedAt embedding image')
-      .sort({ publishedAt: -1 })
-      .limit(200) // Only check recent 200 articles, not ALL
-      .lean();
-
-    const cosineSimilarity = (a, b) => {
-      if (!a || !b || a.length !== b.length) return 0;
-      let dot = 0, magA = 0, magB = 0;
-      for (let i = 0; i < a.length; i++) {
-        dot += a[i] * b[i];
-        magA += a[i] * a[i];
-        magB += b[i] * b[i];
+    const limit = Math.min(parseInt(req.query.limit) || 5, 20);
+    
+    // Check cache first
+    const cacheKey = `related_embedding_${id}_${limit}`;
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        console.log(`⚡ Related-embedding cache hit for ${id} in ${Date.now() - startTime}ms`);
+        return res.json(JSON.parse(cached));
       }
-      return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
-    };
-
-    const related = sampleArticles
-      .map(a => {
-        const { embedding, ...rest } = a;
-        return { ...rest, similarity: cosineSimilarity(target.embedding, embedding) };
+    } catch (err) {
+      // Continue without cache
+    }
+    
+    // Get target article - prefer embedding_pca for vector search
+    const target = await Article.findById(id)
+      .select('embedding_pca embedding language')
+      .lean();
+    
+    if (!target) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+    
+    let related = [];
+    
+    // Method 1: Try Atlas Vector Search with embedding_pca (fastest)
+    if (target.embedding_pca && Array.isArray(target.embedding_pca) && target.embedding_pca.length > 0) {
+      try {
+        const vectorResults = await Article.aggregate([
+          {
+            $vectorSearch: {
+              index: 'article_embeddings_pca',
+              path: 'embedding_pca',
+              queryVector: target.embedding_pca,
+              numCandidates: limit * 10,
+              limit: limit + 1, // +1 to exclude self
+              filter: {
+                language: target.language
+              }
+            }
+          },
+          {
+            $match: { _id: { $ne: new mongoose.Types.ObjectId(id) } }
+          },
+          {
+            $project: {
+              _id: 1,
+              title: 1,
+              category: 1,
+              publishedAt: 1,
+              image: 1,
+              similarity: { $meta: 'vectorSearchScore' }
+            }
+          },
+          { $limit: limit }
+        ], { maxTimeMS: 3000 });
+        
+        if (vectorResults.length > 0) {
+          related = vectorResults;
+          console.log(`✅ Related-embedding via vector search: ${related.length} results in ${Date.now() - startTime}ms`);
+        }
+      } catch (vectorErr) {
+        console.warn('⚠️ Vector search failed, falling back:', vectorErr.message);
+      }
+    }
+    
+    // Method 2: Fallback to manual cosine similarity with limited sample
+    if (related.length === 0 && target.embedding && Array.isArray(target.embedding) && target.embedding.length > 0) {
+      // Use a smaller, indexed query - only recent articles with embeddings
+      const sampleArticles = await Article.find({
+        _id: { $ne: id },
+        language: target.language,
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days only
       })
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
+        .select('_id title category publishedAt embedding image')
+        .sort({ publishedAt: -1 })
+        .limit(100) // Reduced from 200
+        .lean();
+      
+      // Filter to only articles with embeddings (in JS, faster than $exists in query)
+      const articlesWithEmbeddings = sampleArticles.filter(a => 
+        a.embedding && Array.isArray(a.embedding) && a.embedding.length > 0
+      );
+      
+      const cosineSimilarity = (a, b) => {
+        if (!a || !b || a.length !== b.length) return 0;
+        let dot = 0, magA = 0, magB = 0;
+        for (let i = 0; i < a.length; i++) {
+          dot += a[i] * b[i];
+          magA += a[i] * a[i];
+          magB += b[i] * b[i];
+        }
+        return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+      };
 
+      related = articlesWithEmbeddings
+        .map(a => {
+          const { embedding, ...rest } = a;
+          return { ...rest, similarity: cosineSimilarity(target.embedding, embedding) };
+        })
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
+      
+      console.log(`✅ Related-embedding via fallback cosine: ${related.length} results in ${Date.now() - startTime}ms`);
+    }
+    
+    // Method 3: Category-based fallback if no embeddings
+    if (related.length === 0) {
+      const target2 = await Article.findById(id).select('category language').lean();
+      if (target2) {
+        related = await Article.find({
+          _id: { $ne: id },
+          category: target2.category,
+          language: target2.language
+        })
+          .select('_id title category publishedAt image')
+          .sort({ publishedAt: -1 })
+          .limit(limit)
+          .lean();
+        
+        related = related.map(a => ({ ...a, similarity: 0.5 })); // Default similarity
+        console.log(`✅ Related-embedding via category fallback: ${related.length} results in ${Date.now() - startTime}ms`);
+      }
+    }
+    
+    // Cache the results
+    try {
+      await redis.set(cacheKey, JSON.stringify(related), 'EX', 1800); // 30 min cache
+    } catch (err) {
+      // Continue without caching
+    }
+    
     res.json(related);
   } catch (err) {
     console.error('Error finding related articles:', err);
