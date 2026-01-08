@@ -177,7 +177,7 @@ const Source = require('../models/Source');
  */
 articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
-  
+
   try {
     const userId = req.mongoUser.supabase_id;
     const page = Math.max(1, parseInt(req.query.page) || 1);
