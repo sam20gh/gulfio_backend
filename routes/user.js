@@ -163,7 +163,7 @@ router.get('/by-supabase/:id', async (req, res) => {
 router.get('/by-supabase/:id/with-preferences', async (req, res) => {
     try {
         const user = await User.findOne({ supabase_id: req.params.id })
-            .select('supabase_id email name avatar_url liked_articles disliked_articles saved_articles saved_reels');
+            .select('supabase_id email name avatar_url liked_articles disliked_articles saved_articles saved_reels following_sources language city');
         if (!user) return res.status(404).json({ message: 'User not found' });
         res.json(user);
     } catch (err) {

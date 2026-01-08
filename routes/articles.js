@@ -166,7 +166,165 @@ setTimeout(warmArticleCountCache, 30000);
 // Refresh cache every 15 minutes
 setInterval(warmArticleCountCache, COUNT_CACHE_TTL * 1000);
 
+// Import Source model for following feed
+const Source = require('../models/Source');
+
 /** ---- Routes ---- **/
+
+/**
+ * GET: Following Feed
+ * Returns articles from sources the user is following (by groupName)
+ */
+articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const userId = req.mongoUser.supabase_id;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const language = req.query.language || userLanguagePref.toLowerCase();
+
+    console.log(`📰 [FOLLOWING] Fetching following feed for user ${userId}, page ${page}, limit ${limit}, lang: ${language}`);
+
+    // Get user's following sources (groupName strings)
+    const user = await User.findOne({ supabase_id: userId }).select('following_sources').lean();
+    const followingGroups = user?.following_sources || [];
+
+    console.log(`📰 [FOLLOWING] User is following ${followingGroups.length} source groups:`, followingGroups);
+
+    if (followingGroups.length === 0) {
+      console.log(`📭 [FOLLOWING] User has no followed sources`);
+      return res.json({
+        articles: [],
+        hasMore: false,
+        message: 'You are not following any sources yet. Follow sources to see their articles here.',
+        totalFollowed: 0
+      });
+    }
+
+    // Find all source IDs that belong to the followed groups
+    const followedSources = await Source.find({
+      groupName: { $in: followingGroups },
+      status: { $ne: 'blocked' }
+    }).select('_id groupName').lean();
+
+    const followedSourceIds = followedSources.map(s => s._id);
+    console.log(`📰 [FOLLOWING] Found ${followedSourceIds.length} source IDs for ${followingGroups.length} groups`);
+
+    if (followedSourceIds.length === 0) {
+      console.log(`📭 [FOLLOWING] No active sources found for followed groups`);
+      return res.json({
+        articles: [],
+        hasMore: false,
+        message: 'The sources you follow have no active articles.',
+        totalFollowed: followingGroups.length
+      });
+    }
+
+    // Cache check
+    const cacheKey = `following_${userId}_${language}_${page}_${limit}`;
+    let cached;
+    try {
+      cached = await redis.get(cacheKey);
+      if (cached) {
+        console.log(`⚡ [FOLLOWING] Cache hit in ${Date.now() - startTime}ms`);
+        return res.json(JSON.parse(cached));
+      }
+    } catch (err) {
+      console.warn('⚠️ Redis get error:', err.message);
+    }
+
+    // Fetch articles from followed sources
+    const skip = (page - 1) * limit;
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const articles = await Article.aggregate([
+      {
+        $match: {
+          sourceId: { $in: followedSourceIds },
+          language: language,
+          publishedAt: { $gte: twentyFourHoursAgo }
+        }
+      },
+      {
+        $sort: { publishedAt: -1 }
+      },
+      {
+        $skip: skip
+      },
+      {
+        $limit: limit + 1 // Fetch one extra to check if there are more
+      },
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'sourceData'
+        }
+      },
+      {
+        $addFields: {
+          sourceName: { $arrayElemAt: ['$sourceData.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$sourceData.icon', 0] },
+          sourceGroupName: { $arrayElemAt: ['$sourceData.groupName', 0] },
+          isFollowing: { $literal: true }
+        }
+      },
+      {
+        $project: {
+          title: 1,
+          content: 1,
+          contentFormat: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          likedBy: 1,
+          dislikedBy: 1,
+          sourceId: 1,
+          sourceName: 1,
+          sourceIcon: 1,
+          sourceGroupName: 1,
+          isFollowing: 1
+        }
+      }
+    ]);
+
+    // Check if there are more articles
+    const hasMore = articles.length > limit;
+    const finalArticles = hasMore ? articles.slice(0, limit) : articles;
+
+    console.log(`✅ [FOLLOWING] Returning ${finalArticles.length} articles (hasMore: ${hasMore}) in ${Date.now() - startTime}ms`);
+
+    const result = {
+      articles: finalArticles,
+      hasMore,
+      page,
+      totalFollowed: followingGroups.length
+    };
+
+    // Cache for 5 minutes
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), 'EX', 300);
+    } catch (err) {
+      console.warn('⚠️ Redis set error:', err.message);
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error(`❌ [FOLLOWING] Error in ${Date.now() - startTime}ms:`, error);
+    res.status(500).json({
+      error: 'Failed to fetch following feed',
+      message: error.message
+    });
+  }
+});
 
 // GET: Quick performance test endpoint
 articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
@@ -581,6 +739,176 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       console.error('❌ Fallback also failed:', fallbackError);
       res.status(500).json({ error: 'Optimized light personalized error', message: error.message });
     }
+  }
+});
+
+/**
+ * GET: Following feed - Articles from sources the user follows
+ * Returns articles only from sourceGroups that the user has followed
+ */
+articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const userId = req.mongoUser.supabase_id;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+    const forceRefresh = req.query.noCache === 'true';
+
+    // Use user's language preference from database if not specified in query
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const defaultLang = userLanguagePref.toLowerCase();
+    const language = req.query.language || defaultLang;
+
+    console.log(`📰 Following feed for user ${userId}, page ${page}, limit ${limit}, lang: ${language}`);
+
+    // Step 1: Get user's followed source groups
+    const user = await User.findOne({ supabase_id: userId })
+      .select('following_sources')
+      .lean();
+
+    const followedGroups = user?.following_sources || [];
+
+    if (followedGroups.length === 0) {
+      console.log(`📭 User ${userId} is not following any sources`);
+      return res.json({
+        articles: [],
+        page,
+        hasMore: false,
+        message: 'Not following any sources yet',
+        followedGroupsCount: 0
+      });
+    }
+
+    console.log(`🔍 User following ${followedGroups.length} source groups:`, followedGroups);
+
+    // Step 2: Find all Source _ids that belong to followed groups
+    const Source = require('../models/Source');
+    const followedSources = await Source.find({
+      groupName: { $in: followedGroups },
+      status: { $ne: 'blocked' }
+    }).select('_id groupName').lean();
+
+    const followedSourceIds = followedSources.map(s => s._id);
+
+    if (followedSourceIds.length === 0) {
+      console.log(`📭 No active sources found for followed groups`);
+      return res.json({
+        articles: [],
+        page,
+        hasMore: false,
+        message: 'No active sources in followed groups',
+        followedGroupsCount: followedGroups.length
+      });
+    }
+
+    console.log(`🔍 Found ${followedSourceIds.length} source IDs for followed groups`);
+
+    // Step 3: Check cache
+    const cacheKey = `articles_following_${userId}_${language}_${page}_${limit}_${Math.floor(Date.now() / (15 * 60 * 1000))}`;
+
+    let cached;
+    if (!forceRefresh) {
+      try {
+        cached = await redis.get(cacheKey);
+        if (cached) {
+          const result = JSON.parse(cached);
+          console.log(`⚡ Following feed cache hit in ${Date.now() - startTime}ms`);
+          return res.json(result);
+        }
+      } catch (err) {
+        console.error('⚠️ Redis get error:', err.message);
+      }
+    }
+
+    // Step 4: Query articles from followed sources
+    const queryStart = Date.now();
+    const skip = (page - 1) * limit;
+    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000); // 3 days for following feed
+
+    const articles = await Article.aggregate([
+      {
+        $match: {
+          sourceId: { $in: followedSourceIds },
+          language: language,
+          publishedAt: { $gte: seventyTwoHoursAgo }
+        }
+      },
+      {
+        $sort: { publishedAt: -1 }
+      },
+      {
+        $skip: skip
+      },
+      {
+        $limit: limit + 1 // Get one extra to check if there are more
+      },
+      {
+        $project: {
+          title: 1,
+          content: 1,
+          contentFormat: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          likedBy: 1,
+          dislikedBy: 1,
+          sourceId: 1
+        }
+      }
+    ]);
+
+    console.log(`⚡ Following feed DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+
+    // Check if there are more articles
+    const hasMore = articles.length > limit;
+    const articlesForResponse = hasMore ? articles.slice(0, limit) : articles;
+
+    // Step 5: Enrich with source info
+    const enrichedArticles = await enrichArticlesWithSources(articlesForResponse);
+
+    // Add following feed marker
+    const finalArticles = enrichedArticles.map(article => ({
+      ...article,
+      isFollowing: true,
+      fetchedAt: new Date(),
+      page
+    }));
+
+    const result = {
+      articles: finalArticles,
+      page,
+      hasMore,
+      followedGroupsCount: followedGroups.length,
+      followedSourcesCount: followedSourceIds.length
+    };
+
+    // Step 6: Cache the result
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), 'EX', 300); // 5 min cache for following feed
+    } catch (err) {
+      console.error('⚠️ Redis set error:', err.message);
+    }
+
+    const totalTime = Date.now() - startTime;
+    console.log(`📰 Following feed complete in ${totalTime}ms - ${finalArticles.length} articles from ${followedGroups.length} groups`);
+
+    // Add performance headers
+    res.setHeader('X-Performance-Time', totalTime);
+    res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
+    res.setHeader('X-Following-Groups', followedGroups.length);
+    res.setHeader('X-Following-Sources', followedSourceIds.length);
+
+    res.json(result);
+
+  } catch (error) {
+    const errorTime = Date.now() - startTime;
+    console.error(`❌ Following feed error in ${errorTime}ms:`, error);
+    res.status(500).json({ error: 'Following feed error', message: error.message });
   }
 });
 
