@@ -6,6 +6,9 @@
 .env.local
 .env.production
 
+# Firebase credentials - NEVER COMMIT
+firebase-credentials.json
+
 ### Node ###
 # Logs
 logs

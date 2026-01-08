@@ -23,29 +23,29 @@ const IN_MEMORY_TTL = 60000; // 1 minute in-memory cache for ultra-fast lookups
  * @returns {Promise<Array>} Array of sources
  */
 async function getAllSources() {
-  try {
-    // Try Redis cache first
-    const cached = await redis.get(SOURCE_CACHE_KEY);
-    if (cached) {
-      return JSON.parse(cached);
+    try {
+        // Try Redis cache first
+        const cached = await redis.get(SOURCE_CACHE_KEY);
+        if (cached) {
+            return JSON.parse(cached);
+        }
+    } catch (err) {
+        console.warn('⚠️ Redis source cache get error:', err.message);
     }
-  } catch (err) {
-    console.warn('⚠️ Redis source cache get error:', err.message);
-  }
 
-  // Fetch from DB
-  const sources = await Source.find({ status: { $ne: 'blocked' } })
-    .select('_id name icon groupName language status')
-    .lean();
+    // Fetch from DB
+    const sources = await Source.find({ status: { $ne: 'blocked' } })
+        .select('_id name icon groupName language status')
+        .lean();
 
-  // Cache in Redis
-  try {
-    await redis.set(SOURCE_CACHE_KEY, JSON.stringify(sources), 'EX', SOURCE_CACHE_TTL);
-  } catch (err) {
-    console.warn('⚠️ Redis source cache set error:', err.message);
-  }
+    // Cache in Redis
+    try {
+        await redis.set(SOURCE_CACHE_KEY, JSON.stringify(sources), 'EX', SOURCE_CACHE_TTL);
+    } catch (err) {
+        console.warn('⚠️ Redis source cache set error:', err.message);
+    }
 
-  return sources;
+    return sources;
 }
 
 /**
@@ -54,31 +54,31 @@ async function getAllSources() {
  * @returns {Promise<Map>} Map of sourceId -> source object
  */
 async function getSourceMap() {
-  const now = Date.now();
-  
-  // Check in-memory cache first
-  if (inMemorySourceMap && (now - inMemoryCacheTime) < IN_MEMORY_TTL) {
-    return inMemorySourceMap;
-  }
+    const now = Date.now();
 
-  const sources = await getAllSources();
-  
-  // Build map
-  const sourceMap = new Map();
-  for (const source of sources) {
-    sourceMap.set(source._id.toString(), {
-      name: source.name,
-      icon: source.icon,
-      groupName: source.groupName,
-      language: source.language
-    });
-  }
+    // Check in-memory cache first
+    if (inMemorySourceMap && (now - inMemoryCacheTime) < IN_MEMORY_TTL) {
+        return inMemorySourceMap;
+    }
 
-  // Update in-memory cache
-  inMemorySourceMap = sourceMap;
-  inMemoryCacheTime = now;
+    const sources = await getAllSources();
 
-  return sourceMap;
+    // Build map
+    const sourceMap = new Map();
+    for (const source of sources) {
+        sourceMap.set(source._id.toString(), {
+            name: source.name,
+            icon: source.icon,
+            groupName: source.groupName,
+            language: source.language
+        });
+    }
+
+    // Update in-memory cache
+    inMemorySourceMap = sourceMap;
+    inMemoryCacheTime = now;
+
+    return sourceMap;
 }
 
 /**
@@ -87,21 +87,21 @@ async function getSourceMap() {
  * @returns {Promise<Array>} Articles with sourceName, sourceIcon, sourceGroupName added
  */
 async function enrichArticlesWithSources(articles) {
-  if (!articles || articles.length === 0) return articles;
+    if (!articles || articles.length === 0) return articles;
 
-  const sourceMap = await getSourceMap();
+    const sourceMap = await getSourceMap();
 
-  return articles.map(article => {
-    const sourceIdStr = article.sourceId?.toString();
-    const source = sourceIdStr ? sourceMap.get(sourceIdStr) : null;
+    return articles.map(article => {
+        const sourceIdStr = article.sourceId?.toString();
+        const source = sourceIdStr ? sourceMap.get(sourceIdStr) : null;
 
-    return {
-      ...article,
-      sourceName: source?.name || 'Unknown Source',
-      sourceIcon: source?.icon || null,
-      sourceGroupName: source?.groupName || null
-    };
-  });
+        return {
+            ...article,
+            sourceName: source?.name || 'Unknown Source',
+            sourceIcon: source?.icon || null,
+            sourceGroupName: source?.groupName || null
+        };
+    });
 }
 
 /**
@@ -110,45 +110,45 @@ async function enrichArticlesWithSources(articles) {
  * @returns {Promise<Object|null>} Source object or null
  */
 async function getSourceById(sourceId) {
-  if (!sourceId) return null;
-  
-  const sourceMap = await getSourceMap();
-  return sourceMap.get(sourceId.toString()) || null;
+    if (!sourceId) return null;
+
+    const sourceMap = await getSourceMap();
+    return sourceMap.get(sourceId.toString()) || null;
 }
 
 /**
  * Invalidate source cache (call when sources are updated)
  */
 async function invalidateSourceCache() {
-  try {
-    await redis.del(SOURCE_CACHE_KEY);
-    await redis.del(SOURCE_MAP_KEY);
-    inMemorySourceMap = null;
-    inMemoryCacheTime = 0;
-    console.log('🧹 Source cache invalidated');
-  } catch (err) {
-    console.warn('⚠️ Failed to invalidate source cache:', err.message);
-  }
+    try {
+        await redis.del(SOURCE_CACHE_KEY);
+        await redis.del(SOURCE_MAP_KEY);
+        inMemorySourceMap = null;
+        inMemoryCacheTime = 0;
+        console.log('🧹 Source cache invalidated');
+    } catch (err) {
+        console.warn('⚠️ Failed to invalidate source cache:', err.message);
+    }
 }
 
 /**
  * Pre-warm source cache (call on server startup)
  */
 async function warmSourceCache() {
-  try {
-    console.log('🔥 Warming source cache...');
-    await getSourceMap();
-    console.log('✅ Source cache warmed');
-  } catch (err) {
-    console.warn('⚠️ Failed to warm source cache:', err.message);
-  }
+    try {
+        console.log('🔥 Warming source cache...');
+        await getSourceMap();
+        console.log('✅ Source cache warmed');
+    } catch (err) {
+        console.warn('⚠️ Failed to warm source cache:', err.message);
+    }
 }
 
 module.exports = {
-  getAllSources,
-  getSourceMap,
-  enrichArticlesWithSources,
-  getSourceById,
-  invalidateSourceCache,
-  warmSourceCache
+    getAllSources,
+    getSourceMap,
+    enrichArticlesWithSources,
+    getSourceById,
+    invalidateSourceCache,
+    warmSourceCache
 };
