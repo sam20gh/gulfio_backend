@@ -290,6 +290,7 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
           sourceName: 1,
           sourceIcon: 1,
           sourceGroupName: 1,
+          language: 1, // Include language for RTL support
           isFollowing: 1
         }
       }
