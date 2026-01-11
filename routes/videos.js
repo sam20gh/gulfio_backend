@@ -185,6 +185,34 @@ function cosineSimilarity(vec1, vec2) {
     return dotProduct / (magnitudeA * magnitudeB);
 }
 
+/**
+ * Add controlled variety to ranked reels while preserving quality
+ * Uses a "window shuffle" approach: shuffle within ranking windows to maintain
+ * general quality ordering while adding freshness
+ * @param {Array} reels - Sorted array of reels by score
+ * @param {number} limit - Target number of results
+ * @returns {Array} Shuffled reels with controlled variety
+ */
+function addVarietyShuffleToReels(reels, limit) {
+    if (reels.length <= 3) return reels;
+    
+    // Divide into windows and shuffle within each
+    const windowSize = 4; // Shuffle groups of 4
+    const result = [];
+    
+    for (let i = 0; i < reels.length; i += windowSize) {
+        const window = reels.slice(i, Math.min(i + windowSize, reels.length));
+        // Fisher-Yates shuffle for this window
+        for (let j = window.length - 1; j > 0; j--) {
+            const k = Math.floor(Math.random() * (j + 1));
+            [window[j], window[k]] = [window[k], window[j]];
+        }
+        result.push(...window);
+    }
+    
+    return result;
+}
+
 // ===================== CURSOR HELPERS FOR INFINITE SCROLL =====================
 /**
  * Encode cursor data for pagination
@@ -420,20 +448,26 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         }
     }
 
-    // 4. Recency boost: newer content gets higher scores
-    // 1.5x boost for last 3 days, 1.3x for last 7 days, 1.1x for last 14 days, 1.0x after that
+    // 4. Recency boost: newer content gets MUCH higher scores to fight staleness
+    // IMPROVED: More aggressive recency boost to prioritize fresh content
+    // 2.0x boost for 0-1 day, 1.8x for 1-3 days, 1.5x for 3-7 days, 1.2x for 7-14 days, 1.0x for older
     let recencyMultiplier = 1.0;
     if (reel.scrapedAt) {
         const ageInDays = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60 * 24);
-        if (ageInDays <= 3) {
-            recencyMultiplier = 1.5; // 50% boost for very fresh content
+        if (ageInDays <= 1) {
+            recencyMultiplier = 2.0; // 100% boost for brand new content (< 24h)
+        } else if (ageInDays <= 3) {
+            recencyMultiplier = 1.8; // 80% boost for very fresh content
         } else if (ageInDays <= 7) {
-            recencyMultiplier = 1.3; // 30% boost for fresh content
+            recencyMultiplier = 1.5; // 50% boost for fresh content
         } else if (ageInDays <= 14) {
-            recencyMultiplier = 1.1; // 10% boost for recent content
+            recencyMultiplier = 1.2; // 20% boost for recent content
         }
         // else 1.0 (no boost for older content)
     }
+
+    // 5. Add small random factor to break ties and add variety (0.95 to 1.05)
+    const randomFactor = 0.95 + (Math.random() * 0.1);
 
     // Calculate base hybrid score (50/30/20)
     const baseScore = (
@@ -442,8 +476,8 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         categoryScore * 0.2
     );
 
-    // Apply recency multiplier
-    const hybridScore = baseScore * recencyMultiplier;
+    // Apply recency multiplier and random factor
+    const hybridScore = baseScore * recencyMultiplier * randomFactor;
 
     return {
         hybridScore,
@@ -575,10 +609,23 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // Sort by hybrid score (descending)
         scoredReels.sort((a, b) => b.hybridScore - a.hybridScore);
 
+        // IMPROVED: Apply source variety - max 2 videos per source
+        const sourceCounts = {};
+        const maxPerSource = Math.max(2, Math.ceil(limit / 5));
+        const diverseReels = scoredReels.filter(reel => {
+            const sourceName = reel.source?.name || 'unknown';
+            const currentCount = sourceCounts[sourceName] || 0;
+            if (currentCount >= maxPerSource) {
+                return false;
+            }
+            sourceCounts[sourceName] = currentCount + 1;
+            return true;
+        });
+
         // Log top 3 scores for debugging
-        if (scoredReels.length > 0) {
-            console.log(`🎯 PHASE 3.1 Hybrid scoring applied to ${scoredReels.length} reels`);
-            console.log(`📊 Top 3 scores:`, scoredReels.slice(0, 3).map(r => ({
+        if (diverseReels.length > 0) {
+            console.log(`🎯 PHASE 3.1 Hybrid scoring applied to ${diverseReels.length} diverse reels (from ${scoredReels.length})`);
+            console.log(`📊 Top 3 scores:`, diverseReels.slice(0, 3).map(r => ({
                 source: r.source?.name,
                 hybrid: r.hybridScore.toFixed(3),
                 age: r.scrapedAt ? `${Math.floor((Date.now() - new Date(r.scrapedAt).getTime()) / (1000 * 60 * 60 * 24))}d` : 'N/A',
@@ -586,21 +633,25 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             })));
         }
 
+        // Add light randomization for variety (shuffle top N with slight position variance)
+        const shuffledReels = addVarietyShuffleToReels(diverseReels, limit);
+
         // Check if there's more data
-        const hasMore = scoredReels.length > limit;
-        const results = hasMore ? scoredReels.slice(0, limit) : scoredReels;
+        const hasMore = shuffledReels.length > limit;
+        const results = hasMore ? shuffledReels.slice(0, limit) : shuffledReels;
 
         // Clean up results (remove embedding_pca to reduce payload)
         const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, ...reel }) => reel);
 
-        // Build next cursor
+        // Build next cursor - track ALL scored reels for better exclusion
+        const allScoredIds = scoredReels.map(r => r._id);
         const nextCursor = hasMore ? encodeCursor({
             lastId: cleanResults[cleanResults.length - 1]._id,
-            excludedIds: [...excludedIds, ...cleanResults.map(r => r._id)],
+            excludedIds: [...new Set([...excludedIds, ...allScoredIds])].slice(-200), // Keep last 200
             timestamp: Date.now()
         }) : null;
 
-        console.log(`✅ Personalized feed: ${cleanResults.length} reels, hasMore: ${hasMore}, strategy: hybrid (50/30/20)`);
+        console.log(`✅ Personalized feed: ${cleanResults.length} reels, hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
 
         return {
             reels: cleanResults,
@@ -618,40 +669,88 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
 /**
  * Get optimized trending/mixed feed for anonymous users
  * Uses engagement-based sorting with cursor pagination
+ * IMPROVED: Added recency boost, randomization, and source variety
  */
 async function getTrendingFeedOptimized(cursor, limit, strategy) {
     try {
         const excludedIds = cursor?.excludedIds || [];
+        const requestTime = Date.now();
+        const randomSeed = Math.random(); // For consistent shuffle within this request
 
         console.log(`🔥 Trending feed query:`, {
             strategy,
             excludedCount: excludedIds.length,
-            limit
+            limit,
+            randomSeed: randomSeed.toFixed(4)
         });
+
+        // Calculate time boundaries for recency tiers
+        const now = new Date();
+        const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+        const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+        const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
+        const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
 
         const pipeline = [
             {
                 $match: {
                     _id: { $nin: excludedIds },
                     videoUrl: { $exists: true, $ne: null },
-                    scrapedAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
+                    scrapedAt: { $gte: thirtyDaysAgo }
                 }
             },
             {
                 $addFields: {
-                    trendingScore: {
+                    // Recency multiplier: 1.8x for 0-3 days, 1.5x for 3-7 days, 1.2x for 7-14 days, 1.0x for older
+                    recencyMultiplier: {
+                        $cond: [
+                            { $gte: ['$scrapedAt', threeDaysAgo] },
+                            1.8,
+                            {
+                                $cond: [
+                                    { $gte: ['$scrapedAt', sevenDaysAgo] },
+                                    1.5,
+                                    {
+                                        $cond: [
+                                            { $gte: ['$scrapedAt', fourteenDaysAgo] },
+                                            1.2,
+                                            1.0
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    // Base engagement score
+                    baseEngagement: {
                         $add: [
-                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.4] },
+                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.3] },
                             { $multiply: [{ $ifNull: ['$likes', 0] }, 0.4] },
-                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.2] }
+                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.3] }
+                        ]
+                    },
+                    // Random factor for variety (0.85 to 1.15 range)
+                    randomFactor: {
+                        $add: [
+                            0.85,
+                            { $multiply: [{ $rand: {} }, 0.3] }
                         ]
                     }
                 }
             },
             {
-                $sort: { trendingScore: -1, scrapedAt: -1 }
+                $addFields: {
+                    // Final trending score = base * recency * random
+                    trendingScore: {
+                        $multiply: ['$baseEngagement', '$recencyMultiplier', '$randomFactor']
+                    }
+                }
             },
-            { $limit: limit + 1 },
+            {
+                $sort: { trendingScore: -1 }
+            },
+            // Fetch extra for source variety filtering
+            { $limit: limit * 3 },
             {
                 $lookup: {
                     from: 'sources',
@@ -686,16 +785,38 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
 
         const reels = await Reel.aggregate(pipeline);
 
-        const hasMore = reels.length > limit;
-        const results = hasMore ? reels.slice(0, limit) : reels;
+        // Apply source variety: max 2 videos per source to prevent feed dominance
+        const sourceCounts = {};
+        const maxPerSource = Math.max(2, Math.ceil(limit / 5)); // At least 2, or 20% of limit
+        const diverseReels = reels.filter(reel => {
+            const sourceName = reel.source?.name || 'unknown';
+            const currentCount = sourceCounts[sourceName] || 0;
+            if (currentCount >= maxPerSource) {
+                return false;
+            }
+            sourceCounts[sourceName] = currentCount + 1;
+            return true;
+        });
 
+        // Shuffle the diverse results for variety (Fisher-Yates)
+        const shuffled = [...diverseReels];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+
+        const hasMore = shuffled.length > limit;
+        const results = hasMore ? shuffled.slice(0, limit) : shuffled;
+
+        // Track ALL fetched IDs for better exclusion (not just returned ones)
+        const allFetchedIds = reels.map(r => r._id);
         const nextCursor = hasMore ? encodeCursor({
             lastId: results[results.length - 1]._id,
-            excludedIds: [...excludedIds, ...results.map(r => r._id)],
+            excludedIds: [...new Set([...excludedIds, ...allFetchedIds])].slice(-200), // Keep last 200
             timestamp: Date.now()
         }) : null;
 
-        console.log(`✅ Trending feed: ${results.length} reels, hasMore: ${hasMore}`);
+        console.log(`✅ Trending feed: ${results.length} reels (from ${reels.length} candidates), hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
 
         return {
             reels: results,
