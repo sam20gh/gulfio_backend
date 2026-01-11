@@ -195,11 +195,11 @@ function cosineSimilarity(vec1, vec2) {
  */
 function addVarietyShuffleToReels(reels, limit) {
     if (reels.length <= 3) return reels;
-    
+
     // Divide into windows and shuffle within each
     const windowSize = 4; // Shuffle groups of 4
     const result = [];
-    
+
     for (let i = 0; i < reels.length; i += windowSize) {
         const window = reels.slice(i, Math.min(i + windowSize, reels.length));
         // Fisher-Yates shuffle for this window
@@ -209,7 +209,7 @@ function addVarietyShuffleToReels(reels, limit) {
         }
         result.push(...window);
     }
-    
+
     return result;
 }
 
