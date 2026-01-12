@@ -609,9 +609,9 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // Sort by hybrid score (descending)
         scoredReels.sort((a, b) => b.hybridScore - a.hybridScore);
 
-        // IMPROVED: Apply source variety - max 2 videos per source
+        // IMPROVED: Apply source variety - max 3 videos per source (increased for better variety)
         const sourceCounts = {};
-        const maxPerSource = Math.max(2, Math.ceil(limit / 5));
+        const maxPerSource = Math.max(3, Math.ceil(limit / 4)); // Increased from 2 to 3
         const diverseReels = scoredReels.filter(reel => {
             const sourceName = reel.source?.name || 'unknown';
             const currentCount = sourceCounts[sourceName] || 0;
@@ -636,20 +636,22 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // Add light randomization for variety (shuffle top N with slight position variance)
         const shuffledReels = addVarietyShuffleToReels(diverseReels, limit);
 
-        // Check if there's more data
-        const hasMore = shuffledReels.length > limit;
-        const results = hasMore ? shuffledReels.slice(0, limit) : shuffledReels;
+        // FIXED: hasMore should be true if we have more content in the database
+        // Check if we got enough candidates from DB (meaning there's likely more)
+        const hasMore = scoredReels.length >= limit; // If DB returned at least limit, there's probably more
+        const results = shuffledReels.slice(0, limit);
 
         // Clean up results (remove embedding_pca to reduce payload)
         const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, ...reel }) => reel);
 
         // Build next cursor - track ALL scored reels for better exclusion
+        // FIXED: Always generate cursor for pagination continuity
         const allScoredIds = scoredReels.map(r => r._id);
-        const nextCursor = hasMore ? encodeCursor({
-            lastId: cleanResults[cleanResults.length - 1]._id,
+        const nextCursor = encodeCursor({
+            lastId: cleanResults.length > 0 ? cleanResults[cleanResults.length - 1]._id : null,
             excludedIds: [...new Set([...excludedIds, ...allScoredIds])].slice(-200), // Keep last 200
             timestamp: Date.now()
-        }) : null;
+        });
 
         console.log(`✅ Personalized feed: ${cleanResults.length} reels, hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
 
@@ -785,9 +787,11 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
 
         const reels = await Reel.aggregate(pipeline);
 
+        console.log(`📊 Trending pipeline returned ${reels.length} reels (limit * 3 = ${limit * 3})`);
+
         // Apply source variety: max 2 videos per source to prevent feed dominance
         const sourceCounts = {};
-        const maxPerSource = Math.max(2, Math.ceil(limit / 5)); // At least 2, or 20% of limit
+        const maxPerSource = Math.max(3, Math.ceil(limit / 4)); // Increased: At least 3, or 25% of limit
         const diverseReels = reels.filter(reel => {
             const sourceName = reel.source?.name || 'unknown';
             const currentCount = sourceCounts[sourceName] || 0;
@@ -798,6 +802,8 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
             return true;
         });
 
+        console.log(`📊 After source variety filter: ${diverseReels.length} reels (max ${maxPerSource} per source)`);
+
         // Shuffle the diverse results for variety (Fisher-Yates)
         const shuffled = [...diverseReels];
         for (let i = shuffled.length - 1; i > 0; i--) {
@@ -805,16 +811,19 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
 
-        const hasMore = shuffled.length > limit;
-        const results = hasMore ? shuffled.slice(0, limit) : shuffled;
+        // FIXED: hasMore should be true if we have more content in the database
+        // Check if we got the full batch from DB (meaning there's likely more)
+        const hasMore = reels.length >= limit; // If DB returned at least limit, there's probably more
+        const results = shuffled.slice(0, limit);
 
         // Track ALL fetched IDs for better exclusion (not just returned ones)
         const allFetchedIds = reels.map(r => r._id);
-        const nextCursor = hasMore ? encodeCursor({
-            lastId: results[results.length - 1]._id,
+        // FIXED: Always generate cursor for pagination, even if hasMore might be false
+        const nextCursor = encodeCursor({
+            lastId: results.length > 0 ? results[results.length - 1]._id : null,
             excludedIds: [...new Set([...excludedIds, ...allFetchedIds])].slice(-200), // Keep last 200
             timestamp: Date.now()
-        }) : null;
+        });
 
         console.log(`✅ Trending feed: ${results.length} reels (from ${reels.length} candidates), hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
 
