@@ -433,8 +433,8 @@ class PointsService {
                 .lean();
 
             // Calculate level info
-            const { calculateLevelProgress } = require('../utils/pointsConfig');
-            const levelProgress = calculateLevelProgress(userPoints.lifetimePoints);
+            const pointsConfig = require('../utils/pointsConfig');
+            const levelProgress = pointsConfig.calculateLevelProgress(userPoints.lifetimePoints);
 
             return {
                 points: {
