@@ -5,6 +5,7 @@ const Comment = require('../models/Comment'); // You'll need to create this mode
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const NotificationService = require('../utils/notificationService');
+const PointsService = require('../services/pointsService'); // 🎮 Gamification
 // Note: User embeddings are updated via daily cron job at 2 AM
 // Endpoint: /api/jobs/update-user-embeddings
 const redis = require('../utils/redis');
@@ -105,6 +106,21 @@ router.post('/', auth, async (req, res) => {
         });
 
         await newComment.save();
+
+        // 🎮 Award points for posting a comment (non-blocking)
+        PointsService.awardPoints(userId, 'COMMENT_POST', {
+            commentId: newComment._id,
+            articleId: articleId || null
+        }).catch(err => console.error('⚠️ Failed to award comment points:', err.message));
+
+        // 🎮 Bonus points for quality comments (>100 characters)
+        if (comment.length > 100) {
+            PointsService.awardPoints(userId, 'COMMENT_QUALITY_BONUS', {
+                commentId: newComment._id,
+                articleId: articleId || null,
+                description: 'Quality comment bonus (>100 chars)'
+            }).catch(err => console.error('⚠️ Failed to award quality bonus:', err.message));
+        }
 
         // 🚀 Invalidate cache for instant updates
         try {
@@ -244,6 +260,15 @@ router.post('/:id/react', auth, async (req, res) => {
                 { _id: commentId },
                 { $addToSet: { likedBy: userId } }
             );
+
+            // 🎮 Award points to comment author for receiving a like (non-blocking)
+            if (comment.userId !== userId) {
+                PointsService.awardPoints(comment.userId, 'COMMENT_RECEIVED_LIKE', {
+                    commentId: commentId,
+                    articleId: comment.articleId,
+                    description: 'Your comment received a like'
+                }).catch(err => console.error('⚠️ Failed to award comment like points:', err.message));
+            }
 
             // Send notification to comment author (if not liking their own comment)
             if (comment.userId !== userId) {

@@ -10,6 +10,7 @@ const Source = require('../models/Source'); // Import Source model
 const UserActivity = require('../models/UserActivity'); // Import UserActivity model
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
+const PointsService = require('../services/pointsService'); // 🎮 Gamification
 // Removed updateUserProfileEmbedding - now handled by daily cron job
 
 function validateObjectId(id) {
@@ -75,6 +76,14 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
         contentType: 'article', // Specify content type
         timestamp: new Date()
     }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
+
+    // 🎮 Award points for liking (non-blocking)
+    if (action === 'like' && wasNotLiked) {
+        PointsService.awardPoints(user.supabase_id, 'ARTICLE_LIKE', {
+            articleId: articleObjectId,
+            category: article?.category
+        }).catch(err => console.error('⚠️ Failed to award like points:', err.message));
+    }
 
     // Send notification if this is a new like
     if (action === 'like' && wasNotLiked) {
@@ -159,6 +168,20 @@ router.post('/article/:articleId/view', async (req, res) => {
                         contentType: 'article', // Specify content type
                         timestamp: new Date()
                     }).catch(err => console.error('⚠️ Failed to log view activity:', err.message));
+
+                    // 🎮 Award points for reading article (non-blocking)
+                    // Get article category for category-specific badges
+                    Article.findById(articleObjectId).select('category').lean().then(art => {
+                        PointsService.awardPoints(user.id, 'ARTICLE_READ', {
+                            articleId: articleObjectId,
+                            category: art?.category
+                        }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
+                    }).catch(() => {
+                        // Award without category if article lookup fails
+                        PointsService.awardPoints(user.id, 'ARTICLE_READ', {
+                            articleId: articleObjectId
+                        }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
+                    });
                 }
             } catch (err) {
                 // Silent fail - view tracking still works without activity logging
@@ -222,6 +245,15 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
             contentType: 'article', // Specify content type
             timestamp: new Date()
         }).catch(err => console.error('⚠️ Failed to log save activity:', err.message));
+
+        // 🎮 Award points for saving article (only when saving, not unsaving)
+        if (!isSaved) {
+            const article = await Article.findById(articleObjectId).select('category').lean();
+            PointsService.awardPoints(user.supabase_id, 'ARTICLE_SAVE', {
+                articleId: articleObjectId,
+                category: article?.category
+            }).catch(err => console.error('⚠️ Failed to award save points:', err.message));
+        }
 
         res.json({
             isSaved: !isSaved,

@@ -14,6 +14,7 @@ const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const Reel = require('../models/Reel');
 const FormData = require('form-data')
 const form = new FormData()
+const PointsService = require('../services/pointsService'); // 🎮 Gamification
 
 
 router.post('/check-or-create', auth, async (req, res) => {
@@ -23,6 +24,8 @@ router.post('/check-or-create', auth, async (req, res) => {
         const rawEmail = req.user.email || `${req.user.sub}@phone.user`;
 
         let user = await User.findOne({ supabase_id });
+        let isNewUser = false;
+        
         if (!user) {
             user = await User.create({
                 supabase_id,
@@ -31,7 +34,13 @@ router.post('/check-or-create', auth, async (req, res) => {
                 avatar_url: picture
             });
             await updateUserProfileEmbedding(user._id);
+            isNewUser = true;
         }
+
+        // 🎮 Track daily login and update streak (non-blocking)
+        PointsService.updateStreak(supabase_id).catch(err => 
+            console.error('⚠️ Failed to update streak:', err.message)
+        );
 
         res.json(user);
     } catch (err) {
