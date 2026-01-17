@@ -60,12 +60,12 @@ const userSchema = new mongoose.Schema({
             mentions: true,
         }
     },
-    
+
     // Gamification - Referral System
     referralCode: { type: String, unique: true, sparse: true }, // User's unique referral code
     referredBy: { type: String }, // Supabase ID of the user who referred them
     referralActivated: { type: Boolean, default: false }, // Has the referral been activated (5+ articles read)
-    
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
