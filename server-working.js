@@ -84,7 +84,12 @@ app.get('/', (req, res) => {
             football_teams: '/api/football/teams',
             football_competitions: '/api/football/competitions',
             football_user_follows: '/api/football/user/follows',
-            football_sync: '/api/football/sync/all'
+            football_sync: '/api/football/sync/all',
+
+            // Gamification
+            gamification_profile: '/api/gamification/profile',
+            gamification_badges: '/api/gamification/badges',
+            gamification_leaderboard: '/api/gamification/leaderboard'
         },
         timestamp: new Date().toISOString()
     });
@@ -217,6 +222,10 @@ function loadRoutes() {
         const footballRoutes = require('./routes/football'); // Football follows routes
         console.log('✅ Football routes loaded successfully');
 
+        console.log('🎮 Loading Gamification routes...');
+        const gamificationRoutes = require('./routes/gamification'); // Gamification routes
+        console.log('✅ Gamification routes loaded successfully');
+
         console.log('🔧 Loading Jobs routes...');
         const jobsRouter = require('./routes/jobs'); // PHASE 2: Background jobs
         console.log('✅ Jobs routes loaded successfully');
@@ -243,6 +252,9 @@ function loadRoutes() {
         console.log('⚽ Mounting Football routes at /api/football...');
         app.use('/api/football', footballRoutes); // Football follows routes
         console.log('✅ Football routes mounted successfully');
+        console.log('🎮 Mounting Gamification routes at /api/gamification...');
+        app.use('/api/gamification', gamificationRoutes); // Gamification routes
+        console.log('✅ Gamification routes mounted successfully');
         console.log('🔧 Mounting Jobs routes at /api/jobs...');
         app.use('/api/jobs', jobsRouter); // PHASE 2: Background jobs
         console.log('✅ Jobs routes mounted successfully');

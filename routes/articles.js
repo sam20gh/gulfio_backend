@@ -7,12 +7,14 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Article = require('../models/Article');
 const User = require('../models/User');
+const UserActivity = require('../models/UserActivity');
 const auth = require('../middleware/auth');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { searchArticles, findInContent } = require('../utils/atlasSearch');
 const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
+const PointsService = require('../services/pointsService'); // 🎮 Gamification
 
 const articleRouter = express.Router();
 
@@ -2610,6 +2612,10 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     const likes = articleUpdate.likedBy?.length || 0;
     const dislikes = articleUpdate.dislikedBy?.length || 0;
 
+    // Check if this was a new like (user wasn't already in likedBy before)
+    // We need to check current array length vs previous - if we just added, it's new
+    const wasNewLike = action === 'like';
+
     const processingTime = Date.now() - startTime;
     console.log(`✅ ${action} processed in ${processingTime}ms for user ${userId} on article ${articleId} (likes: ${likes}, dislikes: ${dislikes})`);
 
@@ -2637,6 +2643,29 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
         // Recompute user embedding asynchronously (this is expensive)
         await updateUserProfileEmbedding(mongoUser._id);
+
+        // 🎮 Log activity for gamification tracking
+        await UserActivity.create({
+          userId: userId,
+          eventType: action, // 'like' or 'dislike'
+          articleId: articleObjectId,
+          contentType: 'article',
+          timestamp: new Date()
+        }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
+
+        // 🎮 Award points for liking (gamification)
+        if (wasNewLike) {
+          try {
+            const article = await Article.findById(articleId).select('category').lean();
+            await PointsService.awardPoints(userId, 'ARTICLE_LIKE', {
+              articleId: articleObjectId,
+              category: article?.category
+            });
+            console.log(`🎮 Points awarded for like on article ${articleId}`);
+          } catch (pointsErr) {
+            console.error('⚠️ Failed to award like points:', pointsErr.message);
+          }
+        }
       } catch (asyncError) {
         console.error('⚠️ Error in async post-response operations:', asyncError);
         // Don't affect the user response - these operations can be retried later
