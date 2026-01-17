@@ -11,7 +11,7 @@ const { POINTS, LEVELS, STREAK, ANTI_ABUSE } = require('../utils/pointsConfig');
 const redis = require('../utils/redis');
 
 class PointsService {
-    
+
     /**
      * Award points to a user for an action
      * @param {string} userId - Supabase user ID
@@ -22,19 +22,19 @@ class PointsService {
     static async awardPoints(userId, action, metadata = {}) {
         const actionKey = action.toUpperCase();
         const pointsToAward = POINTS[actionKey];
-        
+
         if (pointsToAward === undefined) {
             console.warn(`⚠️ Unknown action for points: ${action}`);
             return null;
         }
-        
+
         // Anti-abuse check
         const canAward = await this.checkAntiAbuse(userId, actionKey);
         if (!canAward) {
             console.log(`🚫 Points blocked for ${userId}: rate limit on ${action}`);
             return null;
         }
-        
+
         try {
             // Get or create user points
             let userPoints = await UserPoints.findOne({ userId });
@@ -42,10 +42,10 @@ class PointsService {
                 userPoints = await UserPoints.create({ userId });
                 console.log(`✅ Created new UserPoints for ${userId}`);
             }
-            
+
             // Calculate final points (with potential streak bonus)
             let finalPoints = pointsToAward;
-            
+
             // Apply streak multiplier for daily login
             if (actionKey === 'DAILY_LOGIN' && userPoints.streak.current > 1) {
                 const multiplier = Math.min(userPoints.streak.current, STREAK.MAX_MULTIPLIER);
@@ -53,22 +53,22 @@ class PointsService {
                 metadata.streakDay = userPoints.streak.current;
                 metadata.description = `Day ${userPoints.streak.current} streak bonus`;
             }
-            
+
             // Update user points
             userPoints.totalPoints += finalPoints;
             userPoints.lifetimePoints += finalPoints;
-            
+
             // Update stats based on action
             this.updateStats(userPoints, actionKey, metadata);
-            
+
             // Check for level up
             const oldLevel = userPoints.level;
             const newLevel = this.calculateLevel(userPoints.lifetimePoints);
             const leveledUp = newLevel > oldLevel;
             userPoints.level = newLevel;
-            
+
             await userPoints.save();
-            
+
             // Log transaction
             await PointTransaction.create({
                 userId,
@@ -76,17 +76,17 @@ class PointsService {
                 action: actionKey.toLowerCase(),
                 metadata
             });
-            
+
             console.log(`🎮 Awarded ${finalPoints} points to ${userId} for ${action}`);
-            
+
             // Check for new badges (async, don't await to keep response fast)
-            this.checkAndAwardBadges(userId, userPoints).catch(err => 
+            this.checkAndAwardBadges(userId, userPoints).catch(err =>
                 console.error('❌ Badge check error:', err.message)
             );
-            
+
             // Invalidate cache
             this.invalidateCache(userId).catch(console.error);
-            
+
             return {
                 pointsAwarded: finalPoints,
                 totalPoints: userPoints.totalPoints,
@@ -95,13 +95,13 @@ class PointsService {
                 newLevel: leveledUp ? newLevel : null,
                 oldLevel: leveledUp ? oldLevel : null
             };
-            
+
         } catch (error) {
             console.error('❌ Award points error:', error);
             return null;
         }
     }
-    
+
     /**
      * Update daily streak for a user
      * Should be called on each meaningful activity
@@ -112,10 +112,10 @@ class PointsService {
             if (!userPoints) {
                 userPoints = await UserPoints.create({ userId });
             }
-            
+
             const now = new Date();
             const lastActivity = userPoints.streak.lastActivityDate;
-            
+
             if (!lastActivity) {
                 // First activity ever
                 userPoints.streak.current = 1;
@@ -123,24 +123,24 @@ class PointsService {
                 userPoints.streak.lastActivityDate = now;
                 userPoints.stats.dailyLogins += 1;
                 await userPoints.save();
-                
+
                 // Award daily login points
                 await this.awardPoints(userId, 'DAILY_LOGIN');
                 return { streak: 1, isNewDay: true };
             }
-            
+
             // Calculate time difference
             const hoursDiff = (now - lastActivity) / (1000 * 60 * 60);
-            
+
             // Check if same calendar day (using UTC)
             const lastDate = new Date(lastActivity).toISOString().split('T')[0];
             const todayDate = now.toISOString().split('T')[0];
-            
+
             if (lastDate === todayDate) {
                 // Same day, no streak change needed
                 return { streak: userPoints.streak.current, isNewDay: false };
             }
-            
+
             // Different day - check if streak continues or breaks
             if (hoursDiff < STREAK.GRACE_PERIOD_HOURS) {
                 // Within grace period - increment streak
@@ -155,29 +155,29 @@ class PointsService {
                 console.log(`💔 Streak broken for ${userId} (${Math.round(hoursDiff)}h gap)`);
                 userPoints.streak.current = 1;
             }
-            
+
             userPoints.streak.lastActivityDate = now;
             userPoints.stats.dailyLogins += 1;
             await userPoints.save();
-            
+
             // Award daily login points
             await this.awardPoints(userId, 'DAILY_LOGIN');
-            
+
             // Invalidate cache
             this.invalidateCache(userId).catch(console.error);
-            
-            return { 
-                streak: userPoints.streak.current, 
+
+            return {
+                streak: userPoints.streak.current,
                 isNewDay: true,
                 longestStreak: userPoints.streak.longest
             };
-            
+
         } catch (error) {
             console.error('❌ Update streak error:', error);
             return null;
         }
     }
-    
+
     /**
      * Check anti-abuse rate limits
      */
@@ -186,41 +186,41 @@ class PointsService {
         if (!redis.isConnected || !redis.isConnected()) {
             return true;
         }
-        
+
         const cooldownKey = `points:cooldown:${userId}:${action}`;
         const dailyKey = `points:daily:${userId}:${action}`;
-        
+
         try {
             // Check cooldown
             const recentAction = await redis.get(cooldownKey);
             if (recentAction) {
                 return false;
             }
-            
+
             // Check daily limit
             const dailyCount = parseInt(await redis.get(dailyKey) || '0');
             const limit = this.getDailyLimit(action);
             if (dailyCount >= limit) {
                 return false;
             }
-            
+
             // Set cooldown
             const cooldownMs = this.getCooldown(action);
             if (cooldownMs > 0) {
                 await redis.set(cooldownKey, '1', 'PX', cooldownMs);
             }
-            
+
             // Increment daily count with 24hr expiry
             await redis.incr(dailyKey);
             await redis.expire(dailyKey, 86400);
-            
+
             return true;
         } catch (error) {
             console.error('❌ Redis anti-abuse check failed:', error.message);
             return true; // Fail open - don't block users if Redis fails
         }
     }
-    
+
     /**
      * Get daily limit for an action
      */
@@ -236,7 +236,7 @@ class PointsService {
         };
         return limits[action] || 100;
     }
-    
+
     /**
      * Get cooldown time for an action in milliseconds
      */
@@ -249,7 +249,7 @@ class PointsService {
         };
         return cooldowns[action] || 0;
     }
-    
+
     /**
      * Update user stats based on action
      */
@@ -266,7 +266,7 @@ class PointsService {
             'REFERRAL_SIGNUP': 'referrals',
             'REFERRAL_ACTIVE': 'referrals',
         };
-        
+
         const statField = statsMap[action];
         if (statField && userPoints.stats[statField] !== undefined) {
             // Don't double-count ARTICLE_READ_FULL if already counted ARTICLE_READ
@@ -274,14 +274,14 @@ class PointsService {
                 userPoints.stats[statField] += 1;
             }
         }
-        
+
         // Update category stats for reading/liking articles
         if (metadata.category && ['ARTICLE_READ', 'ARTICLE_LIKE'].includes(action)) {
             const currentCount = userPoints.categoryStats.get(metadata.category) || 0;
             userPoints.categoryStats.set(metadata.category, currentCount + 1);
         }
     }
-    
+
     /**
      * Calculate level from lifetime points
      */
@@ -293,7 +293,7 @@ class PointsService {
         }
         return 1;
     }
-    
+
     /**
      * Check and award any newly earned badges
      */
@@ -302,13 +302,13 @@ class PointsService {
             const allBadges = await Badge.find({ isActive: true }).lean();
             const earnedBadgeIds = (await UserBadge.find({ userId }).select('badgeId').lean())
                 .map(ub => ub.badgeId.toString());
-            
+
             const newBadges = [];
-            
+
             for (const badge of allBadges) {
                 // Skip if already earned
                 if (earnedBadgeIds.includes(badge._id.toString())) continue;
-                
+
                 // Check if requirement is met
                 const earned = this.checkBadgeRequirement(badge, userPoints);
                 if (earned) {
@@ -317,15 +317,15 @@ class PointsService {
                         userId,
                         badgeId: badge._id
                     });
-                    
+
                     console.log(`🏆 Badge earned: ${badge.name} for user ${userId}`);
-                    
+
                     // Award bonus points for earning badge (if any)
                     if (badge.pointsAwarded > 0) {
                         userPoints.totalPoints += badge.pointsAwarded;
                         userPoints.lifetimePoints += badge.pointsAwarded;
                         await userPoints.save();
-                        
+
                         // Log the bonus transaction
                         await PointTransaction.create({
                             userId,
@@ -337,28 +337,28 @@ class PointsService {
                             }
                         });
                     }
-                    
+
                     newBadges.push(badge);
-                    
+
                     // Send push notification (non-blocking)
                     this.sendBadgeNotification(userId, badge).catch(console.error);
                 }
             }
-            
+
             return newBadges;
-            
+
         } catch (error) {
             console.error('❌ Check badges error:', error);
             return [];
         }
     }
-    
+
     /**
      * Check if a badge requirement is met
      */
     static checkBadgeRequirement(badge, userPoints) {
         const { type, value, category } = badge.requirement;
-        
+
         switch (type) {
             case 'articles_read':
                 return userPoints.stats.articlesRead >= value;
@@ -387,14 +387,14 @@ class PointsService {
                 return false;
         }
     }
-    
+
     /**
      * Send push notification for badge earned
      */
     static async sendBadgeNotification(userId, badge) {
         try {
             const NotificationService = require('../utils/notificationService');
-            
+
             await NotificationService.sendToUser(userId, {
                 title: '🏆 New Badge Earned!',
                 body: `You've earned the "${badge.name}" badge!`,
@@ -404,18 +404,18 @@ class PointsService {
                     badgeName: badge.name
                 }
             });
-            
+
             // Mark as notified
             await UserBadge.updateOne(
                 { userId, badgeId: badge._id },
                 { notified: true }
             );
-            
+
         } catch (error) {
             console.error('❌ Badge notification error:', error.message);
         }
     }
-    
+
     /**
      * Get user's gamification profile
      */
@@ -425,17 +425,17 @@ class PointsService {
             if (!userPoints) {
                 userPoints = await UserPoints.create({ userId });
             }
-            
+
             // Get badges
             const userBadges = await UserBadge.find({ userId })
                 .populate('badgeId')
                 .sort({ earnedAt: -1 })
                 .lean();
-            
+
             // Calculate level info
             const { calculateLevelProgress } = require('../utils/pointsConfig');
             const levelProgress = calculateLevelProgress(userPoints.lifetimePoints);
-            
+
             return {
                 points: {
                     total: userPoints.totalPoints,
@@ -465,19 +465,19 @@ class PointsService {
                 categoryStats: Object.fromEntries(userPoints.categoryStats || new Map()),
                 updatedAt: userPoints.updatedAt
             };
-            
+
         } catch (error) {
             console.error('❌ Get profile error:', error);
             throw error;
         }
     }
-    
+
     /**
      * Invalidate user's cache
      */
     static async invalidateCache(userId) {
         if (!redis.isConnected || !redis.isConnected()) return;
-        
+
         try {
             await redis.del(`gamification:profile:${userId}`);
             // Also invalidate leaderboard caches

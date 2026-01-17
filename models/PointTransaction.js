@@ -3,8 +3,8 @@ const mongoose = require('mongoose');
 const pointTransactionSchema = new mongoose.Schema({
     userId: { type: String, required: true, index: true },
     points: { type: Number, required: true }, // Can be negative for redemptions
-    action: { 
-        type: String, 
+    action: {
+        type: String,
         enum: [
             'article_read', 'article_read_full', 'article_like', 'article_share', 'article_save',
             'comment_post', 'comment_received_like', 'comment_quality_bonus',
@@ -13,7 +13,7 @@ const pointTransactionSchema = new mongoose.Schema({
             'badge_earned', 'referral_signup', 'referral_active', 'profile_complete',
             'redemption' // For spending points on premium features
         ],
-        required: true 
+        required: true
     },
     metadata: {
         articleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Article' },

@@ -85,7 +85,7 @@ const badges = [
         pointsAwarded: 500,
         sortOrder: 6
     },
-    
+
     // ==================== ENGAGEMENT BADGES ====================
     {
         name: 'First Like',
@@ -139,7 +139,7 @@ const badges = [
         pointsAwarded: 200,
         sortOrder: 13
     },
-    
+
     // ==================== SOCIAL BADGES ====================
     {
         name: 'Voice Heard',
@@ -219,7 +219,7 @@ const badges = [
         pointsAwarded: 300,
         sortOrder: 25
     },
-    
+
     // ==================== STREAK BADGES ====================
     {
         name: 'Getting Started',
@@ -286,7 +286,7 @@ const badges = [
         pointsAwarded: 1000,
         sortOrder: 34
     },
-    
+
     // ==================== CATEGORY EXPERT BADGES ====================
     {
         name: 'Football Fanatic',
@@ -353,7 +353,7 @@ const badges = [
         pointsAwarded: 75,
         sortOrder: 44
     },
-    
+
     // ==================== SPECIAL / LEVEL BADGES ====================
     {
         name: 'Rising Star',
@@ -466,15 +466,15 @@ async function seedBadges() {
         console.log('🔌 Connecting to MongoDB...');
         await mongoose.connect(MONGO_URI);
         console.log('✅ Connected to MongoDB');
-        
+
         console.log('🗑️  Clearing existing badges...');
         await Badge.deleteMany({});
-        
+
         console.log('🌱 Seeding badges...');
         const result = await Badge.insertMany(badges);
-        
+
         console.log(`✅ Successfully seeded ${result.length} badges!`);
-        
+
         // Log summary by category
         const summary = {};
         badges.forEach(b => {
@@ -484,9 +484,9 @@ async function seedBadges() {
         Object.entries(summary).forEach(([cat, count]) => {
             console.log(`   ${cat}: ${count} badges`);
         });
-        
+
         console.log('\n🎮 Gamification badges ready!');
-        
+
     } catch (error) {
         console.error('❌ Error seeding badges:', error);
     } finally {

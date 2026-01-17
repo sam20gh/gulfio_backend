@@ -7,25 +7,25 @@ const badgeSchema = new mongoose.Schema({
     descriptionAr: { type: String },
     icon: { type: String, required: true }, // Icon name (e.g., 'book-open', 'fire', 'trophy')
     color: { type: String, default: '#FFD700' }, // Badge accent color
-    category: { 
-        type: String, 
+    category: {
+        type: String,
         enum: ['engagement', 'reading', 'social', 'streak', 'special', 'category_expert'],
-        required: true 
+        required: true
     },
-    tier: { 
-        type: String, 
+    tier: {
+        type: String,
         enum: ['bronze', 'silver', 'gold', 'platinum', 'diamond'],
         default: 'bronze'
     },
     requirement: {
-        type: { 
-            type: String, 
+        type: {
+            type: String,
             enum: [
-                'articles_read', 'articles_liked', 'comments_posted', 
+                'articles_read', 'articles_liked', 'comments_posted',
                 'comments_liked', 'shares', 'streak_days', 'total_points',
                 'daily_logins', 'category_articles', 'referrals', 'level'
             ],
-            required: true 
+            required: true
         },
         value: { type: Number, required: true }, // Threshold to unlock
         category: { type: String } // For category-specific badges (e.g., "football")
