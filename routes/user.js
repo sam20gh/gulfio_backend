@@ -25,7 +25,7 @@ router.post('/check-or-create', auth, async (req, res) => {
 
         let user = await User.findOne({ supabase_id });
         let isNewUser = false;
-        
+
         if (!user) {
             user = await User.create({
                 supabase_id,
@@ -38,7 +38,7 @@ router.post('/check-or-create', auth, async (req, res) => {
         }
 
         // 🎮 Track daily login and update streak (non-blocking)
-        PointsService.updateStreak(supabase_id).catch(err => 
+        PointsService.updateStreak(supabase_id).catch(err =>
             console.error('⚠️ Failed to update streak:', err.message)
         );
 

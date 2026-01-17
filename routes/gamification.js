@@ -394,4 +394,170 @@ router.post('/check-streak', auth, async (req, res) => {
     }
 });
 
+/**
+ * GET /api/gamification/referral-code
+ * Get or generate user's referral code
+ */
+router.get('/referral-code', auth, async (req, res) => {
+    const userId = req.user.sub;
+
+    try {
+        let user = await User.findOne({ supabase_id: userId });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Generate referral code if not exists
+        if (!user.referralCode) {
+            // Generate unique 8-char code
+            const generateCode = () => {
+                const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Avoid confusing chars
+                let code = '';
+                for (let i = 0; i < 8; i++) {
+                    code += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                return code;
+            };
+
+            let code = generateCode();
+            let attempts = 0;
+            while (await User.findOne({ referralCode: code }) && attempts < 10) {
+                code = generateCode();
+                attempts++;
+            }
+
+            user.referralCode = code;
+            await user.save();
+        }
+
+        // Get referral stats
+        const referralCount = await User.countDocuments({ referredBy: userId });
+        const activeReferrals = await User.countDocuments({
+            referredBy: userId,
+            referralActivated: true
+        });
+
+        res.json({
+            code: user.referralCode,
+            shareUrl: `https://gulfio.app/invite/${user.referralCode}`,
+            stats: {
+                totalReferrals: referralCount,
+                activeReferrals,
+                pendingReferrals: referralCount - activeReferrals,
+                pointsEarned: (referralCount * 100) + (activeReferrals * 200), // REFERRAL_SIGNUP + REFERRAL_ACTIVE
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ GET /gamification/referral-code error:', error);
+        res.status(500).json({ message: 'Failed to get referral code' });
+    }
+});
+
+/**
+ * POST /api/gamification/apply-referral
+ * Apply a referral code for new users
+ */
+router.post('/apply-referral', auth, async (req, res) => {
+    const userId = req.user.sub;
+    const { code } = req.body;
+
+    if (!code) {
+        return res.status(400).json({ message: 'Referral code is required' });
+    }
+
+    try {
+        // Find the referring user
+        const referrer = await User.findOne({ referralCode: code.toUpperCase() });
+        if (!referrer) {
+            return res.status(404).json({ message: 'Invalid referral code' });
+        }
+
+        // Can't refer yourself
+        if (referrer.supabase_id === userId) {
+            return res.status(400).json({ message: 'Cannot use your own referral code' });
+        }
+
+        // Check if user already has a referrer
+        const currentUser = await User.findOne({ supabase_id: userId });
+        if (!currentUser) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        if (currentUser.referredBy) {
+            return res.status(400).json({ message: 'You already have a referrer' });
+        }
+
+        // Apply referral
+        currentUser.referredBy = referrer.supabase_id;
+        await currentUser.save();
+
+        // Award points to referrer for signup
+        await PointsService.awardPoints(referrer.supabase_id, 'REFERRAL_SIGNUP', {
+            referredUserId: userId,
+            description: 'New user signed up with your referral code'
+        });
+
+        console.log(`✅ Referral applied: ${userId} referred by ${referrer.supabase_id}`);
+
+        res.json({
+            success: true,
+            message: 'Referral code applied successfully',
+            referrerName: referrer.name || 'A friend'
+        });
+
+    } catch (error) {
+        console.error('❌ POST /gamification/apply-referral error:', error);
+        res.status(500).json({ message: 'Failed to apply referral code' });
+    }
+});
+
+/**
+ * POST /api/gamification/activate-referral
+ * Called internally when a referred user becomes "active" (5+ articles read)
+ * This is typically called by a background job or after reaching threshold
+ */
+router.post('/activate-referral', auth, async (req, res) => {
+    const userId = req.user.sub;
+
+    try {
+        const user = await User.findOne({ supabase_id: userId });
+        if (!user || !user.referredBy || user.referralActivated) {
+            return res.json({ activated: false, message: 'No pending referral activation' });
+        }
+
+        // Check if user has read enough articles
+        const userPoints = await UserPoints.findOne({ userId });
+        if (!userPoints || userPoints.stats.articlesRead < 5) {
+            return res.json({
+                activated: false,
+                message: 'Need to read more articles to activate referral',
+                articlesRead: userPoints?.stats.articlesRead || 0,
+                required: 5
+            });
+        }
+
+        // Mark as activated
+        user.referralActivated = true;
+        await user.save();
+
+        // Award bonus points to referrer
+        await PointsService.awardPoints(user.referredBy, 'REFERRAL_ACTIVE', {
+            referredUserId: userId,
+            description: 'Your referral became an active reader!'
+        });
+
+        console.log(`✅ Referral activated: ${userId} (referred by ${user.referredBy})`);
+
+        res.json({
+            activated: true,
+            message: 'Referral activated! Your referrer earned bonus points.'
+        });
+
+    } catch (error) {
+        console.error('❌ POST /gamification/activate-referral error:', error);
+        res.status(500).json({ message: 'Failed to activate referral' });
+    }
+});
+
 module.exports = router;

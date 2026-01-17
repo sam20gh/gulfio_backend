@@ -477,5 +477,110 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/user-actions/article/:id/share
+ * Track article share for points
+ */
+router.post('/article/:id/share', auth, ensureMongoUser, async (req, res) => {
+    const articleId = req.params.id;
+    const { platform } = req.body; // 'twitter', 'facebook', 'whatsapp', 'copy', etc.
+    const userId = req.mongoUser.supabase_id;
+
+    if (!validateObjectId(articleId)) {
+        return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    try {
+        const article = await Article.findById(articleId);
+        if (!article) {
+            return res.status(404).json({ message: 'Article not found' });
+        }
+
+        // Log the share activity
+        await UserActivity.create({
+            userId,
+            eventType: 'share',
+            articleId: new mongoose.Types.ObjectId(articleId),
+            contentType: 'article',
+            metadata: { platform: platform || 'unknown' },
+            timestamp: new Date()
+        });
+
+        // Update article share count
+        await Article.findByIdAndUpdate(articleId, { $inc: { shareCount: 1 } });
+
+        // 🎮 Award points for sharing
+        const pointsResult = await PointsService.awardPoints(userId, 'ARTICLE_SHARE', {
+            articleId,
+            category: article.category,
+            platform
+        });
+
+        console.log(`✅ Share tracked for article ${articleId} by user ${userId}`);
+
+        res.json({
+            success: true,
+            message: 'Share tracked successfully',
+            points: pointsResult?.pointsAwarded || 0
+        });
+
+    } catch (err) {
+        console.error('❌ Error tracking share:', err);
+        res.status(500).json({ message: 'Failed to track share' });
+    }
+});
+
+/**
+ * POST /api/user-actions/reel/:id/share
+ * Track reel share for points
+ */
+router.post('/reel/:id/share', auth, ensureMongoUser, async (req, res) => {
+    const reelId = req.params.id;
+    const { platform } = req.body;
+    const userId = req.mongoUser.supabase_id;
+
+    if (!validateObjectId(reelId)) {
+        return res.status(400).json({ message: 'Invalid reel ID' });
+    }
+
+    try {
+        const reel = await Reel.findById(reelId);
+        if (!reel) {
+            return res.status(404).json({ message: 'Reel not found' });
+        }
+
+        // Log the share activity
+        await UserActivity.create({
+            userId,
+            eventType: 'share',
+            reelId: new mongoose.Types.ObjectId(reelId),
+            contentType: 'reel',
+            metadata: { platform: platform || 'unknown' },
+            timestamp: new Date()
+        });
+
+        // Update reel share count
+        await Reel.findByIdAndUpdate(reelId, { $inc: { shareCount: 1 } });
+
+        // 🎮 Award points for sharing
+        const pointsResult = await PointsService.awardPoints(userId, 'REEL_SHARE', {
+            reelId,
+            platform
+        });
+
+        console.log(`✅ Reel share tracked for ${reelId} by user ${userId}`);
+
+        res.json({
+            success: true,
+            message: 'Share tracked successfully',
+            points: pointsResult?.pointsAwarded || 0
+        });
+
+    } catch (err) {
+        console.error('❌ Error tracking reel share:', err);
+        res.status(500).json({ message: 'Failed to track share' });
+    }
+});
+
 
 module.exports = router;
