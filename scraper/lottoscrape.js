@@ -9,7 +9,7 @@ const LOTTO_URL = process.env.LOTTO_URL || 'https://www.theuaelottery.ae/lottery
 async function scrapeUaeLottoResults(url = LOTTO_URL) {
     try {
         console.log('[UAE Lotto Scrape] 🎰 Starting scrape from:', url);
-        
+
         // Use enhanced fetch with proper wait time for SPA content
         const { html } = await fetchWithPuppeteer(url, {
             waitForSelector: '.draw-result_content', // Wait for main content container
@@ -21,7 +21,7 @@ async function scrapeUaeLottoResults(url = LOTTO_URL) {
 
         // Extract draw number - format: "Draw No.: 260117"
         const drawNumber = $('.draw-result_con_drawno').first().text().replace('Draw No.:', '').trim();
-        
+
         // Extract date/time - format: "Saturday 16:30, 17/01/2026"
         const drawDateTime = $('.draw-result_con_time').first().text().trim();
 
@@ -51,7 +51,7 @@ async function scrapeUaeLottoResults(url = LOTTO_URL) {
                 const match = $cols.eq(1).text().trim();
                 const prize = $cols.eq(2).text().trim();
                 const winners = $cols.eq(3).text().trim();
-                
+
                 // Only add if we have valid data (not header row)
                 if (tier && match && prize) {
                     prizeTiers.push({ tier, match, prize, winners });
@@ -68,7 +68,7 @@ async function scrapeUaeLottoResults(url = LOTTO_URL) {
             if ($cols.length >= 2) {
                 const chanceId = $cols.eq(0).text().trim();
                 const amount = $cols.eq(1).text().trim();
-                
+
                 // Only add if we have valid data
                 if (chanceId && amount && chanceId.length > 0) {
                     raffles.push({ chanceId, amount });
