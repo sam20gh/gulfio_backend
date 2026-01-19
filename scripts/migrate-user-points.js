@@ -32,7 +32,7 @@ function calculateLevel(points) {
 async function migrateUserPoints() {
     console.log('🎮 UserPoints Migration Script');
     console.log('================================');
-    
+
     try {
         // Connect to MongoDB
         console.log('\n🔌 Connecting to MongoDB...');
@@ -52,7 +52,7 @@ async function migrateUserPoints() {
         for (let i = 0; i < users.length; i++) {
             const user = users[i];
             const userId = user.supabase_id;
-            
+
             if (!userId) {
                 console.log(`  ⚠️ Skipping user without supabase_id: ${user._id}`);
                 skipped++;
