@@ -329,18 +329,181 @@ async function trackViewInCache(userId, reelId) {
     }
 }
 
+// ===================== PHASE 4: PRE-COMPUTED TRENDING CACHE =====================
+/**
+ * TikTok-Level Performance: Pre-compute trending feed every 5 minutes
+ * Eliminates DB queries for anonymous users - instant <50ms responses
+ */
+const TRENDING_CACHE_KEY = 'feed:trending:precomputed';
+const TRENDING_CACHE_TTL = 300; // 5 minutes
+
+/**
+ * Pre-compute trending feed for instant guest access
+ * Called on server start and every 5 minutes via cron
+ */
+async function precomputeTrendingFeed() {
+    const startTime = Date.now();
+    try {
+        console.log('🔥 Pre-computing trending feed...');
+        
+        const now = new Date();
+        const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+        const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+        const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
+        
+        // Get top 200 trending reels (enough for multiple pages)
+        const trendingReels = await Reel.aggregate([
+            {
+                $match: {
+                    videoUrl: { $exists: true, $ne: null },
+                    scrapedAt: { $gte: fourteenDaysAgo }
+                }
+            },
+            {
+                $addFields: {
+                    recencyMultiplier: {
+                        $cond: [
+                            { $gte: ['$scrapedAt', threeDaysAgo] }, 2.0,
+                            { $cond: [{ $gte: ['$scrapedAt', sevenDaysAgo] }, 1.5, 1.0] }
+                        ]
+                    },
+                    engagementBase: {
+                        $add: [
+                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.3] },
+                            { $multiply: [{ $ifNull: ['$likes', 0] }, 0.5] },
+                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.2] }
+                        ]
+                    }
+                }
+            },
+            {
+                $addFields: {
+                    trendingScore: { $multiply: ['$engagementBase', '$recencyMultiplier'] }
+                }
+            },
+            { $sort: { trendingScore: -1 } },
+            { $limit: 200 },
+            {
+                $lookup: {
+                    from: 'sources',
+                    localField: 'source',
+                    foreignField: '_id',
+                    as: 'source',
+                    pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                }
+            },
+            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+            {
+                $project: {
+                    _id: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1,
+                    likes: 1, dislikes: 1, viewCount: 1, saves: 1,
+                    completionRate: 1, scrapedAt: 1, source: 1, trendingScore: 1
+                }
+            }
+        ]).allowDiskUse(true);
+        
+        // Apply source diversity (max 5 per source)
+        const sourceCounts = {};
+        const diverseReels = trendingReels.filter(reel => {
+            const sourceName = reel.source?.name || 'unknown';
+            sourceCounts[sourceName] = (sourceCounts[sourceName] || 0) + 1;
+            return sourceCounts[sourceName] <= 5;
+        });
+        
+        // Cache the pre-computed feed
+        await redis.set(TRENDING_CACHE_KEY, JSON.stringify(diverseReels), 'EX', TRENDING_CACHE_TTL);
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ Pre-computed ${diverseReels.length} trending reels in ${duration}ms`);
+        
+        return diverseReels;
+    } catch (error) {
+        console.error('❌ Error pre-computing trending feed:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Get pre-computed trending feed (instant response)
+ * Falls back to live query if cache miss
+ */
+async function getPrecomputedTrendingFeed(cursor, limit) {
+    try {
+        const cached = await redis.get(TRENDING_CACHE_KEY);
+        
+        if (cached) {
+            const allReels = JSON.parse(cached);
+            const excludedIds = cursor?.excludedIds || [];
+            
+            // Filter out already-seen reels and shuffle for variety
+            let available = allReels.filter(r => !excludedIds.includes(r._id.toString()));
+            
+            // Light shuffle to add variety while preserving quality ranking
+            for (let i = Math.min(20, available.length) - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [available[i], available[j]] = [available[j], available[i]];
+            }
+            
+            const results = available.slice(0, limit);
+            const hasMore = available.length > limit;
+            
+            // Build cursor for next page
+            const nextCursor = encodeCursor({
+                excludedIds: [...excludedIds, ...results.map(r => r._id.toString())].slice(-200),
+                timestamp: Date.now()
+            });
+            
+            console.log(`⚡ Served ${results.length} trending reels from pre-computed cache (instant)`);
+            
+            return {
+                reels: results,
+                cursor: nextCursor,
+                hasMore,
+                strategy: 'trending-precomputed'
+            };
+        }
+        
+        // Cache miss - trigger background refresh and use live query
+        console.log('⚠️ Trending cache miss, using live query');
+        precomputeTrendingFeed(); // Fire and forget
+        return null;
+    } catch (error) {
+        console.error('❌ Error getting pre-computed feed:', error.message);
+        return null;
+    }
+}
+
+// Start pre-computation on module load and schedule refresh
+setTimeout(() => precomputeTrendingFeed(), 5000); // Initial compute after 5s
+setInterval(() => precomputeTrendingFeed(), TRENDING_CACHE_TTL * 1000); // Refresh every 5 min
+
 // ===================== OPTIMIZED FEED BUILDERS =====================
 /**
  * Build optimized feed based on user and strategy
  * Main orchestrator for new cursor-based feed system
+ * 
+ * PHASE 4: TikTok-level optimization
+ * - Pre-computed trending for guests (<50ms)
+ * - Cached personalization for users (<150ms)
  */
 async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
+    const startTime = Date.now();
+    
     console.log(`🔍 buildOptimizedFeed called:`, {
         userId: userId?.substring(0, 8),
         hasUserId: !!userId,
         strategy,
         limit
     });
+
+    // PHASE 4: For anonymous users, use pre-computed trending (instant)
+    if (!userId || strategy === 'trending') {
+        const precomputed = await getPrecomputedTrendingFeed(cursor, limit);
+        if (precomputed) {
+            console.log(`⚡ Feed served in ${Date.now() - startTime}ms (pre-computed)`);
+            return precomputed;
+        }
+    }
 
     // For logged-in users with personalized strategy
     if (userId && strategy === 'personalized') {
@@ -401,11 +564,12 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
 
 /**
  * PHASE 3.1: Calculate hybrid personalization score with recency boost
- * Blends three signals for better diversity and relevance:
- * - 50% Embedding similarity (ML-based content understanding)
- * - 30% Source preferences (user's preferred news sources)
- * - 20% Category preferences (topic diversity)
- * Plus a recency multiplier to boost newer content (up to 1.5x for content from last 3 days)
+ * Blends signals for TikTok-level relevance and virality detection:
+ * - 40% Embedding similarity (ML-based content understanding)
+ * - 25% Engagement velocity (new viral detection)
+ * - 20% Source preferences (user's preferred news sources)
+ * - 15% Category preferences (topic diversity)
+ * Plus aggressive recency multiplier for fresh content
  * 
  * @param {Object} reel - Reel document with embedding, source, categories
  * @param {Array} userEmbedding - User's average embedding vector
@@ -413,7 +577,7 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
  * @returns {Object} Scoring breakdown and final hybrid score
  */
 function calculateHybridScore(reel, userEmbedding, userPrefs) {
-    // 1. Embedding similarity score (50%)
+    // 1. Embedding similarity score (40%)
     let embeddingScore = 0;
     if (userEmbedding && reel.embedding_pca) {
         embeddingScore = cosineSimilarity(userEmbedding, reel.embedding_pca);
@@ -422,7 +586,24 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         embeddingScore = reel.searchScore;
     }
 
-    // 2. Source preference score (30%)
+    // 2. ENGAGEMENT VELOCITY SCORE (25%) - TikTok-style viral detection
+    // Measures engagement rate relative to content age
+    let velocityScore = 0;
+    if (reel.scrapedAt) {
+        const ageInHours = Math.max(1, (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60));
+        const engagementSum = (reel.viewCount || 0) + (reel.likes || 0) * 10 + (reel.saves || 0) * 20;
+        const velocity = engagementSum / ageInHours;
+        
+        // Normalize velocity (higher is better, cap at 1)
+        velocityScore = Math.min(1, velocity / 100);
+        
+        // Boost for high completion rate (viral indicator)
+        if (reel.completionRate && reel.completionRate > 0.7) {
+            velocityScore *= 1.3;
+        }
+    }
+
+    // 3. Source preference score (20%)
     let sourceScore = 0;
     if (reel.source?.name && userPrefs.sourcePreferences?.length > 0) {
         const sourceMap = new Map(userPrefs.sourcePreferences);
@@ -431,7 +612,7 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         sourceScore = sourceWeight / maxSourceWeight; // Normalize to 0-1
     }
 
-    // 3. Category preference score (20%)
+    // 4. Category preference score (15%)
     let categoryScore = 0;
     if (reel.categories?.length > 0 && userPrefs.categoryPreferences?.length > 0) {
         const categoryMap = new Map(userPrefs.categoryPreferences);
@@ -448,32 +629,32 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         }
     }
 
-    // 4. Recency boost: newer content gets MUCH higher scores to fight staleness
-    // IMPROVED: More aggressive recency boost to prioritize fresh content
-    // 2.0x boost for 0-1 day, 1.8x for 1-3 days, 1.5x for 3-7 days, 1.2x for 7-14 days, 1.0x for older
+    // 5. AGGRESSIVE recency boost - TikTok prioritizes fresh content heavily
+    // 3.0x for <6h, 2.5x for <24h, 2.0x for <3d, 1.5x for <7d, 1.0x otherwise
     let recencyMultiplier = 1.0;
     if (reel.scrapedAt) {
-        const ageInDays = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60 * 24);
-        if (ageInDays <= 1) {
-            recencyMultiplier = 2.0; // 100% boost for brand new content (< 24h)
-        } else if (ageInDays <= 3) {
-            recencyMultiplier = 1.8; // 80% boost for very fresh content
-        } else if (ageInDays <= 7) {
-            recencyMultiplier = 1.5; // 50% boost for fresh content
-        } else if (ageInDays <= 14) {
-            recencyMultiplier = 1.2; // 20% boost for recent content
+        const ageInHours = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60);
+        if (ageInHours <= 6) {
+            recencyMultiplier = 3.0; // 200% boost for brand new content (< 6h)
+        } else if (ageInHours <= 24) {
+            recencyMultiplier = 2.5; // 150% boost for today's content
+        } else if (ageInHours <= 72) {
+            recencyMultiplier = 2.0; // 100% boost for fresh content (< 3d)
+        } else if (ageInHours <= 168) {
+            recencyMultiplier = 1.5; // 50% boost for recent content (< 7d)
         }
         // else 1.0 (no boost for older content)
     }
 
-    // 5. Add small random factor to break ties and add variety (0.95 to 1.05)
-    const randomFactor = 0.95 + (Math.random() * 0.1);
+    // 6. Add small random factor to break ties and add variety (0.92 to 1.08)
+    const randomFactor = 0.92 + (Math.random() * 0.16);
 
-    // Calculate base hybrid score (50/30/20)
+    // Calculate base hybrid score (40/25/20/15)
     const baseScore = (
-        embeddingScore * 0.5 +
-        sourceScore * 0.3 +
-        categoryScore * 0.2
+        embeddingScore * 0.40 +
+        velocityScore * 0.25 +
+        sourceScore * 0.20 +
+        categoryScore * 0.15
     );
 
     // Apply recency multiplier and random factor
@@ -482,10 +663,11 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
     return {
         hybridScore,
         embeddingScore,
+        velocityScore,
         sourceScore,
         categoryScore,
         recencyMultiplier,
-        breakdown: `E:${(embeddingScore * 100).toFixed(0)}% S:${(sourceScore * 100).toFixed(0)}% C:${(categoryScore * 100).toFixed(0)}% R:${recencyMultiplier.toFixed(1)}x`
+        breakdown: `E:${(embeddingScore * 100).toFixed(0)}% V:${(velocityScore * 100).toFixed(0)}% S:${(sourceScore * 100).toFixed(0)}% C:${(categoryScore * 100).toFixed(0)}% R:${recencyMultiplier.toFixed(1)}x`
     };
 }
 
@@ -1615,6 +1797,88 @@ const extractKeyFromUrl = (u, bucket = null, region = null) => {
         return null;
     }
 };
+
+// ===================== PHASE 4: ULTRA-FAST INITIAL LOAD ENDPOINT =====================
+/**
+ * GET /reels/instant
+ * TikTok-style instant initial load endpoint
+ * - Returns pre-cached trending reels in <50ms
+ * - No authentication required
+ * - Minimal payload for fastest TTFB
+ * 
+ * Use for: App cold start, guest users, network-constrained situations
+ */
+router.get('/reels/instant', async (req, res) => {
+    const startTime = Date.now();
+    
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 10, 20);
+        
+        // Try pre-computed cache first (fastest path)
+        const cached = await redis.get(TRENDING_CACHE_KEY);
+        
+        if (cached) {
+            const allReels = JSON.parse(cached);
+            
+            // Quick shuffle for variety
+            const shuffled = [...allReels];
+            for (let i = Math.min(limit * 2, shuffled.length) - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            
+            // Return minimal payload
+            const results = shuffled.slice(0, limit).map(r => ({
+                _id: r._id,
+                videoUrl: r.videoUrl,
+                thumbnailUrl: r.thumbnailUrl,
+                caption: r.caption?.substring(0, 100), // Truncate for speed
+                source: r.source?.name ? { name: r.source.name } : null,
+                viewCount: r.viewCount,
+                likes: r.likes
+            }));
+            
+            const duration = Date.now() - startTime;
+            console.log(`⚡ /reels/instant served ${results.length} reels in ${duration}ms`);
+            
+            res.set({
+                'Cache-Control': 'public, max-age=60', // CDN cache for 1 min
+                'X-Response-Time': `${duration}ms`,
+                'X-Feed-Source': 'precomputed'
+            });
+            
+            return res.json(results);
+        }
+        
+        // Fallback: Quick DB query (still fast, just not instant)
+        console.log('⚠️ Instant feed cache miss, using fast query');
+        
+        const reels = await Reel.find({
+            videoUrl: { $exists: true, $ne: null }
+        })
+        .select('_id videoUrl thumbnailUrl caption viewCount likes source')
+        .populate('source', 'name')
+        .sort({ viewCount: -1, scrapedAt: -1 })
+        .limit(limit)
+        .lean();
+        
+        const duration = Date.now() - startTime;
+        console.log(`⚡ /reels/instant fallback served ${reels.length} reels in ${duration}ms`);
+        
+        res.set({
+            'Cache-Control': 'public, max-age=30',
+            'X-Response-Time': `${duration}ms`,
+            'X-Feed-Source': 'live-fallback'
+        });
+        
+        return res.json(reels);
+        
+    } catch (err) {
+        console.error('❌ Error in /reels/instant:', err.message);
+        res.status(500).json({ error: 'Failed to fetch instant feed' });
+    }
+});
+
 // ===================== EXISTING ROUTES =====================
 router.get('/', async (req, res) => {
     try {
