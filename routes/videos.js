@@ -345,12 +345,12 @@ async function precomputeTrendingFeed() {
     const startTime = Date.now();
     try {
         console.log('🔥 Pre-computing trending feed...');
-        
+
         const now = new Date();
         const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
         const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
         const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
-        
+
         // Get top 200 trending reels (enough for multiple pages)
         const trendingReels = await Reel.aggregate([
             {
@@ -401,7 +401,7 @@ async function precomputeTrendingFeed() {
                 }
             }
         ]).allowDiskUse(true);
-        
+
         // Apply source diversity (max 5 per source)
         const sourceCounts = {};
         const diverseReels = trendingReels.filter(reel => {
@@ -409,13 +409,13 @@ async function precomputeTrendingFeed() {
             sourceCounts[sourceName] = (sourceCounts[sourceName] || 0) + 1;
             return sourceCounts[sourceName] <= 5;
         });
-        
+
         // Cache the pre-computed feed
         await redis.set(TRENDING_CACHE_KEY, JSON.stringify(diverseReels), 'EX', TRENDING_CACHE_TTL);
-        
+
         const duration = Date.now() - startTime;
         console.log(`✅ Pre-computed ${diverseReels.length} trending reels in ${duration}ms`);
-        
+
         return diverseReels;
     } catch (error) {
         console.error('❌ Error pre-computing trending feed:', error.message);
@@ -430,31 +430,31 @@ async function precomputeTrendingFeed() {
 async function getPrecomputedTrendingFeed(cursor, limit) {
     try {
         const cached = await redis.get(TRENDING_CACHE_KEY);
-        
+
         if (cached) {
             const allReels = JSON.parse(cached);
             const excludedIds = cursor?.excludedIds || [];
-            
+
             // Filter out already-seen reels and shuffle for variety
             let available = allReels.filter(r => !excludedIds.includes(r._id.toString()));
-            
+
             // Light shuffle to add variety while preserving quality ranking
             for (let i = Math.min(20, available.length) - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [available[i], available[j]] = [available[j], available[i]];
             }
-            
+
             const results = available.slice(0, limit);
             const hasMore = available.length > limit;
-            
+
             // Build cursor for next page
             const nextCursor = encodeCursor({
                 excludedIds: [...excludedIds, ...results.map(r => r._id.toString())].slice(-200),
                 timestamp: Date.now()
             });
-            
+
             console.log(`⚡ Served ${results.length} trending reels from pre-computed cache (instant)`);
-            
+
             return {
                 reels: results,
                 cursor: nextCursor,
@@ -462,7 +462,7 @@ async function getPrecomputedTrendingFeed(cursor, limit) {
                 strategy: 'trending-precomputed'
             };
         }
-        
+
         // Cache miss - trigger background refresh and use live query
         console.log('⚠️ Trending cache miss, using live query');
         precomputeTrendingFeed(); // Fire and forget
@@ -488,7 +488,7 @@ setInterval(() => precomputeTrendingFeed(), TRENDING_CACHE_TTL * 1000); // Refre
  */
 async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
     const startTime = Date.now();
-    
+
     console.log(`🔍 buildOptimizedFeed called:`, {
         userId: userId?.substring(0, 8),
         hasUserId: !!userId,
@@ -593,10 +593,10 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
         const ageInHours = Math.max(1, (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60));
         const engagementSum = (reel.viewCount || 0) + (reel.likes || 0) * 10 + (reel.saves || 0) * 20;
         const velocity = engagementSum / ageInHours;
-        
+
         // Normalize velocity (higher is better, cap at 1)
         velocityScore = Math.min(1, velocity / 100);
-        
+
         // Boost for high completion rate (viral indicator)
         if (reel.completionRate && reel.completionRate > 0.7) {
             velocityScore *= 1.3;
@@ -1810,23 +1810,23 @@ const extractKeyFromUrl = (u, bucket = null, region = null) => {
  */
 router.get('/reels/instant', async (req, res) => {
     const startTime = Date.now();
-    
+
     try {
         const limit = Math.min(parseInt(req.query.limit) || 10, 20);
-        
+
         // Try pre-computed cache first (fastest path)
         const cached = await redis.get(TRENDING_CACHE_KEY);
-        
+
         if (cached) {
             const allReels = JSON.parse(cached);
-            
+
             // Quick shuffle for variety
             const shuffled = [...allReels];
             for (let i = Math.min(limit * 2, shuffled.length) - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
             }
-            
+
             // Return minimal payload
             const results = shuffled.slice(0, limit).map(r => ({
                 _id: r._id,
@@ -1837,42 +1837,42 @@ router.get('/reels/instant', async (req, res) => {
                 viewCount: r.viewCount,
                 likes: r.likes
             }));
-            
+
             const duration = Date.now() - startTime;
             console.log(`⚡ /reels/instant served ${results.length} reels in ${duration}ms`);
-            
+
             res.set({
                 'Cache-Control': 'public, max-age=60', // CDN cache for 1 min
                 'X-Response-Time': `${duration}ms`,
                 'X-Feed-Source': 'precomputed'
             });
-            
+
             return res.json(results);
         }
-        
+
         // Fallback: Quick DB query (still fast, just not instant)
         console.log('⚠️ Instant feed cache miss, using fast query');
-        
+
         const reels = await Reel.find({
             videoUrl: { $exists: true, $ne: null }
         })
-        .select('_id videoUrl thumbnailUrl caption viewCount likes source')
-        .populate('source', 'name')
-        .sort({ viewCount: -1, scrapedAt: -1 })
-        .limit(limit)
-        .lean();
-        
+            .select('_id videoUrl thumbnailUrl caption viewCount likes source')
+            .populate('source', 'name')
+            .sort({ viewCount: -1, scrapedAt: -1 })
+            .limit(limit)
+            .lean();
+
         const duration = Date.now() - startTime;
         console.log(`⚡ /reels/instant fallback served ${reels.length} reels in ${duration}ms`);
-        
+
         res.set({
             'Cache-Control': 'public, max-age=30',
             'X-Response-Time': `${duration}ms`,
             'X-Feed-Source': 'live-fallback'
         });
-        
+
         return res.json(reels);
-        
+
     } catch (err) {
         console.error('❌ Error in /reels/instant:', err.message);
         res.status(500).json({ error: 'Failed to fetch instant feed' });
