@@ -337,6 +337,97 @@ async function trackViewInCache(userId, reelId) {
 const TRENDING_CACHE_KEY = 'feed:trending:precomputed';
 const TRENDING_CACHE_TTL = 300; // 5 minutes
 
+// ===================== PHASE 5: OPTIONAL ENHANCEMENTS =====================
+/**
+ * 5.1 HLS Quality Tiers for adaptive bitrate streaming
+ * Supports network-aware video quality selection
+ */
+const QUALITY_TIERS = {
+    '4k': { resolution: 2160, bitrate: 15000, label: '4K Ultra HD' },
+    '1080p': { resolution: 1080, bitrate: 5000, label: 'Full HD' },
+    '720p': { resolution: 720, bitrate: 2500, label: 'HD' },
+    '480p': { resolution: 480, bitrate: 1000, label: 'SD' },
+    '360p': { resolution: 360, bitrate: 600, label: 'Low' },
+    '240p': { resolution: 240, bitrate: 300, label: 'Very Low' }
+};
+
+// Network speed to quality mapping (Mbps thresholds)
+const NETWORK_QUALITY_MAP = {
+    fast: ['4k', '1080p', '720p'],      // >10 Mbps
+    moderate: ['1080p', '720p', '480p'], // 2-10 Mbps
+    slow: ['720p', '480p', '360p'],      // 0.5-2 Mbps
+    offline: ['360p', '240p']            // <0.5 Mbps (preloaded)
+};
+
+/**
+ * 5.2 Watch Time Prediction Score
+ * ML-inspired heuristic to predict if user will watch the video
+ * Based on: user history, video features, time of day, session depth
+ */
+function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
+    let score = 0.5; // Base score
+    
+    // Factor 1: Historical completion rate (strongest signal)
+    if (reel.completionRate) {
+        score += (reel.completionRate - 0.5) * 0.3; // +/- 15%
+    }
+    
+    // Factor 2: Source preference match
+    if (userPrefs.sourcePreferences && reel.source?.name) {
+        const sourceMap = new Map(userPrefs.sourcePreferences);
+        if (sourceMap.has(reel.source.name)) {
+            score += 0.15; // +15% for preferred source
+        }
+    }
+    
+    // Factor 3: Category match
+    if (userPrefs.categoryPreferences && reel.categories?.length > 0) {
+        const categoryMap = new Map(userPrefs.categoryPreferences);
+        const hasMatchingCategory = reel.categories.some(cat => categoryMap.has(cat));
+        if (hasMatchingCategory) {
+            score += 0.1; // +10% for preferred category
+        }
+    }
+    
+    // Factor 4: Session depth penalty (fatigue)
+    const sessionDepth = sessionContext.videosWatched || 0;
+    if (sessionDepth > 20) {
+        score -= 0.1; // -10% after 20 videos (fatigue)
+    }
+    
+    // Factor 5: Time of day optimization
+    const hour = new Date().getHours();
+    if (hour >= 20 || hour <= 6) {
+        // Evening/night: boost entertaining content
+        if (reel.categories?.includes('entertainment')) {
+            score += 0.05;
+        }
+    } else if (hour >= 7 && hour <= 9) {
+        // Morning: boost news/informational
+        if (reel.categories?.some(c => ['news', 'business', 'tech'].includes(c))) {
+            score += 0.05;
+        }
+    }
+    
+    // Factor 6: Engagement velocity (viral indicator)
+    if (reel.viewCount > 0 && reel.scrapedAt) {
+        const ageHours = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60);
+        const velocity = (reel.viewCount + reel.likes * 5) / Math.max(1, ageHours);
+        if (velocity > 50) {
+            score += 0.1; // +10% for viral content
+        }
+    }
+    
+    return Math.max(0, Math.min(1, score)); // Clamp to 0-1
+}
+
+/**
+ * 5.3 Personalization Warm-Up Cache Key Generator
+ * Pre-computes feed for users who typically engage at certain times
+ */
+const WARMUP_CACHE_PREFIX = 'feed:warmup:';
+const WARMUP_CACHE_TTL = 1800; // 30 minutes
+
 /**
  * Pre-compute trending feed for instant guest access
  * Called on server start and every 5 minutes via cron
@@ -1827,7 +1918,7 @@ router.get('/reels/instant', async (req, res) => {
                 [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
             }
 
-            // Return minimal payload
+            // Return minimal payload with quality hints
             const results = shuffled.slice(0, limit).map(r => ({
                 _id: r._id,
                 videoUrl: r.videoUrl,
@@ -1835,16 +1926,24 @@ router.get('/reels/instant', async (req, res) => {
                 caption: r.caption?.substring(0, 100), // Truncate for speed
                 source: r.source?.name ? { name: r.source.name } : null,
                 viewCount: r.viewCount,
-                likes: r.likes
+                likes: r.likes,
+                // Phase 5: Quality hints for adaptive streaming
+                qualityHint: r.viewCount > 1000 ? 'high' : 'standard',
+                preloadPriority: r.completionRate > 0.7 ? 'high' : 'normal'
             }));
 
             const duration = Date.now() - startTime;
             console.log(`⚡ /reels/instant served ${results.length} reels in ${duration}ms`);
 
+            // Phase 5: Enhanced CDN caching with stale-while-revalidate
             res.set({
-                'Cache-Control': 'public, max-age=60', // CDN cache for 1 min
+                'Cache-Control': 'public, max-age=60, stale-while-revalidate=300, stale-if-error=600',
+                'CDN-Cache-Control': 'public, max-age=120', // Cloudflare/Fastly specific
+                'Surrogate-Control': 'max-age=300', // Varnish/Akamai
                 'X-Response-Time': `${duration}ms`,
-                'X-Feed-Source': 'precomputed'
+                'X-Feed-Source': 'precomputed',
+                'X-Cache-Status': 'HIT',
+                'Vary': 'Accept-Encoding'
             });
 
             return res.json(results);
@@ -1876,6 +1975,238 @@ router.get('/reels/instant', async (req, res) => {
     } catch (err) {
         console.error('❌ Error in /reels/instant:', err.message);
         res.status(500).json({ error: 'Failed to fetch instant feed' });
+    }
+});
+
+// ===================== PHASE 5.4: NETWORK-AWARE QUALITY SELECTION =====================
+/**
+ * GET /reels/quality-config
+ * Returns optimal video quality settings based on network conditions
+ * Client reports downlink speed, returns recommended quality tier
+ */
+router.get('/reels/quality-config', async (req, res) => {
+    try {
+        const { downlink = 10, effectiveType = '4g', saveData = false } = req.query;
+        const downlinkMbps = parseFloat(downlink);
+        
+        // Determine network speed category
+        let networkCategory;
+        if (saveData === 'true' || saveData === true) {
+            networkCategory = 'offline';
+        } else if (effectiveType === 'slow-2g' || effectiveType === '2g' || downlinkMbps < 0.5) {
+            networkCategory = 'offline';
+        } else if (effectiveType === '3g' || downlinkMbps < 2) {
+            networkCategory = 'slow';
+        } else if (downlinkMbps < 10) {
+            networkCategory = 'moderate';
+        } else {
+            networkCategory = 'fast';
+        }
+        
+        const recommendedQualities = NETWORK_QUALITY_MAP[networkCategory];
+        const primaryQuality = recommendedQualities[0];
+        
+        res.set({
+            'Cache-Control': 'public, max-age=300', // Cache for 5 minutes
+            'X-Network-Category': networkCategory
+        });
+        
+        return res.json({
+            networkCategory,
+            downlinkMbps,
+            effectiveType,
+            saveData: saveData === 'true' || saveData === true,
+            recommendedQualities,
+            primaryQuality,
+            qualityConfig: QUALITY_TIERS[primaryQuality],
+            allTiers: QUALITY_TIERS,
+            // Preload hints
+            preloadStrategy: networkCategory === 'fast' ? 'aggressive' : 
+                            networkCategory === 'moderate' ? 'normal' : 'minimal',
+            preloadCount: networkCategory === 'fast' ? 5 : 
+                         networkCategory === 'moderate' ? 3 : 1
+        });
+    } catch (err) {
+        console.error('❌ Error in /reels/quality-config:', err.message);
+        res.status(500).json({ error: 'Failed to get quality config' });
+    }
+});
+
+// ===================== PHASE 5.5: PERSONALIZATION WARM-UP =====================
+/**
+ * POST /reels/warmup
+ * Pre-warms personalized feed for a user (called when app backgrounded)
+ * Reduces latency for next session by pre-computing recommendations
+ */
+router.post('/reels/warmup', async (req, res) => {
+    const startTime = Date.now();
+    
+    try {
+        // Get user ID from token
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        if (!authToken) {
+            return res.status(401).json({ error: 'Authentication required for warm-up' });
+        }
+        
+        let userId;
+        try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(authToken, process.env.SUPABASE_JWT_SECRET);
+            userId = decoded.sub;
+        } catch (jwtErr) {
+            return res.status(401).json({ error: 'Invalid token' });
+        }
+        
+        console.log(`🔥 Warming up feed for user ${userId.substring(0, 8)}...`);
+        
+        // Get user preferences and embedding
+        const userPrefs = await getUserPreferences(userId);
+        const userEmbedding = userPrefs.averageEmbedding?.slice(0, 128);
+        
+        if (!userEmbedding || userEmbedding.length !== 128) {
+            console.log(`⚠️ No embedding for warm-up, user ${userId.substring(0, 8)}`);
+            return res.json({ 
+                success: false, 
+                reason: 'no_embedding',
+                message: 'User has no interaction history for personalization'
+            });
+        }
+        
+        // Pre-compute personalized feed
+        const { reels, cursor, hasMore, strategy } = await getPersonalizedFeedOptimized(
+            userId, 
+            userEmbedding, 
+            null, // No cursor for fresh feed
+            30,   // Pre-compute 30 reels
+            userPrefs
+        );
+        
+        // Cache the warm-up results
+        const warmupKey = `${WARMUP_CACHE_PREFIX}${userId}`;
+        await redis.set(warmupKey, JSON.stringify({
+            reels: reels.slice(0, 20), // Cache top 20
+            cursor,
+            hasMore,
+            strategy,
+            timestamp: Date.now()
+        }), 'EX', WARMUP_CACHE_TTL);
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ Warm-up complete for user ${userId.substring(0, 8)} in ${duration}ms (${reels.length} reels)`);
+        
+        res.set({ 'X-Response-Time': `${duration}ms` });
+        
+        return res.json({
+            success: true,
+            reelsPrecomputed: reels.length,
+            cacheExpiry: WARMUP_CACHE_TTL,
+            duration
+        });
+        
+    } catch (err) {
+        console.error('❌ Error in /reels/warmup:', err.message);
+        res.status(500).json({ error: 'Warm-up failed', details: err.message });
+    }
+});
+
+/**
+ * GET /reels/warmup-status
+ * Check if user has a warm cache ready
+ */
+router.get('/reels/warmup-status', async (req, res) => {
+    try {
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        if (!authToken) {
+            return res.json({ hasWarmCache: false, reason: 'not_authenticated' });
+        }
+        
+        let userId;
+        try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(authToken, process.env.SUPABASE_JWT_SECRET);
+            userId = decoded.sub;
+        } catch (jwtErr) {
+            return res.json({ hasWarmCache: false, reason: 'invalid_token' });
+        }
+        
+        const warmupKey = `${WARMUP_CACHE_PREFIX}${userId}`;
+        const cached = await redis.get(warmupKey);
+        
+        if (cached) {
+            const data = JSON.parse(cached);
+            const ageSeconds = Math.floor((Date.now() - data.timestamp) / 1000);
+            
+            return res.json({
+                hasWarmCache: true,
+                reelsReady: data.reels?.length || 0,
+                cacheAge: ageSeconds,
+                strategy: data.strategy
+            });
+        }
+        
+        return res.json({ hasWarmCache: false, reason: 'no_cache' });
+        
+    } catch (err) {
+        console.error('❌ Error in /reels/warmup-status:', err.message);
+        res.json({ hasWarmCache: false, reason: 'error' });
+    }
+});
+
+// ===================== PHASE 5.6: WATCH TIME PREDICTION ENDPOINT =====================
+/**
+ * POST /reels/predict-engagement
+ * Returns predicted watch time/engagement for a batch of reels
+ * Used for smarter preloading decisions
+ */
+router.post('/reels/predict-engagement', async (req, res) => {
+    try {
+        const { reelIds, sessionContext = {} } = req.body;
+        
+        if (!reelIds || !Array.isArray(reelIds) || reelIds.length === 0) {
+            return res.status(400).json({ error: 'reelIds array required' });
+        }
+        
+        // Get user preferences if authenticated
+        let userPrefs = {};
+        const authToken = req.headers.authorization?.replace('Bearer ', '');
+        if (authToken) {
+            try {
+                const jwt = require('jsonwebtoken');
+                const decoded = jwt.verify(authToken, process.env.SUPABASE_JWT_SECRET);
+                userPrefs = await getUserPreferences(decoded.sub);
+            } catch (jwtErr) {
+                // Continue without user prefs
+            }
+        }
+        
+        // Fetch reels
+        const reels = await Reel.find({
+            _id: { $in: reelIds.slice(0, 20) } // Limit to 20
+        })
+            .select('_id completionRate viewCount likes source categories scrapedAt')
+            .populate('source', 'name')
+            .lean();
+        
+        // Calculate predictions
+        const predictions = reels.map(reel => ({
+            _id: reel._id,
+            predictedWatchScore: predictWatchTime(reel, userPrefs, sessionContext),
+            completionRate: reel.completionRate || 0,
+            preloadPriority: predictWatchTime(reel, userPrefs, sessionContext) > 0.6 ? 'high' : 'normal'
+        }));
+        
+        // Sort by predicted score
+        predictions.sort((a, b) => b.predictedWatchScore - a.predictedWatchScore);
+        
+        return res.json({
+            predictions,
+            totalReels: predictions.length,
+            highPriorityCount: predictions.filter(p => p.preloadPriority === 'high').length
+        });
+        
+    } catch (err) {
+        console.error('❌ Error in /reels/predict-engagement:', err.message);
+        res.status(500).json({ error: 'Prediction failed' });
     }
 });
 
