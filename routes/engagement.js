@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const UserActivity = require('../models/UserActivity');
+const PointsService = require('../services/pointsService'); // 🎮 Gamification
+const Article = require('../models/Article'); // For category lookup
 // Removed updateUserProfileEmbedding - now handled by daily cron job
 
 router.post('/log', async (req, res) => {
@@ -20,6 +22,21 @@ router.post('/log', async (req, res) => {
         });
 
         await newLog.save();
+
+        // 🎮 Award points for article reads (non-blocking)
+        if (eventType === 'view' && articleId) {
+            Article.findById(articleId).select('category').lean().then(art => {
+                PointsService.awardPoints(userId, 'ARTICLE_READ', {
+                    articleId,
+                    category: art?.category
+                }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
+            }).catch(() => {
+                // Award without category if article lookup fails
+                PointsService.awardPoints(userId, 'ARTICLE_READ', {
+                    articleId
+                }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
+            });
+        }
 
         // Embedding updates now handled by daily cron job for better performance
         // This allows instant response while still tracking all activities
