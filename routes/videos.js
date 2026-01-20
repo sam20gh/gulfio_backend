@@ -366,12 +366,12 @@ const NETWORK_QUALITY_MAP = {
  */
 function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
     let score = 0.5; // Base score
-    
+
     // Factor 1: Historical completion rate (strongest signal)
     if (reel.completionRate) {
         score += (reel.completionRate - 0.5) * 0.3; // +/- 15%
     }
-    
+
     // Factor 2: Source preference match
     if (userPrefs.sourcePreferences && reel.source?.name) {
         const sourceMap = new Map(userPrefs.sourcePreferences);
@@ -379,7 +379,7 @@ function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
             score += 0.15; // +15% for preferred source
         }
     }
-    
+
     // Factor 3: Category match
     if (userPrefs.categoryPreferences && reel.categories?.length > 0) {
         const categoryMap = new Map(userPrefs.categoryPreferences);
@@ -388,13 +388,13 @@ function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
             score += 0.1; // +10% for preferred category
         }
     }
-    
+
     // Factor 4: Session depth penalty (fatigue)
     const sessionDepth = sessionContext.videosWatched || 0;
     if (sessionDepth > 20) {
         score -= 0.1; // -10% after 20 videos (fatigue)
     }
-    
+
     // Factor 5: Time of day optimization
     const hour = new Date().getHours();
     if (hour >= 20 || hour <= 6) {
@@ -408,7 +408,7 @@ function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
             score += 0.05;
         }
     }
-    
+
     // Factor 6: Engagement velocity (viral indicator)
     if (reel.viewCount > 0 && reel.scrapedAt) {
         const ageHours = (Date.now() - new Date(reel.scrapedAt).getTime()) / (1000 * 60 * 60);
@@ -417,7 +417,7 @@ function predictWatchTime(reel, userPrefs = {}, sessionContext = {}) {
             score += 0.1; // +10% for viral content
         }
     }
-    
+
     return Math.max(0, Math.min(1, score)); // Clamp to 0-1
 }
 
@@ -1988,7 +1988,7 @@ router.get('/reels/quality-config', async (req, res) => {
     try {
         const { downlink = 10, effectiveType = '4g', saveData = false } = req.query;
         const downlinkMbps = parseFloat(downlink);
-        
+
         // Determine network speed category
         let networkCategory;
         if (saveData === 'true' || saveData === true) {
@@ -2002,15 +2002,15 @@ router.get('/reels/quality-config', async (req, res) => {
         } else {
             networkCategory = 'fast';
         }
-        
+
         const recommendedQualities = NETWORK_QUALITY_MAP[networkCategory];
         const primaryQuality = recommendedQualities[0];
-        
+
         res.set({
             'Cache-Control': 'public, max-age=300', // Cache for 5 minutes
             'X-Network-Category': networkCategory
         });
-        
+
         return res.json({
             networkCategory,
             downlinkMbps,
@@ -2021,10 +2021,10 @@ router.get('/reels/quality-config', async (req, res) => {
             qualityConfig: QUALITY_TIERS[primaryQuality],
             allTiers: QUALITY_TIERS,
             // Preload hints
-            preloadStrategy: networkCategory === 'fast' ? 'aggressive' : 
-                            networkCategory === 'moderate' ? 'normal' : 'minimal',
-            preloadCount: networkCategory === 'fast' ? 5 : 
-                         networkCategory === 'moderate' ? 3 : 1
+            preloadStrategy: networkCategory === 'fast' ? 'aggressive' :
+                networkCategory === 'moderate' ? 'normal' : 'minimal',
+            preloadCount: networkCategory === 'fast' ? 5 :
+                networkCategory === 'moderate' ? 3 : 1
         });
     } catch (err) {
         console.error('❌ Error in /reels/quality-config:', err.message);
@@ -2040,14 +2040,14 @@ router.get('/reels/quality-config', async (req, res) => {
  */
 router.post('/reels/warmup', async (req, res) => {
     const startTime = Date.now();
-    
+
     try {
         // Get user ID from token
         const authToken = req.headers.authorization?.replace('Bearer ', '');
         if (!authToken) {
             return res.status(401).json({ error: 'Authentication required for warm-up' });
         }
-        
+
         let userId;
         try {
             const jwt = require('jsonwebtoken');
@@ -2056,31 +2056,31 @@ router.post('/reels/warmup', async (req, res) => {
         } catch (jwtErr) {
             return res.status(401).json({ error: 'Invalid token' });
         }
-        
+
         console.log(`🔥 Warming up feed for user ${userId.substring(0, 8)}...`);
-        
+
         // Get user preferences and embedding
         const userPrefs = await getUserPreferences(userId);
         const userEmbedding = userPrefs.averageEmbedding?.slice(0, 128);
-        
+
         if (!userEmbedding || userEmbedding.length !== 128) {
             console.log(`⚠️ No embedding for warm-up, user ${userId.substring(0, 8)}`);
-            return res.json({ 
-                success: false, 
+            return res.json({
+                success: false,
                 reason: 'no_embedding',
                 message: 'User has no interaction history for personalization'
             });
         }
-        
+
         // Pre-compute personalized feed
         const { reels, cursor, hasMore, strategy } = await getPersonalizedFeedOptimized(
-            userId, 
-            userEmbedding, 
+            userId,
+            userEmbedding,
             null, // No cursor for fresh feed
             30,   // Pre-compute 30 reels
             userPrefs
         );
-        
+
         // Cache the warm-up results
         const warmupKey = `${WARMUP_CACHE_PREFIX}${userId}`;
         await redis.set(warmupKey, JSON.stringify({
@@ -2090,19 +2090,19 @@ router.post('/reels/warmup', async (req, res) => {
             strategy,
             timestamp: Date.now()
         }), 'EX', WARMUP_CACHE_TTL);
-        
+
         const duration = Date.now() - startTime;
         console.log(`✅ Warm-up complete for user ${userId.substring(0, 8)} in ${duration}ms (${reels.length} reels)`);
-        
+
         res.set({ 'X-Response-Time': `${duration}ms` });
-        
+
         return res.json({
             success: true,
             reelsPrecomputed: reels.length,
             cacheExpiry: WARMUP_CACHE_TTL,
             duration
         });
-        
+
     } catch (err) {
         console.error('❌ Error in /reels/warmup:', err.message);
         res.status(500).json({ error: 'Warm-up failed', details: err.message });
@@ -2119,7 +2119,7 @@ router.get('/reels/warmup-status', async (req, res) => {
         if (!authToken) {
             return res.json({ hasWarmCache: false, reason: 'not_authenticated' });
         }
-        
+
         let userId;
         try {
             const jwt = require('jsonwebtoken');
@@ -2128,14 +2128,14 @@ router.get('/reels/warmup-status', async (req, res) => {
         } catch (jwtErr) {
             return res.json({ hasWarmCache: false, reason: 'invalid_token' });
         }
-        
+
         const warmupKey = `${WARMUP_CACHE_PREFIX}${userId}`;
         const cached = await redis.get(warmupKey);
-        
+
         if (cached) {
             const data = JSON.parse(cached);
             const ageSeconds = Math.floor((Date.now() - data.timestamp) / 1000);
-            
+
             return res.json({
                 hasWarmCache: true,
                 reelsReady: data.reels?.length || 0,
@@ -2143,9 +2143,9 @@ router.get('/reels/warmup-status', async (req, res) => {
                 strategy: data.strategy
             });
         }
-        
+
         return res.json({ hasWarmCache: false, reason: 'no_cache' });
-        
+
     } catch (err) {
         console.error('❌ Error in /reels/warmup-status:', err.message);
         res.json({ hasWarmCache: false, reason: 'error' });
@@ -2161,11 +2161,11 @@ router.get('/reels/warmup-status', async (req, res) => {
 router.post('/reels/predict-engagement', async (req, res) => {
     try {
         const { reelIds, sessionContext = {} } = req.body;
-        
+
         if (!reelIds || !Array.isArray(reelIds) || reelIds.length === 0) {
             return res.status(400).json({ error: 'reelIds array required' });
         }
-        
+
         // Get user preferences if authenticated
         let userPrefs = {};
         const authToken = req.headers.authorization?.replace('Bearer ', '');
@@ -2178,7 +2178,7 @@ router.post('/reels/predict-engagement', async (req, res) => {
                 // Continue without user prefs
             }
         }
-        
+
         // Fetch reels
         const reels = await Reel.find({
             _id: { $in: reelIds.slice(0, 20) } // Limit to 20
@@ -2186,7 +2186,7 @@ router.post('/reels/predict-engagement', async (req, res) => {
             .select('_id completionRate viewCount likes source categories scrapedAt')
             .populate('source', 'name')
             .lean();
-        
+
         // Calculate predictions
         const predictions = reels.map(reel => ({
             _id: reel._id,
@@ -2194,16 +2194,16 @@ router.post('/reels/predict-engagement', async (req, res) => {
             completionRate: reel.completionRate || 0,
             preloadPriority: predictWatchTime(reel, userPrefs, sessionContext) > 0.6 ? 'high' : 'normal'
         }));
-        
+
         // Sort by predicted score
         predictions.sort((a, b) => b.predictedWatchScore - a.predictedWatchScore);
-        
+
         return res.json({
             predictions,
             totalReels: predictions.length,
             highPriorityCount: predictions.filter(p => p.preloadPriority === 'high').length
         });
-        
+
     } catch (err) {
         console.error('❌ Error in /reels/predict-engagement:', err.message);
         res.status(500).json({ error: 'Prediction failed' });
