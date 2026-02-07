@@ -775,7 +775,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
     try {
         const startTime = Date.now();
         const sessionTimestamp = cursor?.timestamp || Date.now();
-        
+
         // Get excluded IDs from cursor or recent history
         const exclusionLimit = cursor?.excludedIds ? 100 : 30;
         const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, exclusionLimit);
@@ -797,7 +797,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
 
         // Convert excludedIds for queries
-        const excludeObjectIds = excludedIds.map(id => 
+        const excludeObjectIds = excludedIds.map(id =>
             typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id
         );
 
@@ -919,9 +919,9 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // ADAPTIVE source diversity - loosen limits for small catalogs
         const applySourceDiversity = (reels, maxPerBucket) => {
             const maxPerSource = totalFetched < 20 ? 999 : // Unlimited for tiny catalogs
-                                 totalFetched < 50 ? 10 :  // Generous for small catalogs
-                                 totalFetched < 100 ? 5 :  // Moderate for medium
-                                 3;                        // Strict for large
+                totalFetched < 50 ? 10 :  // Generous for small catalogs
+                    totalFetched < 100 ? 5 :  // Moderate for medium
+                        3;                        // Strict for large
             const sourceCounts = {};
             return reels.filter(reel => {
                 const sourceName = reel.source?.name || 'unknown';
@@ -940,7 +940,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // Interleave for TikTok-style mixing (personalized, fresh, personalized, discovery, ...)
         const combined = [];
         const maxLen = Math.max(diversePersonalized.length, diverseFresh.length, diverseDiscovery.length);
-        
+
         for (let i = 0; i < maxLen && combined.length < limit; i++) {
             if (diversePersonalized[i * 2]) combined.push(diversePersonalized[i * 2]);
             if (diverseFresh[i]) combined.push(diverseFresh[i]);
@@ -976,7 +976,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         });
         const totalExcluded = new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())]).size;
         const hasMore = totalReelsInDb > totalExcluded;
-        
+
         const nextCursor = encodeCursor({
             lastId: cleanResults.length > 0 ? cleanResults[cleanResults.length - 1]._id : null,
             excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300),
@@ -1218,10 +1218,10 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
             // Calculate adaptive limit: if we have < 20 total videos, allow unlimited per source
             // Otherwise gradually restrict: 10 per source for small catalogs, down to 3 for large
             const maxPerSource = totalFetched < 20 ? 999 : // Effectively unlimited for tiny catalogs
-                                 totalFetched < 50 ? 10 :  // Very generous for small catalogs
-                                 totalFetched < 100 ? 5 :  // Moderate for medium catalogs
-                                 3;                        // Strict for large catalogs
-            
+                totalFetched < 50 ? 10 :  // Very generous for small catalogs
+                    totalFetched < 100 ? 5 :  // Moderate for medium catalogs
+                        3;                        // Strict for large catalogs
+
             const sourceCounts = {};
             return reels.filter(reel => {
                 const sourceName = reel.source?.name || 'unknown';
@@ -1242,7 +1242,7 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
         // Pattern: Fresh, Trending, Fresh, Discovery, Trending, Fresh, Evergreen, ...
         const combined = [];
         const maxLen = Math.max(diverseFresh.length, diverseTrending.length, diverseDiscovery.length, diverseEvergreen.length);
-        
+
         for (let i = 0; i < maxLen && combined.length < limit; i++) {
             // Add 2 fresh for every 1 of others (heavy fresh bias)
             if (diverseFresh[i * 2]) combined.push(diverseFresh[i * 2]);
@@ -1280,7 +1280,7 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
         });
         const totalExcluded = new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())]).size;
         const hasMore = totalReelsInDb > totalExcluded; // True if there are videos we haven't shown yet
-        
+
         const nextCursor = encodeCursor({
             lastId: results.length > 0 ? results[results.length - 1]._id : null,
             excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300), // Track last 300 for better dedup
