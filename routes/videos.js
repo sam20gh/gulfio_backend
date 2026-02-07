@@ -763,176 +763,235 @@ function calculateHybridScore(reel, userEmbedding, userPrefs) {
 }
 
 /**
- * Get optimized personalized feed using single Atlas Search compound query
- * Combines vector similarity + trending + fresh content in ONE query
- * PHASE 2.3: Filters out disliked sources and categories
- * PHASE 3.1: Hybrid scoring with 50/30/20 weighting (embedding/source/category)
+ * Get optimized personalized feed with TikTok-style freshness injection
+ * Combines AI personalization + fresh content + discovery for addictive feed
+ * 
+ * Content Mix for Personalized Users:
+ * - 50% AI-personalized (based on user embedding)
+ * - 30% FRESH content (< 48h regardless of preference match)
+ * - 20% DISCOVERY (serendipity for engagement)
  */
 async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit, userPrefs = {}) {
     try {
+        const startTime = Date.now();
+        const sessionTimestamp = cursor?.timestamp || Date.now();
+        
         // Get excluded IDs from cursor or recent history
-        // REDUCED from 200 to 50 to allow more variety and prioritize recency boost
-        // If no cursor (fresh feed), only exclude last 20 to maximize new content visibility
-        const exclusionLimit = cursor?.excludedIds ? 50 : 20;
+        const exclusionLimit = cursor?.excludedIds ? 100 : 30;
         const excludedIds = cursor?.excludedIds || await getRecentlyViewedIds(userId, exclusionLimit);
 
-        console.log(`🔍 Personalized feed query:`, {
+        console.log(`🎯 TikTok-style personalized feed:`, {
             userIdShort: userId.substring(0, 8),
             embeddingDim: userEmbedding.length,
             excludedCount: excludedIds.length,
-            hasCursor: !!cursor,
-            sourcePrefs: userPrefs.sourcePreferences?.length || 0,
-            categoryPrefs: userPrefs.categoryPreferences?.length || 0
+            hasCursor: !!cursor
         });
 
-        // Use MongoDB Atlas Vector Search for personalized recommendations
-        // Note: Atlas Vector Search uses $vectorSearch, not $search with knnBeta
-        // FIX: Remove filter from $vectorSearch as it requires special index config
-        // Instead, apply filters in $match stage after vector search
-        const pipeline = [
-            {
-                $vectorSearch: {
-                    index: 'default',
-                    queryVector: userEmbedding,
-                    path: 'embedding_pca',
-                    numCandidates: limit * 15, // Increased to compensate for post-filtering
-                    limit: limit * 8 // Get more results for date filtering
-                }
-            },
-            // Add search score to results
-            {
-                $addFields: {
-                    searchScore: { $meta: 'vectorSearchScore' }
-                }
-            },
-            {
-                $match: {
-                    _id: { $nin: excludedIds },
-                    videoUrl: { $exists: true, $ne: null },
-                    scrapedAt: { $gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) } // Last 6 months (extended from 30 days)
-                }
-            },
-            {
-                $lookup: {
-                    from: 'sources',
-                    localField: 'source',
-                    foreignField: '_id',
-                    as: 'source',
-                    pipeline: [
-                        { $project: { name: 1, icon: 1, favicon: 1 } }
-                    ]
-                }
-            },
-            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
-            {
-                $project: {
-                    // Include fields needed for hybrid scoring
-                    reelId: 1,
-                    videoUrl: 1,
-                    thumbnailUrl: 1,
-                    caption: 1,
-                    likes: 1,
-                    dislikes: 1,
-                    viewCount: 1,
-                    saves: 1,
-                    completionRate: 1,
-                    avgWatchTime: 1,
-                    scrapedAt: 1,
-                    source: 1,
-                    categories: 1,
-                    embedding_pca: 1,
-                    searchScore: 1,
-                    originalKey: 1
-                }
-            }
-        ];
+        // Calculate batch sizes
+        const personalizedLimit = Math.ceil(limit * 0.5);  // 50% personalized
+        const freshLimit = Math.ceil(limit * 0.3);          // 30% fresh
+        const discoveryLimit = limit - personalizedLimit - freshLimit; // ~20%
 
-        const reels = await Reel.aggregate(pipeline);
+        const now = new Date();
+        const fortyEightHoursAgo = new Date(now - 48 * 60 * 60 * 1000);
+        const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
 
-        // PHASE 2.3: Filter out disliked sources and categories
-        let filteredReels = reels;
+        // Convert excludedIds for queries
+        const excludeObjectIds = excludedIds.map(id => 
+            typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id
+        );
+
+        // Run all queries in parallel
+        const [personalizedReels, freshReels, discoveryReels] = await Promise.all([
+            // 1. AI-PERSONALIZED: Vector search based on user embedding
+            Reel.aggregate([
+                {
+                    $vectorSearch: {
+                        index: 'default',
+                        queryVector: userEmbedding,
+                        path: 'embedding_pca',
+                        numCandidates: personalizedLimit * 10,
+                        limit: personalizedLimit * 5
+                    }
+                },
+                {
+                    $addFields: {
+                        searchScore: { $meta: 'vectorSearchScore' }
+                    }
+                },
+                {
+                    $match: {
+                        _id: { $nin: excludeObjectIds },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: fourteenDaysAgo }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, categories: 1, embedding_pca: 1, searchScore: 1, originalKey: 1, _bucket: { $literal: 'personalized' } } }
+            ]),
+
+            // 2. FRESH: Newest content regardless of preference (for variety)
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludeObjectIds },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: fortyEightHoursAgo }
+                    }
+                },
+                {
+                    $addFields: {
+                        freshnessScore: {
+                            $add: [
+                                { $multiply: [{ $rand: {} }, 0.3] },
+                                0.7
+                            ]
+                        }
+                    }
+                },
+                { $sort: { scrapedAt: -1, freshnessScore: -1 } },
+                { $limit: freshLimit * 3 },
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'fresh' } } }
+            ]),
+
+            // 3. DISCOVERY: Random for serendipity
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludeObjectIds },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: fourteenDaysAgo }
+                    }
+                },
+                { $sample: { size: discoveryLimit * 3 } },
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'discovery' } } }
+            ])
+        ]);
+
+        const totalFetched = personalizedReels.length + freshReels.length + discoveryReels.length;
+        console.log(`📊 Personalized buckets: ai=${personalizedReels.length}, fresh=${freshReels.length}, discovery=${discoveryReels.length}, total=${totalFetched}`);
+
+        // Filter out disliked sources/categories from personalized results
+        let filteredPersonalized = personalizedReels;
         if (userPrefs.negativeSourcePreferences?.length > 0 || userPrefs.negativeCategoryPreferences?.length > 0) {
-            const beforeFilter = reels.length;
-            filteredReels = reels.filter(reel => {
-                // Filter out disliked sources
-                if (userPrefs.negativeSourcePreferences?.includes(reel.source?.name)) {
-                    return false;
-                }
-                // Filter out reels with disliked categories
-                if (reel.categories && userPrefs.negativeCategoryPreferences?.length > 0) {
-                    const hasDislikedCategory = reel.categories.some(cat =>
-                        userPrefs.negativeCategoryPreferences.includes(cat)
-                    );
-                    if (hasDislikedCategory) return false;
-                }
+            filteredPersonalized = personalizedReels.filter(reel => {
+                if (userPrefs.negativeSourcePreferences?.includes(reel.source?.name)) return false;
+                if (reel.categories && userPrefs.negativeCategoryPreferences?.some(cat => reel.categories.includes(cat))) return false;
                 return true;
             });
-            console.log(`🚫 Filtered ${beforeFilter - filteredReels.length} reels with negative signals (${beforeFilter} → ${filteredReels.length})`);
         }
 
-        // PHASE 3.1: Apply hybrid scoring to all reels
-        const scoredReels = filteredReels.map(reel => {
+        // Apply hybrid scoring to personalized reels
+        const scoredPersonalized = filteredPersonalized.map(reel => {
             const scoring = calculateHybridScore(reel, userEmbedding, userPrefs);
-            return {
-                ...reel,
-                ...scoring
-            };
-        });
+            return { ...reel, ...scoring };
+        }).sort((a, b) => b.hybridScore - a.hybridScore);
 
-        // Sort by hybrid score (descending)
-        scoredReels.sort((a, b) => b.hybridScore - a.hybridScore);
+        // ADAPTIVE source diversity - loosen limits for small catalogs
+        const applySourceDiversity = (reels, maxPerBucket) => {
+            const maxPerSource = totalFetched < 20 ? 999 : // Unlimited for tiny catalogs
+                                 totalFetched < 50 ? 10 :  // Generous for small catalogs
+                                 totalFetched < 100 ? 5 :  // Moderate for medium
+                                 3;                        // Strict for large
+            const sourceCounts = {};
+            return reels.filter(reel => {
+                const sourceName = reel.source?.name || 'unknown';
+                const count = sourceCounts[sourceName] || 0;
+                if (count >= maxPerSource) return false;
+                sourceCounts[sourceName] = count + 1;
+                return true;
+            }).slice(0, maxPerBucket);
+        };
 
-        // IMPROVED: Apply source variety - max 3 videos per source (increased for better variety)
-        const sourceCounts = {};
-        const maxPerSource = Math.max(3, Math.ceil(limit / 4)); // Increased from 2 to 3
-        const diverseReels = scoredReels.filter(reel => {
-            const sourceName = reel.source?.name || 'unknown';
-            const currentCount = sourceCounts[sourceName] || 0;
-            if (currentCount >= maxPerSource) {
-                return false;
-            }
-            sourceCounts[sourceName] = currentCount + 1;
+        // Skip diversity filtering entirely for small catalogs
+        const diversePersonalized = totalFetched < 30 ? scoredPersonalized.slice(0, personalizedLimit) : applySourceDiversity(scoredPersonalized, personalizedLimit);
+        const diverseFresh = totalFetched < 30 ? freshReels.slice(0, freshLimit) : applySourceDiversity(freshReels, freshLimit);
+        const diverseDiscovery = totalFetched < 30 ? discoveryReels.slice(0, discoveryLimit) : applySourceDiversity(discoveryReels, discoveryLimit);
+
+        // Interleave for TikTok-style mixing (personalized, fresh, personalized, discovery, ...)
+        const combined = [];
+        const maxLen = Math.max(diversePersonalized.length, diverseFresh.length, diverseDiscovery.length);
+        
+        for (let i = 0; i < maxLen && combined.length < limit; i++) {
+            if (diversePersonalized[i * 2]) combined.push(diversePersonalized[i * 2]);
+            if (diverseFresh[i]) combined.push(diverseFresh[i]);
+            if (diversePersonalized[i * 2 + 1]) combined.push(diversePersonalized[i * 2 + 1]);
+            if (diverseDiscovery[i]) combined.push(diverseDiscovery[i]);
+        }
+
+        // Deduplicate
+        const seen = new Set();
+        const deduped = combined.filter(reel => {
+            const id = reel._id.toString();
+            if (seen.has(id)) return false;
+            seen.add(id);
             return true;
         });
 
-        // Log top 3 scores for debugging
-        if (diverseReels.length > 0) {
-            console.log(`🎯 PHASE 3.1 Hybrid scoring applied to ${diverseReels.length} diverse reels (from ${scoredReels.length})`);
-            console.log(`📊 Top 3 scores:`, diverseReels.slice(0, 3).map(r => ({
-                source: r.source?.name,
-                hybrid: r.hybridScore.toFixed(3),
-                age: r.scrapedAt ? `${Math.floor((Date.now() - new Date(r.scrapedAt).getTime()) / (1000 * 60 * 60 * 24))}d` : 'N/A',
-                breakdown: r.breakdown
-            })));
-        }
+        // Light shuffle
+        const results = addVarietyShuffleToReels(deduped.slice(0, limit), limit);
 
-        // Add light randomization for variety (shuffle top N with slight position variance)
-        const shuffledReels = addVarietyShuffleToReels(diverseReels, limit);
+        // Clean up results
+        const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, velocityScore, ...reel }) => reel);
 
-        // FIXED: hasMore should be true if we have more content in the database
-        // Check if we got enough candidates from DB (meaning there's likely more)
-        const hasMore = scoredReels.length >= limit; // If DB returned at least limit, there's probably more
-        const results = shuffledReels.slice(0, limit);
+        // Track all fetched IDs
+        const allFetchedIds = [
+            ...personalizedReels.map(r => r._id),
+            ...freshReels.map(r => r._id),
+            ...discoveryReels.map(r => r._id)
+        ];
 
-        // Clean up results (remove embedding_pca to reduce payload)
-        const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, ...reel }) => reel);
-
-        // Build next cursor - track ALL scored reels for better exclusion
-        // FIXED: Always generate cursor for pagination continuity
-        const allScoredIds = scoredReels.map(r => r._id);
+        // FIXED: Check actual DB count for hasMore calculation
+        const totalReelsInDb = await Reel.countDocuments({
+            videoUrl: { $exists: true, $ne: null }
+        });
+        const totalExcluded = new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())]).size;
+        const hasMore = totalReelsInDb > totalExcluded;
+        
         const nextCursor = encodeCursor({
             lastId: cleanResults.length > 0 ? cleanResults[cleanResults.length - 1]._id : null,
-            excludedIds: [...new Set([...excludedIds, ...allScoredIds])].slice(-200), // Keep last 200
-            timestamp: Date.now()
+            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300),
+            timestamp: sessionTimestamp
         });
 
-        console.log(`✅ Personalized feed: ${cleanResults.length} reels, hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
+        const bucketStats = { personalized: diversePersonalized.length, fresh: diverseFresh.length, discovery: diverseDiscovery.length };
+        console.log(`✅ Personalized feed: ${cleanResults.length} reels in ${Date.now() - startTime}ms | buckets: ${JSON.stringify(bucketStats)} | dbTotal: ${totalReelsInDb} | excluded: ${totalExcluded} | hasMore: ${hasMore}`);
 
         return {
             reels: cleanResults,
             cursor: nextCursor,
             hasMore,
-            strategy: 'hybrid-personalized'
+            strategy: 'tiktok-personalized',
+            _debug: bucketStats
         };
     } catch (err) {
         console.error('❌ Personalized feed error:', err.message);
@@ -943,174 +1002,314 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
 
 /**
  * Get optimized trending/mixed feed for anonymous users
- * Uses engagement-based sorting with cursor pagination
- * IMPROVED: Added recency boost, randomization, and source variety
+ * TikTok-Style Feed Algorithm v2.0:
+ * - 40% FRESH content (< 48 hours) - prioritize newest videos
+ * - 30% TRENDING content (high engagement velocity)
+ * - 20% DISCOVERY content (random from last 14 days for variety)
+ * - 10% EVERGREEN content (top performers from last 30 days)
+ * 
+ * Key Improvements:
+ * - Aggressive deduplication via session-based tracking
+ * - Source diversity enforcement (max 2 per source per batch)
+ * - Heavy recency bias for "endless fresh" feel
  */
 async function getTrendingFeedOptimized(cursor, limit, strategy) {
     try {
         const excludedIds = cursor?.excludedIds || [];
+        const sessionTimestamp = cursor?.timestamp || Date.now();
         const requestTime = Date.now();
-        const randomSeed = Math.random(); // For consistent shuffle within this request
 
-        console.log(`🔥 Trending feed query:`, {
+        console.log(`🔥 TikTok-style feed v2.0:`, {
             strategy,
             excludedCount: excludedIds.length,
             limit,
-            randomSeed: randomSeed.toFixed(4)
+            sessionAge: Math.floor((requestTime - sessionTimestamp) / 1000) + 's'
         });
 
-        // Calculate time boundaries for recency tiers
+        // Time boundaries - EXTENDED for small catalogs
         const now = new Date();
-        const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+        const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000);
+        const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
+        const fortyEightHoursAgo = new Date(now - 48 * 60 * 60 * 1000);
         const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
         const fourteenDaysAgo = new Date(now - 14 * 24 * 60 * 60 * 1000);
         const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+        const sixtyDaysAgo = new Date(now - 60 * 24 * 60 * 60 * 1000); // Extended for small catalogs
+        const ninetyDaysAgo = new Date(now - 90 * 24 * 60 * 60 * 1000); // Fallback for very small catalogs
 
-        const pipeline = [
-            {
-                $match: {
-                    _id: { $nin: excludedIds },
-                    videoUrl: { $exists: true, $ne: null },
-                    scrapedAt: { $gte: thirtyDaysAgo }
-                }
-            },
-            {
-                $addFields: {
-                    // Recency multiplier: 1.8x for 0-3 days, 1.5x for 3-7 days, 1.2x for 7-14 days, 1.0x for older
-                    recencyMultiplier: {
-                        $cond: [
-                            { $gte: ['$scrapedAt', threeDaysAgo] },
-                            1.8,
-                            {
-                                $cond: [
-                                    { $gte: ['$scrapedAt', sevenDaysAgo] },
-                                    1.5,
-                                    {
-                                        $cond: [
-                                            { $gte: ['$scrapedAt', fourteenDaysAgo] },
-                                            1.2,
-                                            1.0
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    // Base engagement score
-                    baseEngagement: {
-                        $add: [
-                            { $multiply: [{ $ifNull: ['$viewCount', 0] }, 0.3] },
-                            { $multiply: [{ $ifNull: ['$likes', 0] }, 0.4] },
-                            { $multiply: [{ $ifNull: ['$completionRate', 0] }, 0.3] }
-                        ]
-                    },
-                    // Random factor for variety (0.85 to 1.15 range)
-                    randomFactor: {
-                        $add: [
-                            0.85,
-                            { $multiply: [{ $rand: {} }, 0.3] }
-                        ]
+        // Calculate batch sizes for mixed content strategy
+        const freshLimit = Math.ceil(limit * 0.4);      // 40% fresh
+        const trendingLimit = Math.ceil(limit * 0.3);   // 30% trending
+        const discoveryLimit = Math.ceil(limit * 0.2);  // 20% discovery
+        const evergreenLimit = limit - freshLimit - trendingLimit - discoveryLimit; // ~10%
+
+        // Run all queries in parallel for speed
+        const [freshReels, trendingReels, discoveryReels, evergreenReels] = await Promise.all([
+            // 1. FRESH: Newest content from last 48 hours (prioritize < 6h)
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludedIds.map(id => typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id) },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: fortyEightHoursAgo }
                     }
-                }
-            },
-            {
-                $addFields: {
-                    // Final trending score = base * recency * random
-                    trendingScore: {
-                        $multiply: ['$baseEngagement', '$recencyMultiplier', '$randomFactor']
+                },
+                {
+                    $addFields: {
+                        freshnessBoost: {
+                            $cond: [
+                                { $gte: ['$scrapedAt', sixHoursAgo] },
+                                3.0, // Super fresh (< 6h)
+                                {
+                                    $cond: [
+                                        { $gte: ['$scrapedAt', twentyFourHoursAgo] },
+                                        2.0, // Fresh (< 24h)
+                                        1.5  // Recent (< 48h)
+                                    ]
+                                }
+                            ]
+                        },
+                        randomizer: { $rand: {} }
                     }
-                }
-            },
-            {
-                $sort: { trendingScore: -1 }
-            },
-            // Fetch extra for source variety filtering
-            { $limit: limit * 3 },
-            {
-                $lookup: {
-                    from: 'sources',
-                    localField: 'source',
-                    foreignField: '_id',
-                    as: 'source',
-                    pipeline: [
-                        { $project: { name: 1, icon: 1, favicon: 1 } }
-                    ]
-                }
-            },
-            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
-            {
-                $project: {
-                    reelId: 1,
-                    videoUrl: 1,
-                    thumbnailUrl: 1,
-                    caption: 1,
-                    likes: 1,
-                    dislikes: 1,
-                    viewCount: 1,
-                    saves: 1,
-                    completionRate: 1,
-                    avgWatchTime: 1,
-                    scrapedAt: 1,
-                    source: 1,
-                    trendingScore: 1,
-                    originalKey: 1
-                }
-            }
-        ];
+                },
+                {
+                    $addFields: {
+                        freshScore: { $multiply: ['$freshnessBoost', { $add: [0.5, '$randomizer'] }] }
+                    }
+                },
+                { $sort: { freshScore: -1, scrapedAt: -1 } },
+                { $limit: freshLimit * 3 }, // Get extra for diversity filtering
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'fresh' } } }
+            ]),
 
-        const reels = await Reel.aggregate(pipeline);
+            // 2. TRENDING: High engagement velocity from last 7 days
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludedIds.map(id => typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id) },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: sevenDaysAgo }
+                    }
+                },
+                {
+                    $addFields: {
+                        ageInHours: {
+                            $divide: [
+                                { $subtract: [now, '$scrapedAt'] },
+                                3600000 // ms to hours
+                            ]
+                        }
+                    }
+                },
+                {
+                    $addFields: {
+                        engagementVelocity: {
+                            $divide: [
+                                {
+                                    $add: [
+                                        { $ifNull: ['$viewCount', 0] },
+                                        { $multiply: [{ $ifNull: ['$likes', 0] }, 10] },
+                                        { $multiply: [{ $ifNull: ['$saves', 0] }, 20] }
+                                    ]
+                                },
+                                { $max: [1, '$ageInHours'] }
+                            ]
+                        },
+                        randomizer: { $rand: {} }
+                    }
+                },
+                {
+                    $addFields: {
+                        trendScore: { $multiply: ['$engagementVelocity', { $add: [0.8, { $multiply: ['$randomizer', 0.4] }] }] }
+                    }
+                },
+                { $sort: { trendScore: -1 } },
+                { $limit: trendingLimit * 3 },
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'trending' } } }
+            ]),
 
-        console.log(`📊 Trending pipeline returned ${reels.length} reels (limit * 3 = ${limit * 3})`);
+            // 3. DISCOVERY: Random selection from last 60 days (extended for small catalogs)
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludedIds.map(id => typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id) },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: sixtyDaysAgo } // Extended from 14 days
+                    }
+                },
+                { $sample: { size: discoveryLimit * 5 } }, // Increased sample size
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'discovery' } } }
+            ]),
 
-        // Apply source variety: max 2 videos per source to prevent feed dominance
-        const sourceCounts = {};
-        const maxPerSource = Math.max(3, Math.ceil(limit / 4)); // Increased: At least 3, or 25% of limit
-        const diverseReels = reels.filter(reel => {
-            const sourceName = reel.source?.name || 'unknown';
-            const currentCount = sourceCounts[sourceName] || 0;
-            if (currentCount >= maxPerSource) {
-                return false;
-            }
-            sourceCounts[sourceName] = currentCount + 1;
+            // 4. EVERGREEN: Any content from last 90 days (extended for small catalogs)
+            Reel.aggregate([
+                {
+                    $match: {
+                        _id: { $nin: excludedIds.map(id => typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id) },
+                        videoUrl: { $exists: true, $ne: null },
+                        scrapedAt: { $gte: ninetyDaysAgo } // Extended from 30 days
+                        // Removed engagement requirements so ALL videos are included for small catalogs
+                    }
+                },
+                {
+                    $addFields: {
+                        evergreenScore: {
+                            $add: [
+                                { $multiply: [{ $ifNull: ['$completionRate', 0] }, 100] },
+                                { $multiply: [{ $ifNull: ['$likes', 0] }, 5] },
+                                { $ifNull: ['$viewCount', 0] },
+                                { $multiply: [{ $rand: {} }, 50] } // Random boost
+                            ]
+                        }
+                    }
+                },
+                { $sort: { evergreenScore: -1 } },
+                { $limit: evergreenLimit * 3 },
+                {
+                    $lookup: {
+                        from: 'sources',
+                        localField: 'source',
+                        foreignField: '_id',
+                        as: 'source',
+                        pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'evergreen' } } }
+            ])
+        ]);
+
+        const totalFetched = freshReels.length + trendingReels.length + discoveryReels.length + evergreenReels.length;
+        console.log(`📊 Bucket sizes: fresh=${freshReels.length}, trending=${trendingReels.length}, discovery=${discoveryReels.length}, evergreen=${evergreenReels.length}, total=${totalFetched}`);
+
+        // ADAPTIVE source diversity - loosen limits when content is scarce
+        // If we have few videos, allow more per source to ensure we show content
+        const applySourceDiversity = (reels, maxPerBucket) => {
+            // Calculate adaptive limit: if we have < 20 total videos, allow unlimited per source
+            // Otherwise gradually restrict: 10 per source for small catalogs, down to 3 for large
+            const maxPerSource = totalFetched < 20 ? 999 : // Effectively unlimited for tiny catalogs
+                                 totalFetched < 50 ? 10 :  // Very generous for small catalogs
+                                 totalFetched < 100 ? 5 :  // Moderate for medium catalogs
+                                 3;                        // Strict for large catalogs
+            
+            const sourceCounts = {};
+            return reels.filter(reel => {
+                const sourceName = reel.source?.name || 'unknown';
+                const count = sourceCounts[sourceName] || 0;
+                if (count >= maxPerSource) return false;
+                sourceCounts[sourceName] = count + 1;
+                return true;
+            }).slice(0, maxPerBucket);
+        };
+
+        // For small catalogs, don't apply diversity filtering at all
+        const diverseFresh = totalFetched < 30 ? freshReels.slice(0, freshLimit) : applySourceDiversity(freshReels, freshLimit);
+        const diverseTrending = totalFetched < 30 ? trendingReels.slice(0, trendingLimit) : applySourceDiversity(trendingReels, trendingLimit);
+        const diverseDiscovery = totalFetched < 30 ? discoveryReels.slice(0, discoveryLimit) : applySourceDiversity(discoveryReels, discoveryLimit);
+        const diverseEvergreen = totalFetched < 30 ? evergreenReels.slice(0, evergreenLimit) : applySourceDiversity(evergreenReels, evergreenLimit);
+
+        // Interleave buckets for variety (TikTok-style mixing)
+        // Pattern: Fresh, Trending, Fresh, Discovery, Trending, Fresh, Evergreen, ...
+        const combined = [];
+        const maxLen = Math.max(diverseFresh.length, diverseTrending.length, diverseDiscovery.length, diverseEvergreen.length);
+        
+        for (let i = 0; i < maxLen && combined.length < limit; i++) {
+            // Add 2 fresh for every 1 of others (heavy fresh bias)
+            if (diverseFresh[i * 2]) combined.push(diverseFresh[i * 2]);
+            if (diverseTrending[i]) combined.push(diverseTrending[i]);
+            if (diverseFresh[i * 2 + 1]) combined.push(diverseFresh[i * 2 + 1]);
+            if (diverseDiscovery[i]) combined.push(diverseDiscovery[i]);
+            if (diverseEvergreen[i]) combined.push(diverseEvergreen[i]);
+        }
+
+        // Deduplicate by _id (in case same reel appears in multiple buckets)
+        const seen = new Set();
+        const deduped = combined.filter(reel => {
+            const id = reel._id.toString();
+            if (seen.has(id)) return false;
+            seen.add(id);
             return true;
         });
 
-        console.log(`📊 After source variety filter: ${diverseReels.length} reels (max ${maxPerSource} per source)`);
+        // Light shuffle to avoid predictable patterns (but maintain general freshness order)
+        const results = addVarietyShuffleToReels(deduped.slice(0, limit), limit);
 
-        // Shuffle the diverse results for variety (Fisher-Yates)
-        const shuffled = [...diverseReels];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
+        // Track ALL fetched IDs for exclusion in next request
+        const allFetchedIds = [
+            ...freshReels.map(r => r._id),
+            ...trendingReels.map(r => r._id),
+            ...discoveryReels.map(r => r._id),
+            ...evergreenReels.map(r => r._id)
+        ];
 
-        // FIXED: hasMore should be true if we have more content in the database
-        // Check if we got the full batch from DB (meaning there's likely more)
-        const hasMore = reels.length >= limit; // If DB returned at least limit, there's probably more
-        const results = shuffled.slice(0, limit);
-
-        // Track ALL fetched IDs for better exclusion (not just returned ones)
-        const allFetchedIds = reels.map(r => r._id);
-        // FIXED: Always generate cursor for pagination, even if hasMore might be false
+        // Always generate cursor for pagination
+        // FIXED: hasMore should check if we got ANY results and there might be more in DB
+        // Count total reels in DB to determine if there's more to fetch
+        const totalReelsInDb = await Reel.countDocuments({
+            videoUrl: { $exists: true, $ne: null }
+        });
+        const totalExcluded = new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())]).size;
+        const hasMore = totalReelsInDb > totalExcluded; // True if there are videos we haven't shown yet
+        
         const nextCursor = encodeCursor({
             lastId: results.length > 0 ? results[results.length - 1]._id : null,
-            excludedIds: [...new Set([...excludedIds, ...allFetchedIds])].slice(-200), // Keep last 200
-            timestamp: Date.now()
+            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300), // Track last 300 for better dedup
+            timestamp: sessionTimestamp // Maintain session timestamp
         });
 
-        console.log(`✅ Trending feed: ${results.length} reels (from ${reels.length} candidates), hasMore: ${hasMore}, sources: ${Object.keys(sourceCounts).length}`);
+        const bucketStats = {
+            fresh: diverseFresh.length,
+            trending: diverseTrending.length,
+            discovery: diverseDiscovery.length,
+            evergreen: diverseEvergreen.length
+        };
+
+        console.log(`✅ TikTok feed: ${results.length} reels in ${Date.now() - requestTime}ms | buckets: ${JSON.stringify(bucketStats)} | hasMore: ${hasMore}`);
 
         return {
             reels: results,
             cursor: nextCursor,
             hasMore,
-            strategy
+            strategy: 'tiktok-mixed',
+            _debug: bucketStats
         };
     } catch (err) {
-        console.error('❌ Trending feed error:', err.message);
+        console.error('❌ Trending feed error:', err.message, err.stack);
         throw err;
     }
 }
+
+// Helper: Intelligent shuffle that maintains some structure while randomizing
 
 // Helper: Intelligent shuffle that maintains some structure while randomizing
 function intelligentShuffle(reels, seed = Date.now()) {
