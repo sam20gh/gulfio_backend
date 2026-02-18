@@ -34,7 +34,7 @@ app.get('/', (req, res) => {
         message: 'MENA News API',
         version: '1.0.0',
         status: 'running',
-        features: ['Phase 3 Performance Optimizations'],
+        features: ['Phase 3 Performance Optimizations', 'Phase 3.3 Breaking News Alerts'],
         mongodb_status: mongoose.connection.readyState === 1 ? 'connected' : 'connecting',
         documentation: '/docs',
         endpoints: {
@@ -50,6 +50,9 @@ app.get('/', (req, res) => {
             articles_fast: '/api/articles/personalized-fast',
             articles_light: '/api/articles/personalized-light',
             articles_by_category: '/api/articles/category/{category}',
+            articles_breaking: '/api/articles/breaking',
+            articles_mark_breaking: '/api/articles/{id}/mark-breaking',
+            articles_unmark_breaking: '/api/articles/{id}/unmark-breaking',
 
             // Sources & Content
             sources: '/api/sources',
