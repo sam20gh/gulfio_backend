@@ -31,6 +31,11 @@ const ArticleSchema = new mongoose.Schema({
         default: [],
     },
     relatedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
+
+    // Phase 3.3: Breaking News Support
+    isBreakingNews: { type: Boolean, default: false },
+    breakingNewsExpiry: { type: Date }, // Auto-expire breaking status after set duration
+    breakingNewsPriority: { type: Number, default: 0 }, // Higher = more urgent (0-10)
 });
 
 // Add compound index for title + sourceId to prevent duplicate titles from same source
@@ -48,5 +53,7 @@ ArticleSchema.index({ category: 1 });
 // Add index for sourceId filtering
 ArticleSchema.index({ sourceId: 1 });
 
+// Add index for breaking news queries (Phase 3.3)
+ArticleSchema.index({ isBreakingNews: 1, publishedAt: -1 });
 
 module.exports = mongoose.model('Article', ArticleSchema);
