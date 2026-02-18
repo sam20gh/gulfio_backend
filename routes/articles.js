@@ -3348,4 +3348,125 @@ articleRouter.post('/find-replace/execute', async (req, res) => {
   }
 });
 
+// ============================================================================
+// Phase 3.3: Breaking News Routes
+// ============================================================================
+
+/**
+ * POST /api/articles/:id/mark-breaking
+ * Mark article as breaking news and send push notification to all users
+ *
+ * Body:
+ * {
+ *   expiryHours: 1,     // Optional: hours until breaking status expires (default: 1)
+ *   priority: 10        // Optional: priority level 0-10 (default: 10)
+ * }
+ */
+articleRouter.post('/:id/mark-breaking', auth, async (req, res) => {
+  try {
+    const { expiryHours = 1, priority = 10 } = req.body;
+    const articleId = req.params.id;
+
+    // Verify article exists
+    const article = await Article.findById(articleId).populate('sourceId');
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    // Update article with breaking news status
+    article.isBreakingNews = true;
+    article.breakingNewsExpiry = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
+    article.breakingNewsPriority = priority;
+    await article.save();
+
+    // Clear article caches
+    await clearArticlesCache();
+
+    console.log(`🔥 Article ${articleId} marked as breaking news`);
+
+    // TODO: Send push notifications when push notification utility is implemented
+    // const pushResult = await sendBreakingNewsPush(article);
+
+    res.json({
+      success: true,
+      article,
+      message: 'Article marked as breaking news',
+      // pushSent: pushResult?.totalSent || 0,
+      // pushFailed: pushResult?.totalFailed || 0,
+    });
+  } catch (error) {
+    console.error('❌ Error marking article as breaking:', error);
+    res.status(500).json({ error: 'Failed to mark article as breaking news' });
+  }
+});
+
+/**
+ * POST /api/articles/:id/unmark-breaking
+ * Remove breaking news status from article
+ */
+articleRouter.post('/:id/unmark-breaking', auth, async (req, res) => {
+  try {
+    const article = await Article.findByIdAndUpdate(
+      req.params.id,
+      {
+        isBreakingNews: false,
+        breakingNewsExpiry: null,
+        breakingNewsPriority: 0,
+      },
+      { new: true }
+    ).populate('sourceId');
+
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    // Clear article caches
+    await clearArticlesCache();
+
+    console.log(`📰 Article ${req.params.id} unmarked as breaking news`);
+
+    res.json({ success: true, article });
+  } catch (error) {
+    console.error('❌ Error unmarking breaking news:', error);
+    res.status(500).json({ error: 'Failed to unmark breaking news' });
+  }
+});
+
+/**
+ * GET /api/articles/breaking
+ * Get all active breaking news articles (non-expired)
+ *
+ * Query params:
+ * - limit: max articles to return (default: 10)
+ */
+articleRouter.get('/breaking', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+
+    const articles = await Article.find({
+      isBreakingNews: true,
+      $or: [
+        { breakingNewsExpiry: null },
+        { breakingNewsExpiry: { $gt: new Date() } },
+      ],
+    })
+      .sort({ breakingNewsPriority: -1, publishedAt: -1 })
+      .limit(limit)
+      .populate('sourceId')
+      .lean();
+
+    // Enrich with source info
+    const enrichedArticles = await enrichArticlesWithSources(articles);
+
+    res.json({
+      success: true,
+      count: enrichedArticles.length,
+      articles: enrichedArticles,
+    });
+  } catch (error) {
+    console.error('❌ Error fetching breaking news:', error);
+    res.status(500).json({ error: 'Failed to fetch breaking news' });
+  }
+});
+
 module.exports = articleRouter;
