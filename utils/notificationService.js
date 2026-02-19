@@ -1,11 +1,34 @@
 // utils/notificationService.js
 const User = require('../models/User');
+const Notification = require('../models/Notification'); // Phase 3.3: Notification history
 const sendExpoNotification = require('./sendExpoNotification');
 
 /**
  * Comprehensive notification service that respects user notification settings
  */
 class NotificationService {
+    /**
+     * Save notification to database for in-app notification center (Phase 3.3)
+     * @param {string} userId - Supabase user ID
+     * @param {string} type - Notification type
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     * @param {Object} data - Additional data
+     */
+    static async saveNotificationToDatabase(userId, type, title, body, data = {}) {
+        try {
+            await Notification.create({
+                userId,
+                type,
+                title,
+                body,
+                data,
+            });
+        } catch (error) {
+            console.error(`Error saving notification to database for ${userId}:`, error);
+            // Don't throw - notification history is non-critical
+        }
+    }
     /**
      * Send notification to user if they have enabled the specific notification type
      * @param {string} userId - The user ID to send notification to
@@ -37,9 +60,13 @@ class NotificationService {
                 return false;
             }
 
-            // Send the notification
+            // Send the push notification
             await sendExpoNotification(title, body, [user.pushToken], data, actions);
             console.log(`Notification sent to user ${userId} for type ${notificationType}`);
+
+            // Save to database for notification history (Phase 3.3)
+            await this.saveNotificationToDatabase(userId, data.type || notificationType, title, body, data);
+
             return true;
         } catch (error) {
             console.error(`Error sending notification to user ${userId}:`, error);
@@ -329,7 +356,7 @@ class NotificationService {
 
             console.log(`📤 Sending breaking news to ${allTokens.length} devices across ${users.length} users`);
 
-            // Send notification to all tokens
+            // Send push notification to all tokens
             await sendExpoNotification(
                 '🔥 BREAKING NEWS',
                 article.title,
@@ -342,7 +369,26 @@ class NotificationService {
                 []
             );
 
-            console.log(`✅ Breaking news sent to ${allTokens.length} devices`);
+            console.log(`✅ Breaking news push sent to ${allTokens.length} devices`);
+
+            // Save to database for notification history (Phase 3.3)
+            console.log(`💾 Saving breaking news notifications to database for ${users.length} users...`);
+            await Promise.allSettled(
+                users.map((user) =>
+                    this.saveNotificationToDatabase(
+                        user.supabase_id,
+                        'breaking_news',
+                        '🔥 BREAKING NEWS',
+                        article.title,
+                        {
+                            type: 'breaking_news',
+                            articleId: article._id.toString(),
+                            link: `gulfio://article/${article._id}`,
+                        }
+                    )
+                )
+            );
+            console.log(`✅ Breaking news notifications saved to database`);
 
             return {
                 totalSent: allTokens.length,

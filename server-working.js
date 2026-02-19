@@ -68,6 +68,14 @@ app.get('/', (req, res) => {
             recommendations: '/api/recommendations',
             recommend: '/api/recommend',
 
+            // Notifications (Phase 3.3)
+            notifications: '/api/notifications',
+            notifications_unread: '/api/notifications/unread-count',
+            notifications_mark_read: '/api/notifications/{id}/mark-read',
+            notifications_mark_all_read: '/api/notifications/mark-all-read',
+            notifications_delete: '/api/notifications/{id}',
+            notifications_clear_all: '/api/notifications/clear-all',
+
             // Content Management
             comments: '/api/comments',
             thumbnails: '/api/thumbnails',
@@ -200,6 +208,11 @@ function loadRoutes() {
         app.use('/api/auth', authRoutes);
         console.log('✅ Auth routes loaded');
 
+        // Load notifications routes (Phase 3.3)
+        const notificationRoutes = require('./routes/notifications');
+        app.use('/api/notifications', notificationRoutes);
+        console.log('✅ Notification routes loaded');
+
         // Load all remaining routes
         const scrapeRoute = require('./routes/scrape');
         const userActions = require('./routes/userActions');
@@ -295,6 +308,17 @@ async function initializeOptimizations() {
                 console.error('⚠️ Cache warmer failed:', error.message);
             }
         }, 10000);
+
+        // Start breaking news expiry job (Phase 3.3)
+        setTimeout(() => {
+            try {
+                const { startBreakingNewsExpiryJob } = require('./jobs/expireBreakingNews');
+                startBreakingNewsExpiryJob();
+                console.log('⏰ Breaking news expiry job started');
+            } catch (error) {
+                console.error('⚠️ Breaking news expiry job failed:', error.message);
+            }
+        }, 15000);
 
     } catch (error) {
         console.error('⚠️ Optimization initialization failed:', error.message);

@@ -242,18 +242,69 @@ router.get('/:id/saved-articles', async (req, res) => {
     }
 });
 
+/**
+ * POST /api/users/push-token
+ * Register or update push notification token (Phase 3.3)
+ *
+ * Body: { token, platform, deviceId }
+ * - token: Expo push token (required)
+ * - platform: 'ios' or 'android' (required)
+ * - deviceId: Unique device identifier (optional)
+ */
 router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
-    const { token } = req.body;
+    const { token, platform, deviceId } = req.body;
 
-    if (!token) return res.status(400).json({ message: 'Push token is required' });
+    if (!token) {
+        return res.status(400).json({ message: 'Push token is required' });
+    }
+
+    if (!platform || !['ios', 'android'].includes(platform)) {
+        return res.status(400).json({ message: 'Platform must be "ios" or "android"' });
+    }
 
     try {
-        // Use findByIdAndUpdate since mongoUser is a lean object (no .save() method)
-        const user = req.mongoUser;
-        await User.findByIdAndUpdate(user._id, { pushToken: token });
+        const user = await User.findById(req.mongoUser._id);
 
-        console.log('✅ Push token saved for user:', user._id);
-        res.json({ success: true, message: 'Push token saved' });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Initialize pushTokens array if it doesn't exist
+        if (!user.pushTokens) {
+            user.pushTokens = [];
+        }
+
+        // Check if token already exists
+        const existingTokenIndex = user.pushTokens.findIndex(t => t.token === token);
+
+        if (existingTokenIndex >= 0) {
+            // Update existing token
+            user.pushTokens[existingTokenIndex].platform = platform;
+            user.pushTokens[existingTokenIndex].deviceId = deviceId;
+            user.pushTokens[existingTokenIndex].updatedAt = new Date();
+            console.log(`♻️ Updated existing push token for user ${user._id}`);
+        } else {
+            // Add new token
+            user.pushTokens.push({
+                token,
+                platform,
+                deviceId,
+                updatedAt: new Date(),
+            });
+            console.log(`➕ Added new push token for user ${user._id}`);
+        }
+
+        // Also update legacy pushToken field for backward compatibility
+        user.pushToken = token;
+
+        await user.save();
+
+        console.log(`✅ Push token saved for user ${user._id} (total devices: ${user.pushTokens.length})`);
+        res.json({
+            success: true,
+            message: 'Push token saved',
+            totalDevices: user.pushTokens.length,
+        });
     } catch (err) {
         console.error('❌ Error saving push token:', err);
         res.status(500).json({ message: 'Failed to save push token' });
