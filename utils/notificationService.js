@@ -283,6 +283,79 @@ class NotificationService {
     }
 
     /**
+     * Send breaking news notification to ALL users (Phase 3.3)
+     * @param {Object} article - Article document with title and _id
+     * @returns {Object} { totalSent, totalFailed }
+     */
+    static async sendBreakingNewsToAllUsers(article) {
+        try {
+            console.log(`🔥 Sending breaking news to all users: ${article.title}`);
+
+            // Get all users with push tokens and breaking news enabled
+            const users = await User.find({
+                $or: [
+                    { pushToken: { $exists: true, $ne: null } }, // Legacy single token
+                    { 'pushTokens.0': { $exists: true } }, // New multiple tokens array
+                ],
+                'notificationSettings.breakingNews': { $ne: false }, // Breaking news not explicitly disabled
+            }).select('pushToken pushTokens notificationSettings');
+
+            if (!users.length) {
+                console.log('⚠️ No users with push tokens found');
+                return { totalSent: 0, totalFailed: 0 };
+            }
+
+            // Collect all valid tokens
+            const allTokens = [];
+            users.forEach((user) => {
+                // Add legacy pushToken if it exists
+                if (user.pushToken) {
+                    allTokens.push(user.pushToken);
+                }
+                // Add all tokens from pushTokens array
+                if (user.pushTokens && user.pushTokens.length > 0) {
+                    user.pushTokens.forEach((tokenObj) => {
+                        if (tokenObj.token) {
+                            allTokens.push(tokenObj.token);
+                        }
+                    });
+                }
+            });
+
+            if (!allTokens.length) {
+                console.log('⚠️ No valid push tokens found');
+                return { totalSent: 0, totalFailed: 0 };
+            }
+
+            console.log(`📤 Sending breaking news to ${allTokens.length} devices across ${users.length} users`);
+
+            // Send notification to all tokens
+            await sendExpoNotification(
+                '🔥 BREAKING NEWS',
+                article.title,
+                allTokens,
+                {
+                    type: 'breaking_news',
+                    articleId: article._id.toString(),
+                    link: `gulfio://article/${article._id}`,
+                },
+                []
+            );
+
+            console.log(`✅ Breaking news sent to ${allTokens.length} devices`);
+
+            return {
+                totalSent: allTokens.length,
+                totalFailed: 0,
+                usersReached: users.length,
+            };
+        } catch (error) {
+            console.error('❌ Error in sendBreakingNewsToAllUsers:', error);
+            return { totalSent: 0, totalFailed: 0, error: error.message };
+        }
+    }
+
+    /**
      * Extract mentioned users from text (looking for @Username patterns)
      * Matches names starting with capital letters, supports multi-word names like "Gulf News"
      * @param {string} text - The text to scan for mentions

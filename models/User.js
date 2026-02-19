@@ -10,7 +10,15 @@ const userSchema = new mongoose.Schema({
     dob: { type: Date }, // ✅ NEW
     type: { type: String, enum: ['admin', 'publisher', 'user', ''], default: 'user' }, // ✅ NEW
     publisher_group: [{ type: String }], // ✅ NEW - Publisher groups (e.g., 'gulf news', 'arab news')
-    pushToken: { type: String },
+    pushToken: { type: String }, // Legacy single token
+    pushTokens: [
+        {
+            token: { type: String, required: true },
+            platform: { type: String, enum: ['ios', 'android'], required: true },
+            deviceId: String,
+            updatedAt: { type: Date, default: Date.now },
+        },
+    ], // Phase 3.3: Multiple device support
     liked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     disliked_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
     viewed_articles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
@@ -67,6 +75,9 @@ const userSchema = new mongoose.Schema({
     referralActivated: { type: Boolean, default: false }, // Has the referral been activated (5+ articles read)
 
 }, { timestamps: true });
+
+// Add index for push token queries (Phase 3.3)
+userSchema.index({ 'pushTokens.token': 1 });
 
 module.exports = mongoose.model('User', userSchema);
 

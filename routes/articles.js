@@ -15,6 +15,7 @@ const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { searchArticles, findInContent } = require('../utils/atlasSearch');
 const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
+const NotificationService = require('../utils/notificationService'); // Phase 3.3: Notifications
 
 const articleRouter = express.Router();
 
@@ -3285,15 +3286,16 @@ articleRouter.post('/:id/mark-breaking', auth, async (req, res) => {
 
     console.log(`🔥 Article ${articleId} marked as breaking news`);
 
-    // TODO: Send push notifications when push notification utility is implemented
-    // const pushResult = await sendBreakingNewsPush(article);
+    // Send push notifications to all users (Phase 3.3)
+    const pushResult = await NotificationService.sendBreakingNewsToAllUsers(article);
 
     res.json({
       success: true,
       article,
       message: 'Article marked as breaking news',
-      // pushSent: pushResult?.totalSent || 0,
-      // pushFailed: pushResult?.totalFailed || 0,
+      pushSent: pushResult?.totalSent || 0,
+      pushFailed: pushResult?.totalFailed || 0,
+      usersReached: pushResult?.usersReached || 0,
     });
   } catch (error) {
     console.error('❌ Error marking article as breaking:', error);
