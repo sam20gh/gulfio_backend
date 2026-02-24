@@ -90,6 +90,15 @@ module.exports = {
             return 0;
         }
     },
+    srem: async (key, ...members) => {
+        if (!redis) return 0;
+        try {
+            return await redis.srem(key, ...members);
+        } catch (error) {
+            console.warn('Redis SREM error:', error.message);
+            return 0;
+        }
+    },
     expire: async (key, seconds) => {
         if (!redis) return;
         try {

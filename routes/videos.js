@@ -75,7 +75,8 @@ async function getSmartCacheTTL(userId) {
             }),
             UserActivity.countDocuments({
                 userId,
-                eventType: 'reel_view',
+                eventType: 'view',
+                contentType: 'reel',
                 timestamp: { $gte: oneWeekAgo }
             })
         ]);
@@ -271,14 +272,15 @@ async function getRecentlyViewedIds(userId, limit = 100) {
         console.log(`⚠️ Cache miss: Loading viewed reels from DB for user ${userId.substring(0, 8)}...`);
         const activities = await UserActivity.find({
             userId,
-            eventType: 'reel_view' // Changed from 'view' to 'reel_view' for specificity
+            eventType: 'view',
+            contentType: 'reel'
         })
             .sort({ timestamp: -1 })
             .limit(limit)
-            .select('articleId')
+            .select('reelId')
             .lean();
 
-        const ids = activities.map(a => a.articleId.toString());
+        const ids = activities.map(a => a.reelId.toString());
 
         // Warm Redis cache for next request (but cap at 500 to prevent bloat)
         if (ids.length > 0) {
@@ -2897,7 +2899,8 @@ router.post('/analytics/videos', async (req, res) => {
                     await UserActivity.create({
                         userId: effectiveUserId,
                         eventType: 'view',
-                        articleId: videoId,
+                        reelId: videoId,
+                        contentType: 'reel',
                         duration: Math.round(watchDuration / 1000), // Convert ms to seconds
                         timestamp: new Date(analytics.startTime || Date.now())
                     }).catch(err => console.warn('Failed to create view activity:', err.message));
@@ -2915,7 +2918,8 @@ router.post('/analytics/videos', async (req, res) => {
                             UserActivity.create({
                                 userId: effectiveUserId,
                                 eventType: 'like',
-                                articleId: videoId,
+                                reelId: videoId,
+                                contentType: 'reel',
                                 timestamp: new Date()
                             }).catch(err => console.warn('Failed to track like:', err.message))
                         );
@@ -2926,7 +2930,8 @@ router.post('/analytics/videos', async (req, res) => {
                             UserActivity.create({
                                 userId: effectiveUserId,
                                 eventType: 'save',
-                                articleId: videoId,
+                                reelId: videoId,
+                                contentType: 'reel',
                                 timestamp: new Date()
                             }).catch(err => console.warn('Failed to track save:', err.message))
                         );
@@ -2937,7 +2942,8 @@ router.post('/analytics/videos', async (req, res) => {
                             UserActivity.create({
                                 userId: effectiveUserId,
                                 eventType: 'dislike',
-                                articleId: videoId,
+                                reelId: videoId,
+                                contentType: 'reel',
                                 timestamp: new Date()
                             }).catch(err => console.warn('Failed to track dislike:', err.message))
                         );
