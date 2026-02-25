@@ -604,6 +604,7 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
 
         // Get user embedding from CACHE first (not DB every time)
         let userEmbedding = null;
+        let userPrefs = null; // Compute once, reuse for both embedding and scoring
 
         try {
             const cachedEmbedding = await redis.get(`user:emb:${userId}`);
@@ -611,28 +612,30 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
             if (cachedEmbedding) {
                 userEmbedding = JSON.parse(cachedEmbedding);
                 console.log(`✅ User embedding cache hit: ${userEmbedding.length}D`);
+                // Still need prefs for source/category scoring — but only the lightweight fields
+                userPrefs = await getUserPreferences(userId);
             } else {
-                // Cache miss - load from DB and cache
-                console.log(`⚠️ User embedding cache miss, loading from DB...`);
+                // ⚡ Cache miss: serve trending immediately, recalculate embedding in background
+                // This keeps p99 latency predictable even for first-time users
+                console.log(`⚠️ User embedding cache miss — serving trending, rebuilding in background`);
 
-                // Try to get user embedding from User model or calculate from preferences
-                const userPrefs = await getUserPreferences(userId);
-                userEmbedding = userPrefs.averageEmbedding;
-
-                console.log(`🧠 getUserPreferences returned embedding:`, {
-                    hasEmbedding: !!userEmbedding,
-                    embeddingLength: userEmbedding?.length || 0,
-                    totalInteractions: userPrefs.totalInteractions
+                setImmediate(async () => {
+                    try {
+                        const freshPrefs = await getUserPreferences(userId);
+                        const freshEmbedding = freshPrefs.averageEmbedding;
+                        if (freshEmbedding?.length > 0) {
+                            const cacheTTL = await getSmartCacheTTL(userId);
+                            await redis.set(`user:emb:${userId}`, JSON.stringify(freshEmbedding), 'EX', cacheTTL);
+                            console.log(`✅ Background: cached embedding ${freshEmbedding.length}D, TTL=${cacheTTL}s`);
+                        }
+                    } catch (bgErr) {
+                        console.warn('⚠️ Background embedding recalculation failed:', bgErr.message);
+                    }
                 });
 
-                if (userEmbedding && userEmbedding.length > 0) {
-                    // PHASE 2.2: Use smart cache TTL based on user activity
-                    const cacheTTL = await getSmartCacheTTL(userId);
-                    await redis.set(`user:emb:${userId}`, JSON.stringify(userEmbedding), 'EX', cacheTTL);
-                    console.log(`✅ Cached user embedding: ${userEmbedding.length}D with ${cacheTTL}s TTL`);
-                } else {
-                    console.log(`❌ No valid embedding returned from getUserPreferences`);
-                }
+                // Fall through to trending immediately
+                console.log(`📊 Returning trending (embedding cache miss) in ${Date.now() - startTime}ms`);
+                return await getTrendingFeedOptimized(cursor, limit, strategy);
             }
         } catch (err) {
             console.error('❌ Error loading user embedding:', err.message, err.stack);
@@ -640,9 +643,8 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
 
         if (userEmbedding && userEmbedding.length > 0) {
             console.log(`✅ Using PHASE 3.1 hybrid personalization with ${userEmbedding.length}D embedding`);
-            // PHASE 2.3: Get user preferences for negative signal filtering
-            const userPrefs = await getUserPreferences(userId);
-            return await getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit, userPrefs);
+            // Reuse already-fetched userPrefs — avoids second DB round-trip
+            return await getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit, userPrefs || {});
         } else {
             console.log(`⚠️ No embedding available, falling back to trending`);
         }
@@ -803,8 +805,64 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id
         );
 
+        // Dynamic candidate multiplier: more excluded IDs → wider search to compensate
+        const excludedCount = excludeObjectIds.length;
+        const candidateMultiplier = Math.max(10, Math.ceil(excludedCount / 8) + 10);
+        console.log(`🔎 Vector search: ${excludedCount} excluded IDs → ${candidateMultiplier}x candidate multiplier`);
+
+        // Session-level category diversity: penalise over-represented categories
+        const sessionCategoryCounts = cursor?.categoryCounts || {};
+
+        // Collaborative filtering helper: find reels liked/saved by users similar to this user.
+        // Requires a MongoDB Atlas vector-search index named 'user_embedding_index' on User.embedding_pca.
+        const collabLimit = Math.max(1, Math.ceil(limit * 0.1)); // ~10% of page
+        const getCollabReels = async () => {
+            try {
+                const User = require('../models/User');
+                const similarUsers = await User.aggregate([
+                    {
+                        $vectorSearch: {
+                            index: 'user_embedding_index',
+                            queryVector: userEmbedding,
+                            path: 'embedding_pca',
+                            numCandidates: 50,
+                            limit: 8
+                        }
+                    },
+                    { $match: { supabase_id: { $ne: userId } } },
+                    { $project: { liked_reels: { $slice: ['$liked_reels', -20] }, saved_reels: { $slice: ['$saved_reels', -10] } } }
+                ]);
+                if (!similarUsers.length) return [];
+
+                const excludedSet = new Set(excludedIds.map(id => id.toString()));
+                const pooledIds = [...new Set(
+                    similarUsers.flatMap(u => [
+                        ...(u.liked_reels || []),
+                        ...(u.saved_reels || [])
+                    ].map(id => id.toString()))
+                )].filter(id => !excludedSet.has(id));
+
+                if (!pooledIds.length) return [];
+
+                const collabObjectIds = pooledIds.slice(0, collabLimit * 4).map(id => new mongoose.Types.ObjectId(id));
+                return await Reel.aggregate([
+                    { $match: { _id: { $in: collabObjectIds }, videoUrl: { $exists: true, $ne: null } } },
+                    { $lookup: { from: 'sources', localField: 'source', foreignField: '_id', as: 'source', pipeline: [{ $project: { name: 1, icon: 1, favicon: 1 } }] } },
+                    { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+                    { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, categories: 1, embedding_pca: 1, originalKey: 1, _bucket: { $literal: 'collab' } } },
+                    { $limit: collabLimit }
+                ]);
+            } catch (err) {
+                // Graceful fallback: collab is a bonus, not required
+                if (err?.message?.includes('index')) {
+                    console.log('ℹ️ User vector-search index not configured — skipping collab bucket (create "user_embedding_index" on User.embedding_pca to enable)');
+                }
+                return [];
+            }
+        };
+
         // Run all queries in parallel
-        const [personalizedReels, freshReels, discoveryReels] = await Promise.all([
+        const [personalizedReels, freshReels, discoveryReels, collabReels] = await Promise.all([
             // 1. AI-PERSONALIZED: Vector search based on user embedding
             Reel.aggregate([
                 {
@@ -812,7 +870,7 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
                         index: 'default',
                         queryVector: userEmbedding,
                         path: 'embedding_pca',
-                        numCandidates: personalizedLimit * 10,
+                        numCandidates: personalizedLimit * candidateMultiplier,
                         limit: personalizedLimit * 5
                     }
                 },
@@ -896,11 +954,14 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
                 },
                 { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
                 { $project: { reelId: 1, videoUrl: 1, thumbnailUrl: 1, caption: 1, likes: 1, dislikes: 1, viewCount: 1, saves: 1, completionRate: 1, scrapedAt: 1, source: 1, originalKey: 1, _bucket: { $literal: 'discovery' } } }
-            ])
+            ]),
+
+            // 4. COLLABORATIVE: Reels liked/saved by users with similar tastes
+            getCollabReels()
         ]);
 
-        const totalFetched = personalizedReels.length + freshReels.length + discoveryReels.length;
-        console.log(`📊 Personalized buckets: ai=${personalizedReels.length}, fresh=${freshReels.length}, discovery=${discoveryReels.length}, total=${totalFetched}`);
+        const totalFetched = personalizedReels.length + freshReels.length + discoveryReels.length + collabReels.length;
+        console.log(`📊 Personalized buckets: ai=${personalizedReels.length}, fresh=${freshReels.length}, discovery=${discoveryReels.length}, collab=${collabReels.length}, total=${totalFetched}`);
 
         // Filter out disliked sources/categories from personalized results
         let filteredPersonalized = personalizedReels;
@@ -915,7 +976,15 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         // Apply hybrid scoring to personalized reels
         const scoredPersonalized = filteredPersonalized.map(reel => {
             const scoring = calculateHybridScore(reel, userEmbedding, userPrefs);
-            return { ...reel, ...scoring };
+
+            // Session-level category diversity penalty: reduce score for over-represented categories
+            let diversityPenalty = 1.0;
+            if (reel.categories?.length > 0) {
+                const maxCategoryCount = Math.max(...reel.categories.map(cat => sessionCategoryCounts[cat] || 0));
+                diversityPenalty = Math.max(0.3, 1 - maxCategoryCount * 0.12); // -12% per repeat, floor at 30%
+            }
+
+            return { ...reel, ...scoring, hybridScore: scoring.hybridScore * diversityPenalty };
         }).sort((a, b) => b.hybridScore - a.hybridScore);
 
         // ADAPTIVE source diversity - loosen limits for small catalogs
@@ -938,16 +1007,20 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         const diversePersonalized = totalFetched < 30 ? scoredPersonalized.slice(0, personalizedLimit) : applySourceDiversity(scoredPersonalized, personalizedLimit);
         const diverseFresh = totalFetched < 30 ? freshReels.slice(0, freshLimit) : applySourceDiversity(freshReels, freshLimit);
         const diverseDiscovery = totalFetched < 30 ? discoveryReels.slice(0, discoveryLimit) : applySourceDiversity(discoveryReels, discoveryLimit);
+        // Collab items: always use as-is (already small batch, no diversity filter needed)
 
-        // Interleave for TikTok-style mixing (personalized, fresh, personalized, discovery, ...)
+        // Interleave for TikTok-style mixing (personalized, fresh, personalized, discovery, collab@every5th, ...)
         const combined = [];
         const maxLen = Math.max(diversePersonalized.length, diverseFresh.length, diverseDiscovery.length);
+        let collabIdx = 0;
 
         for (let i = 0; i < maxLen && combined.length < limit; i++) {
             if (diversePersonalized[i * 2]) combined.push(diversePersonalized[i * 2]);
             if (diverseFresh[i]) combined.push(diverseFresh[i]);
             if (diversePersonalized[i * 2 + 1]) combined.push(diversePersonalized[i * 2 + 1]);
             if (diverseDiscovery[i]) combined.push(diverseDiscovery[i]);
+            // Insert 1 collab item every 5 positions (approximately 10% of feed)
+            if (i % 5 === 4 && collabReels[collabIdx]) combined.push(collabReels[collabIdx++]);
         }
 
         // Deduplicate
@@ -959,8 +1032,14 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
             return true;
         });
 
+        // Position-aware quality gate: first 5 slots must not be discovery content.
+        // Bad first impression kills retention; discovery is fine from position 6+.
+        const nonDiscovery = deduped.filter(r => r._bucket !== 'discovery');
+        const discoveryItems = deduped.filter(r => r._bucket === 'discovery');
+        const positionGuaranteedFeed = [...nonDiscovery, ...discoveryItems];
+
         // Light shuffle
-        const results = addVarietyShuffleToReels(deduped.slice(0, limit), limit);
+        const results = addVarietyShuffleToReels(positionGuaranteedFeed.slice(0, limit), limit);
 
         // Clean up results
         const cleanResults = results.map(({ embedding_pca, searchScore, embeddingScore, sourceScore, categoryScore, breakdown, velocityScore, ...reel }) => reel);
@@ -969,7 +1048,8 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         const allFetchedIds = [
             ...personalizedReels.map(r => r._id),
             ...freshReels.map(r => r._id),
-            ...discoveryReels.map(r => r._id)
+            ...discoveryReels.map(r => r._id),
+            ...collabReels.map(r => r._id)
         ];
 
         // FIXED: Check actual DB count for hasMore calculation
@@ -979,10 +1059,22 @@ async function getPersonalizedFeedOptimized(userId, userEmbedding, cursor, limit
         const totalExcluded = new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())]).size;
         const hasMore = totalReelsInDb > totalExcluded;
 
+        // Track category counts across session for diversity enforcement
+        const updatedCategoryCounts = { ...sessionCategoryCounts };
+        cleanResults.forEach(r => {
+            if (r.categories) {
+                r.categories.forEach(cat => {
+                    updatedCategoryCounts[cat] = (updatedCategoryCounts[cat] || 0) + 1;
+                });
+            }
+        });
+
         const nextCursor = encodeCursor({
             lastId: cleanResults.length > 0 ? cleanResults[cleanResults.length - 1]._id : null,
-            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300),
-            timestamp: sessionTimestamp
+            // Cap at 150 for better $nin MongoDB performance (was 300)
+            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-150),
+            timestamp: sessionTimestamp,
+            categoryCounts: updatedCategoryCounts
         });
 
         const bucketStats = { personalized: diversePersonalized.length, fresh: diverseFresh.length, discovery: diverseDiscovery.length };
@@ -1285,8 +1377,9 @@ async function getTrendingFeedOptimized(cursor, limit, strategy) {
 
         const nextCursor = encodeCursor({
             lastId: results.length > 0 ? results[results.length - 1]._id : null,
-            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-300), // Track last 300 for better dedup
-            timestamp: sessionTimestamp // Maintain session timestamp
+            // Cap at 150 for better MongoDB $nin performance (was 300)
+            excludedIds: [...new Set([...excludedIds.map(id => id.toString()), ...allFetchedIds.map(id => id.toString())])].slice(-150),
+            timestamp: sessionTimestamp
         });
 
         const bucketStats = {
@@ -3204,17 +3297,36 @@ router.post('/reels/:reelId/like', async (req, res) => {
         const updatedReel = await Reel.findByIdAndUpdate(
             reelId,
             updateQuery,
-            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate' }
+            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate embedding_pca' }
         );
 
-        // Recalculate engagement_score after like change
+        // Recalculate engagement_score after like change + stamp lastEngagedAt
         const engagementScore = (
             (updatedReel.viewCount || 0) * 0.3 +
             (updatedReel.likes || 0) * 0.5 +
             (updatedReel.completionRate || 0) * 0.2
         );
 
-        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
+        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore, lastEngagedAt: new Date() });
+
+        // ⚡ Incremental user embedding update (EMA blend) — reacts within the same session
+        // Runs in background so it doesn't block the response
+        setImmediate(async () => {
+            try {
+                const User = require('../models/User');
+                const user = await User.findOne({ supabase_id: userId }).select('embedding_pca').lean();
+                if (user?.embedding_pca?.length === 128 && updatedReel.embedding_pca?.length === 128) {
+                    const alpha = isLiked ? -0.08 : 0.12; // unlike pulls away slightly, like blends toward
+                    const newEmbedding = user.embedding_pca.map(
+                        (v, i) => v * (1 - Math.abs(alpha)) + updatedReel.embedding_pca[i] * alpha
+                    );
+                    await User.updateOne({ supabase_id: userId }, { embedding_pca: newEmbedding });
+                    console.log(`🧠 Incremental embedding update for user ${userId.substring(0, 8)} (like ${isLiked ? 'removed' : 'added'}, α=${alpha})`);
+                }
+            } catch (embErr) {
+                console.warn('⚠️ Incremental embedding update failed (non-critical):', embErr.message);
+            }
+        });
 
         // ⚡ PHASE 1: Invalidate user embedding cache on interaction
         try {
@@ -3229,8 +3341,8 @@ router.post('/reels/:reelId/like', async (req, res) => {
             await UserActivity.create({
                 userId,
                 eventType: 'like',
-                reelId: reelId, // Use reelId
-                contentType: 'reel', // Specify content type
+                reelId: reelId,
+                contentType: 'reel',
                 timestamp: new Date()
             }).catch(err => console.warn('Activity tracking failed:', err.message));
         }
@@ -3299,17 +3411,36 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
         const updatedReel = await Reel.findByIdAndUpdate(
             reelId,
             updateQuery,
-            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate' }
+            { new: true, select: 'likes dislikes likedBy dislikedBy viewCount completionRate embedding_pca' }
         );
 
-        // Recalculate engagement_score after dislike change
+        // Recalculate engagement_score after dislike change + stamp lastEngagedAt
         const engagementScore = (
             (updatedReel.viewCount || 0) * 0.3 +
             (updatedReel.likes || 0) * 0.5 +
             (updatedReel.completionRate || 0) * 0.2
         );
 
-        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore });
+        await Reel.findByIdAndUpdate(reelId, { engagement_score: engagementScore, lastEngagedAt: new Date() });
+
+        // ⚡ Incremental user embedding update: push away from disliked content
+        setImmediate(async () => {
+            try {
+                const User = require('../models/User');
+                const user = await User.findOne({ supabase_id: userId }).select('embedding_pca').lean();
+                if (user?.embedding_pca?.length === 128 && updatedReel.embedding_pca?.length === 128) {
+                    // Dislike: move embedding AWAY from this reel (-0.15 = stronger push than like)
+                    const alpha = isDisliked ? 0.08 : -0.15; // removing dislike is a mild positive, adding is negative
+                    const newEmbedding = user.embedding_pca.map(
+                        (v, i) => v * (1 - Math.abs(alpha)) + updatedReel.embedding_pca[i] * alpha
+                    );
+                    await User.updateOne({ supabase_id: userId }, { embedding_pca: newEmbedding });
+                    console.log(`🧠 Incremental embedding update for user ${userId.substring(0, 8)} (dislike ${isDisliked ? 'removed' : 'added'}, α=${alpha})`);
+                }
+            } catch (embErr) {
+                console.warn('⚠️ Incremental embedding update failed (non-critical):', embErr.message);
+            }
+        });
 
         // ⚡ PHASE 1: Invalidate user embedding cache on interaction
         try {
@@ -3324,8 +3455,8 @@ router.post('/reels/:reelId/dislike', async (req, res) => {
             await UserActivity.create({
                 userId,
                 eventType: 'dislike',
-                reelId: reelId, // Use reelId
-                contentType: 'reel', // Specify content type
+                reelId: reelId,
+                contentType: 'reel',
                 timestamp: new Date()
             }).catch(err => console.warn('Activity tracking failed:', err.message));
         }
@@ -3391,8 +3522,29 @@ router.post('/reels/:reelId/save', async (req, res) => {
         const updatedReel = await Reel.findByIdAndUpdate(
             reelId,
             updateQuery,
-            { new: true, select: 'saves savedBy' }
+            { new: true, select: 'saves savedBy embedding_pca' }
         );
+
+        // Stamp lastEngagedAt on save (strong engagement signal)
+        await Reel.findByIdAndUpdate(reelId, { lastEngagedAt: new Date() });
+
+        // ⚡ Incremental user embedding update: save = strongest positive signal (α=0.20)
+        setImmediate(async () => {
+            try {
+                const User = require('../models/User');
+                const user = await User.findOne({ supabase_id: userId }).select('embedding_pca').lean();
+                if (user?.embedding_pca?.length === 128 && updatedReel.embedding_pca?.length === 128) {
+                    const alpha = isSaved ? -0.10 : 0.20; // unsave = mild negative, save = strong positive
+                    const newEmbedding = user.embedding_pca.map(
+                        (v, i) => v * (1 - Math.abs(alpha)) + updatedReel.embedding_pca[i] * alpha
+                    );
+                    await User.updateOne({ supabase_id: userId }, { embedding_pca: newEmbedding });
+                    console.log(`🧠 Incremental embedding update for user ${userId.substring(0, 8)} (${eventType}, α=${alpha})`);
+                }
+            } catch (embErr) {
+                console.warn('⚠️ Incremental embedding update failed (non-critical):', embErr.message);
+            }
+        });
 
         // ⚡ PHASE 1: Invalidate user embedding cache on interaction
         try {
@@ -3406,8 +3558,8 @@ router.post('/reels/:reelId/save', async (req, res) => {
         await UserActivity.create({
             userId,
             eventType,
-            reelId: reelId, // Use reelId
-            contentType: 'reel', // Specify content type
+            reelId: reelId,
+            contentType: 'reel',
             timestamp: new Date()
         }).catch(err => console.warn('Activity tracking failed:', err.message));
 

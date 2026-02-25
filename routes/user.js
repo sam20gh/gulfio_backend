@@ -601,12 +601,33 @@ router.post('/:id/like-reel', auth, ensureMongoUser, async (req, res) => {
     // Execute both updates in parallel
     const [updatedUser, updatedReel] = await Promise.all([userUpdate, reelUpdate]);
 
-    // Return minimal response immediately
+    // Return minimal response immediately — embedding update runs in background
     res.json({
         likes: updatedReel.likes,
         dislikes: updatedReel.dislikes,
         isLiked: updatedUser.liked_reels.some(id => id.equals(reelObjectId)),
         isDisliked: updatedUser.disliked_reels.some(id => id.equals(reelObjectId))
+    });
+
+    // ⚡ Incremental EMA embedding update — runs after response, never blocks
+    setImmediate(async () => {
+        try {
+            const reel = await Reel.findById(reelObjectId).select('embedding_pca').lean();
+            const user = await User.findOne({ supabase_id: userId }).select('embedding_pca').lean();
+            if (reel?.embedding_pca?.length === 128 && user?.embedding_pca?.length === 128) {
+                // like: blend toward (+12%), dislike: push away (-15%)
+                const alpha = action === 'like' ? 0.12 : -0.15;
+                const newEmbedding = user.embedding_pca.map(
+                    (v, i) => v * (1 - Math.abs(alpha)) + reel.embedding_pca[i] * alpha
+                );
+                await User.updateOne({ supabase_id: userId }, { embedding_pca: newEmbedding });
+                // Invalidate Redis embedding cache so next feed request picks up the new taste
+                await redisClient.del(`user:emb:${userId}`).catch(() => {});
+                console.log(`🧠 [user.js] Incremental embedding update for ${userId.substring(0, 8)} (${action}, α=${alpha})`);
+            }
+        } catch (embErr) {
+            console.warn('⚠️ [user.js] Incremental embedding update failed:', embErr.message);
+        }
     });
 });
 
@@ -698,10 +719,30 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
         return res.status(404).json({ message: 'Reel not found' });
     }
 
-    // Return minimal response immediately
+    // Return minimal response immediately — embedding update runs in background
     res.json({
         isSaved: !isSaved,
         saves: updatedReel.saves
+    });
+
+    // ⚡ Incremental EMA embedding update — save is the strongest positive signal
+    setImmediate(async () => {
+        try {
+            const reel = await Reel.findById(reelObjectId).select('embedding_pca').lean();
+            const userDoc = await User.findOne({ supabase_id: userId }).select('embedding_pca').lean();
+            if (reel?.embedding_pca?.length === 128 && userDoc?.embedding_pca?.length === 128) {
+                // save: strong blend toward (+20%), unsave: mild negative (-10%)
+                const alpha = isSaved ? -0.10 : 0.20;
+                const newEmbedding = userDoc.embedding_pca.map(
+                    (v, i) => v * (1 - Math.abs(alpha)) + reel.embedding_pca[i] * alpha
+                );
+                await User.updateOne({ supabase_id: userId }, { embedding_pca: newEmbedding });
+                await redisClient.del(`user:emb:${userId}`).catch(() => {});
+                console.log(`🧠 [user.js] Incremental embedding update for ${userId.substring(0, 8)} (${isSaved ? 'unsave' : 'save'}, α=${alpha})`);
+            }
+        } catch (embErr) {
+            console.warn('⚠️ [user.js] Incremental embedding update failed:', embErr.message);
+        }
     });
 });
 
