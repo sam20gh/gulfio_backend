@@ -570,6 +570,34 @@ async function getPrecomputedTrendingFeed(cursor, limit) {
 setTimeout(() => precomputeTrendingFeed(), 5000); // Initial compute after 5s
 setInterval(() => precomputeTrendingFeed(), TRENDING_CACHE_TTL * 1000); // Refresh every 5 min
 
+// ===================== SEED EMBEDDING =====================
+/**
+ * For brand-new users with no interactions, build a neutral seed embedding
+ * from the top trending reels so the vector search has something to work with.
+ * The EMA updates on like/save will shift it toward real preferences quickly.
+ */
+async function generateSeedEmbedding() {
+    try {
+        const seedReels = await Reel.find(
+            { embedding_pca: { $size: 128 }, viewCount: { $gt: 50 } }
+        ).sort({ viewCount: -1 }).limit(30).select('embedding_pca').lean();
+
+        if (!seedReels.length) return null;
+
+        const seed = new Array(128).fill(0);
+        let count = 0;
+        seedReels.forEach(r => {
+            if (r.embedding_pca?.length === 128) {
+                r.embedding_pca.forEach((v, i) => { seed[i] += v; });
+                count++;
+            }
+        });
+        return count > 0 ? seed.map(v => v / count) : null;
+    } catch {
+        return null;
+    }
+}
+
 // ===================== OPTIMIZED FEED BUILDERS =====================
 /**
  * Build optimized feed based on user and strategy
@@ -615,27 +643,68 @@ async function buildOptimizedFeed({ userId, cursor, limit, strategy }) {
                 // Still need prefs for source/category scoring — but only the lightweight fields
                 userPrefs = await getUserPreferences(userId);
             } else {
-                // ⚡ Cache miss: serve trending immediately, recalculate embedding in background
-                // This keeps p99 latency predictable even for first-time users
-                console.log(`⚠️ User embedding cache miss — serving trending, rebuilding in background`);
+                // ⚡ Cache miss: do a fast direct DB lookup for embedding_pca (~10ms)
+                // before falling back to trending — avoids trending-forever for users
+                // whose Redis TTL expired but who already have a DB embedding.
+                console.log(`⚠️ User embedding cache miss — checking DB for pre-computed embedding`);
+                try {
+                    const User = require('../models/User');
+                    const userDoc = await User.findOne({ supabase_id: userId })
+                        .select('embedding_pca embedding')
+                        .lean();
 
-                setImmediate(async () => {
-                    try {
-                        const freshPrefs = await getUserPreferences(userId);
-                        const freshEmbedding = freshPrefs.averageEmbedding;
-                        if (freshEmbedding?.length > 0) {
-                            const cacheTTL = await getSmartCacheTTL(userId);
-                            await redis.set(`user:emb:${userId}`, JSON.stringify(freshEmbedding), 'EX', cacheTTL);
-                            console.log(`✅ Background: cached embedding ${freshEmbedding.length}D, TTL=${cacheTTL}s`);
-                        }
-                    } catch (bgErr) {
-                        console.warn('⚠️ Background embedding recalculation failed:', bgErr.message);
+                    const dbEmbedding =
+                        userDoc?.embedding_pca?.length === 128 ? userDoc.embedding_pca :
+                        userDoc?.embedding?.length === 1536    ? userDoc.embedding.slice(0, 128) :
+                        null;
+
+                    if (dbEmbedding) {
+                        // Found it in DB — repopulate cache, proceed straight to personalized
+                        const cacheTTL = await getSmartCacheTTL(userId);
+                        redis.set(`user:emb:${userId}`, JSON.stringify(dbEmbedding), 'EX', cacheTTL).catch(() => {});
+                        userEmbedding = dbEmbedding;
+                        userPrefs = await getUserPreferences(userId);
+                        console.log(`✅ DB embedding found and cached: ${dbEmbedding.length}D`);
+                    } else {
+                        // New/cold-start user: no embedding anywhere.
+                        // Serve trending NOW; seed their embedding in background so the
+                        // NEXT request can be personalized (loop breaks after 1 request).
+                        console.log(`⚠️ No embedding for user — serving trending once, seeding in background`);
+                        setImmediate(async () => {
+                            try {
+                                const freshPrefs = await getUserPreferences(userId);
+                                let embeddingToCache = freshPrefs.averageEmbedding;
+
+                                // No interactions yet → seed from top trending content
+                                if (!embeddingToCache || embeddingToCache.length === 0) {
+                                    console.log(`🌱 Generating seed embedding for new user ${userId.substring(0, 8)}`);
+                                    embeddingToCache = await generateSeedEmbedding();
+                                    // Persist seed so next request hits the fast path
+                                    if (embeddingToCache && userDoc) {
+                                        const User2 = require('../models/User');
+                                        await User2.updateOne(
+                                            { supabase_id: userId },
+                                            { $set: { embedding_pca: embeddingToCache } }
+                                        );
+                                        console.log(`✅ Seed embedding saved to user doc`);
+                                    }
+                                }
+
+                                if (embeddingToCache?.length > 0) {
+                                    const cacheTTL = await getSmartCacheTTL(userId);
+                                    await redis.set(`user:emb:${userId}`, JSON.stringify(embeddingToCache), 'EX', cacheTTL);
+                                    console.log(`✅ Background: cached ${embeddingToCache.length}D embedding for user ${userId.substring(0, 8)}`);
+                                }
+                            } catch (bgErr) {
+                                console.warn('⚠️ Background embedding seeding failed:', bgErr.message);
+                            }
+                        });
+                        return await getTrendingFeedOptimized(cursor, limit, strategy);
                     }
-                });
-
-                // Fall through to trending immediately
-                console.log(`📊 Returning trending (embedding cache miss) in ${Date.now() - startTime}ms`);
-                return await getTrendingFeedOptimized(cursor, limit, strategy);
+                } catch (dbErr) {
+                    console.error('❌ DB embedding lookup failed:', dbErr.message);
+                    return await getTrendingFeedOptimized(cursor, limit, strategy);
+                }
             }
         } catch (err) {
             console.error('❌ Error loading user embedding:', err.message, err.stack);
