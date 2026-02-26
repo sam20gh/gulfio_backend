@@ -1392,14 +1392,18 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     console.log(`🔥 PERSONALIZED ENDPOINT START for user ${userId}, page ${page}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref})`);
 
     // Enhanced cache key with user preferences
+    // Page 1 uses an hour-key so it refreshes every hour rather than being stale all day
     const userPrefs = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
     const prefsHash = simpleHash(JSON.stringify({
       cats: userPrefs?.preferred_categories || [],
       srcs: userPrefs?.preferred_sources || []
     }));
     const dayKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const hourKey = new Date().toISOString().slice(0, 13).replace(/[-:T]/g, ''); // e.g. 2026022614
     const noveltySeed = simpleHash(`${userId}:${page}:${dayKey}`);
-    const cacheKey = `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${prefsHash}_${dayKey}_${noveltySeed}`;
+    const cacheKey = page === 1
+      ? `articles_personalized_${userId}_p1_${language}_${prefsHash}_${hourKey}`
+      : `articles_personalized_${userId}_page_${page}_limit_${limit}_lang_${language}_${prefsHash}_${dayKey}_${noveltySeed}`;
 
     // Cache check
     let cached;
@@ -1440,17 +1444,116 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     } catch (err) {
       console.error('⚠️ Redis served set error:', err.message);
     }
-    const user = await User.findOne({ supabase_id: userId }).select('embedding_pca preferred_categories preferred_sources disliked_articles').lean();
+    const user = await User.findOne({ supabase_id: userId })
+      .select('embedding_pca preferred_categories preferred_sources disliked_articles viewed_articles liked_articles disliked_categories')
+      .lean();
+
+    // Exclude: served today + explicitly disliked + recently viewed (last 200 to cap payload)
+    const recentlyViewedIds = (user?.viewed_articles || []).slice(-200).map(id => new mongoose.Types.ObjectId(id));
     const excludeIds = [
       ...servedIds.map(id => new mongoose.Types.ObjectId(id)),
-      ...(user?.disliked_articles || []).map(id => new mongoose.Types.ObjectId(id))
+      ...(user?.disliked_articles || []).map(id => new mongoose.Types.ObjectId(id)),
+      ...recentlyViewedIds,
     ];
 
     // User embedding and preferences
     let userEmbedding = user?.embedding_pca;
     const preferredCategories = user?.preferred_categories || [];
     const preferredSources = user?.preferred_sources || [];
+    const dislikedCategories = user?.disliked_categories || [];
     mark('user_load');
+
+    // --- Recency centroid blend ---
+    // Blend the stored lifetime embedding with a centroid of the user's most recently liked
+    // articles so that interest drift is corrected without waiting for a full embedding rebuild.
+    if (userEmbedding && Array.isArray(userEmbedding) && userEmbedding.length === 128) {
+      try {
+        const recentLikedIds = (user?.liked_articles || []).slice(-15);
+        if (recentLikedIds.length >= 3) {
+          const recentLikedArticles = await Article.find(
+            { _id: { $in: recentLikedIds } },
+            { embedding_pca: 1 }
+          ).lean();
+
+          const validEmbeddings = recentLikedArticles
+            .filter(a => Array.isArray(a.embedding_pca) && a.embedding_pca.length === 128)
+            .map(a => a.embedding_pca);
+
+          if (validEmbeddings.length >= 3) {
+            // Compute centroid of recent liked articles
+            const recentCentroid = new Array(128).fill(0);
+            validEmbeddings.forEach(emb => {
+              emb.forEach((v, i) => { recentCentroid[i] += v / validEmbeddings.length; });
+            });
+
+            // Blend: 65% lifetime embedding + 35% recent centroid
+            const blended = userEmbedding.map((v, i) => 0.65 * v + 0.35 * recentCentroid[i]);
+
+            // Normalise to unit vector so cosine similarity stays valid
+            const mag = Math.sqrt(blended.reduce((s, v) => s + v * v, 0));
+            if (mag > 0) {
+              userEmbedding = blended.map(v => v / mag);
+              console.log(`🧠 Recency centroid blended from ${validEmbeddings.length} recent likes`);
+            }
+          }
+        }
+      } catch (blendErr) {
+        console.warn('⚠️ Recency centroid blend failed (non-fatal):', blendErr.message);
+        // Fall through with original embedding
+      }
+    }
+    mark('recency_blend');
+
+    // --- Read-time category boost weights ---
+    // Build dynamic per-category preference boosts from UserActivity read_time events.
+    // Users who spend more total time reading a category get a proportionally higher boost,
+    // replacing the flat +0.15 with a signal-proportional value.
+    const categoryTimeBoosts = {};
+    try {
+      const readTimeStats = await UserActivity.aggregate([
+        {
+          $match: {
+            userId,
+            eventType: 'read_time',
+            duration: { $gt: 60 }, // only meaningful reads (> 1 min)
+            timestamp: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) }, // last 90 days
+          }
+        },
+        {
+          $lookup: {
+            from: 'articles',
+            localField: 'articleId',
+            foreignField: '_id',
+            as: 'article',
+            pipeline: [{ $project: { category: 1 } }]
+          }
+        },
+        { $unwind: { path: '$article', preserveNullAndEmpty: false } },
+        {
+          $group: {
+            _id: '$article.category',
+            totalTime: { $sum: '$duration' },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { totalTime: -1 } },
+        { $limit: 8 }
+      ]);
+
+      if (readTimeStats.length > 0) {
+        const maxTime = readTimeStats[0].totalTime || 1;
+        readTimeStats.forEach(stat => {
+          if (stat._id) {
+            // Scale so the top category gets +0.25 boost, others proportionally less
+            categoryTimeBoosts[stat._id] = (stat.totalTime / maxTime) * 0.25;
+          }
+        });
+        console.log(`📚 Read-time boosts computed for ${readTimeStats.length} categories`);
+      }
+    } catch (rtErr) {
+      console.warn('⚠️ Read-time boost computation failed (non-fatal):', rtErr.message);
+    }
+    mark('readtime_boost');
 
     // Progressive time windows
     const getTimeWindow = (page) => {
@@ -1482,6 +1585,9 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         _id: { $nin: excludeIds },
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
       };
+      if (dislikedCategories.length > 0) {
+        fallbackMatch.category = { $nin: dislikedCategories };
+      }
       if (preferredCategories.length > 0) {
         fallbackMatch.category = { $in: preferredCategories.slice(0, 5) };
       }
@@ -1575,6 +1681,8 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
               language,
               publishedAt: { $gte: cutoffDate },
               _id: { $nin: excludeIds },
+              // Respect disliked categories at the index level — cheapest place to filter
+              ...(dislikedCategories.length > 0 ? { category: { $nin: dislikedCategories } } : {}),
               ...(preferredCategories.length > 0 && !isWideningSearch ? { category: { $in: preferredCategories.slice(0, 5) } } : {}),
               ...(preferredSources.length > 0 && !isWideningSearch ? { sourceId: { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) } } : {})
             }
@@ -1617,6 +1725,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         language,
         publishedAt: { $gte: cutoffTime },
         _id: { $nin: excludeIds },
+        ...(dislikedCategories.length > 0 ? { category: { $nin: dislikedCategories } } : {}),
         ...(preferredCategories.length > 0 ? { category: { $in: preferredCategories.slice(0, 5) } } : {}),
         ...(preferredSources.length > 0 ? { sourceId: { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) } } : {})
       };
@@ -1670,6 +1779,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         language,
         _id: { $nin: excludeIds },
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+        ...(dislikedCategories.length > 0 ? { category: { $nin: dislikedCategories } } : {}),
         ...(preferredCategories.length > 0 ? { category: { $in: preferredCategories.slice(0, 5) } } : {}),
         ...(preferredSources.length > 0 ? { sourceId: { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) } } : {})
       };
@@ -1742,33 +1852,42 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }
 
     // Enhanced scoring with preference boosts
-    const w_recency = page === 1 ? 0.75 : page === 2 ? 0.65 : page === 3 ? 0.55 : 0.45;
-    const scoredArticles = candidateArticles.map(article => {
-      const similarity = article.similarity || 0;
-      const engagementScore = calculateEngagementScore(article);
-      const recencyScore = basicRecencyScore(article.publishedAt);
-      let preferenceBoost = 0;
-      if (preferredCategories.includes(article.category)) {
-        preferenceBoost += 0.15;
-      }
-      if (preferredSources.includes(article.sourceId?.toString())) {
-        preferenceBoost += 0.10;
-      }
-      const baseScore = (similarity * 0.6) + (engagementScore * 0.4) + preferenceBoost;
-      const finalScore = w_recency * recencyScore + (1 - w_recency) * baseScore;
+    // Rebalanced: similarity drives page 1 (was 75% recency, now 45%) so personalisation
+    // is actually visible on the first scroll rather than being swamped by raw recency.
+    const w_recency = page === 1 ? 0.45 : page === 2 ? 0.35 : page === 3 ? 0.25 : 0.20;
+    const scoredArticles = candidateArticles
+      // Hard-filter disliked categories that may have slipped through (e.g. in widen results)
+      .filter(article => !dislikedCategories.includes(article.category))
+      .map(article => {
+        const similarity = article.similarity || 0;
+        const engagementScore = calculateEngagementScore(article);
+        const recencyScore = basicRecencyScore(article.publishedAt);
 
-      return {
-        ...article,
-        fetchId: article.fetchId || new mongoose.Types.ObjectId().toString(),
-        similarity,
-        engagementScore,
-        recencyScore,
-        finalScore,
-        timeWindow: timeWindow.label,
-        noveltySeed,
-        isPersonalized: true
-      };
-    });
+        // Start with read-time derived boost (proportional to actual deep reading time)
+        // Falls back to flat boost if read-time data isn't available for this category
+        let preferenceBoost = categoryTimeBoosts[article.category] ?? (preferredCategories.includes(article.category) ? 0.15 : 0);
+
+        // Source preference adds a smaller fixed boost on top
+        if (preferredSources.includes(article.sourceId?.toString())) {
+          preferenceBoost += 0.10;
+        }
+
+        // baseScore: similarity leads (55%), engagement secondary (20%), preference on top
+        const baseScore = (similarity * 0.55) + (engagementScore * 0.20) + preferenceBoost;
+        const finalScore = w_recency * recencyScore + (1 - w_recency) * baseScore;
+
+        return {
+          ...article,
+          fetchId: article.fetchId || new mongoose.Types.ObjectId().toString(),
+          similarity,
+          engagementScore,
+          recencyScore,
+          finalScore,
+          timeWindow: timeWindow.label,
+          noveltySeed,
+          isPersonalized: true
+        };
+      });
 
     scoredArticles.sort((a, b) => b.finalScore - a.finalScore);
     mark('scoring');
@@ -1793,22 +1912,35 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
     }
     mark('diversity');
 
-    // Trending injection
+    // Trending injection — sorted by view VELOCITY (views/hour) not raw viewCount,
+    // so a fast-rising article from 3 hours ago beats a stale high-count article.
     const trendingPoolSize = Math.ceil(candidatePoolSize * TRENDING_RATIO);
     if (trendingPoolSize > 0 && candidatePool.length < candidatePoolSize) {
       const usedIds = new Set(candidatePool.map(a => a._id.toString()));
-      const trendingArticles = await Article.find({
+      // Fetch a larger pool so we can re-rank by velocity in JS (avoids a heavy aggregation)
+      const trendingCandidates = await Article.find({
         language,
         viewCount: { $exists: true, $gt: 0 },
         publishedAt: { $gte: cutoffTime },
         _id: { $nin: [...excludeIds, ...Array.from(usedIds).map(id => new mongoose.Types.ObjectId(id))] },
+        ...(dislikedCategories.length > 0 ? { category: { $nin: dislikedCategories } } : {}),
         ...(preferredCategories.length > 0 ? { category: { $in: preferredCategories.slice(0, 5) } } : {}),
         ...(preferredSources.length > 0 ? { sourceId: { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) } } : {})
       })
         .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
-        .sort({ viewCount: -1, publishedAt: -1 })
-        .limit(trendingPoolSize)
+        .sort({ publishedAt: -1 }) // Fetch newest first; we rerank by velocity below
+        .limit(trendingPoolSize * 5) // Extra headroom so velocity reranking is meaningful
         .lean();
+
+      // Rerank by views-per-hour (velocity) — an article 2h old with 500 views ranks above
+      // a 3-day-old article with 2000 views.
+      const withVelocity = trendingCandidates.map(article => {
+        const ageHours = Math.max(0.5, (Date.now() - new Date(article.publishedAt).getTime()) / 3.6e6);
+        const velocity = (article.viewCount || 0) / ageHours;
+        return { ...article, velocity };
+      });
+      withVelocity.sort((a, b) => b.velocity - a.velocity);
+      const trendingArticles = withVelocity.slice(0, trendingPoolSize);
 
       const trendingEnhanced = trendingArticles.map(article => ({
         ...article,
