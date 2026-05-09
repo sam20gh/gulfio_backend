@@ -296,7 +296,12 @@ async function generateResponse(query, articles) {
             english: 'Respond in English.'
         };
 
+        const todayStr = new Date().toLocaleDateString('en-US', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+        });
+
         const systemPrompt = `You are Gulf.io's AI assistant, an expert on Middle East news. ${languageInstructions[queryLanguage]}
+Today's date is ${todayStr}. Never state a different date as today, even if article dates appear older.
 
 Answer based ONLY on the provided articles. Cite sources using [1], [2], etc. Be informative and concise. If no relevant articles exist, say so honestly.
 
