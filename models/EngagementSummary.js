@@ -9,6 +9,6 @@ const engagementSummarySchema = new mongoose.Schema({
     unsave: { type: Number, default: 0 },
     follow: { type: Number, default: 0 },
     read_time_avg: { type: Number, default: 0 }, // average in seconds
-});
+}, { suppressReservedKeysWarning: true });
 
 module.exports = mongoose.model('EngagementSummary', engagementSummarySchema);

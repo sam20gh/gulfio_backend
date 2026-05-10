@@ -41,9 +41,6 @@ const ArticleSchema = new mongoose.Schema({
 // Add compound index for title + sourceId to prevent duplicate titles from same source
 ArticleSchema.index({ title: 1, sourceId: 1 }, { unique: true });
 
-// Add index for URL lookups (already unique but helps with query performance)
-ArticleSchema.index({ url: 1 });
-
 // Add index for publishedAt for sorting recent articles
 ArticleSchema.index({ publishedAt: -1 });
 
