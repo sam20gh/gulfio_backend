@@ -269,41 +269,44 @@ router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // Initialize pushTokens array if it doesn't exist
-        if (!user.pushTokens) {
-            user.pushTokens = [];
-        }
+        // Rebuild pushTokens array to avoid Mongoose missing mutations on undefined/plain-JS arrays
+        const existingTokens = Array.isArray(user.pushTokens) ? user.pushTokens : [];
+        const existingIndex = existingTokens.findIndex(t => t.token === token);
 
-        // Check if token already exists
-        const existingTokenIndex = user.pushTokens.findIndex(t => t.token === token);
-
-        if (existingTokenIndex >= 0) {
-            // Update existing token
-            user.pushTokens[existingTokenIndex].platform = platform;
-            user.pushTokens[existingTokenIndex].deviceId = deviceId;
-            user.pushTokens[existingTokenIndex].updatedAt = new Date();
+        let updatedTokens;
+        if (existingIndex >= 0) {
+            updatedTokens = existingTokens.map((t, i) =>
+                i === existingIndex
+                    ? { ...t.toObject ? t.toObject() : t, platform, deviceId, updatedAt: new Date() }
+                    : t.toObject ? t.toObject() : t
+            );
             console.log(`♻️ Updated existing push token for user ${user._id}`);
         } else {
-            // Add new token
-            user.pushTokens.push({
+            updatedTokens = [...existingTokens.map(t => t.toObject ? t.toObject() : t), {
                 token,
                 platform,
                 deviceId,
                 updatedAt: new Date(),
-            });
+            }];
             console.log(`➕ Added new push token for user ${user._id}`);
         }
 
-        // Also update legacy pushToken field for backward compatibility
-        user.pushToken = token;
+        // Use $set to bypass Mongoose change-detection issues on subdocument arrays
+        await User.updateOne(
+            { _id: user._id },
+            {
+                $set: {
+                    pushToken: token,       // legacy field
+                    pushTokens: updatedTokens,
+                },
+            }
+        );
 
-        await user.save();
-
-        console.log(`✅ Push token saved for user ${user._id} (total devices: ${user.pushTokens.length})`);
+        console.log(`✅ Push token saved for user ${user._id} (total devices: ${updatedTokens.length})`);
         res.json({
             success: true,
             message: 'Push token saved',
-            totalDevices: user.pushTokens.length,
+            totalDevices: updatedTokens.length,
         });
     } catch (err) {
         console.error('❌ Error saving push token:', err);
@@ -315,22 +318,46 @@ router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
 
 router.post('/test-notify', auth, ensureMongoUser, async (req, res) => {
     try {
-        const user = req.mongoUser;
-        if (!user?.pushToken) {
+        const user = await User.findById(req.mongoUser._id);
+
+        // Collect all tokens (legacy + multi-device array)
+        const tokens = [];
+        if (user?.pushToken) tokens.push(user.pushToken);
+        if (user?.pushTokens?.length > 0) {
+            user.pushTokens.forEach(t => {
+                if (t.token && !tokens.includes(t.token)) tokens.push(t.token);
+            });
+        }
+
+        if (tokens.length === 0) {
             return res.status(404).json({ message: 'No push token for this user' });
         }
 
-        // Send test via Expo
         await sendExpoNotification(
             '🧪 Test Notification',
             'If you see this, Expo push is working!',
-            [user.pushToken]
+            tokens
         );
 
-        res.json({ success: true });
+        res.json({ success: true, tokenCount: tokens.length });
     } catch (err) {
         console.error('Test notify error:', err);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Debug: inspect push token state for the current user
+router.get('/debug-push-tokens', auth, ensureMongoUser, async (req, res) => {
+    try {
+        const user = await User.findById(req.mongoUser._id)
+            .select('pushToken pushTokens notificationSettings');
+        res.json({
+            legacyToken: user.pushToken || null,
+            pushTokens: user.pushTokens || [],
+            notificationSettings: user.notificationSettings || {},
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 router.get('/me', auth, ensureMongoUser, (req, res) => {

@@ -47,21 +47,30 @@ class NotificationService {
                 return false;
             }
 
-            // Check if user has a push token
-            if (!user.pushToken) {
+            // Collect all push tokens (legacy + multi-device array)
+            const tokens = [];
+            if (user.pushToken) tokens.push(user.pushToken);
+            if (user.pushTokens && user.pushTokens.length > 0) {
+                user.pushTokens.forEach(t => {
+                    if (t.token && !tokens.includes(t.token)) tokens.push(t.token);
+                });
+            }
+
+            if (tokens.length === 0) {
                 console.log(`No push token for user: ${userId}`);
                 return false;
             }
 
             // Check if the specific notification type is enabled
-            const notificationSettings = user.notificationSettings || {};
-            if (!notificationSettings[notificationType]) {
+            const notificationSettings = user.notificationSettings;
+            // If settings exist and explicitly set to false, skip. Treat missing/null settings as enabled.
+            if (notificationSettings && notificationSettings[notificationType] === false) {
                 console.log(`Notification type ${notificationType} disabled for user: ${userId}`);
                 return false;
             }
 
             // Send the push notification
-            await sendExpoNotification(title, body, [user.pushToken], data, actions);
+            await sendExpoNotification(title, body, tokens, data, actions);
             console.log(`Notification sent to user ${userId} for type ${notificationType}`);
 
             // Save to database for notification history (Phase 3.3)
