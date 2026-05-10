@@ -12,11 +12,8 @@ const expo = new Expo();
 async function removeInvalidToken(token) {
     try {
         await User.updateMany(
-            { $or: [{ pushToken: token }, { 'pushTokens.token': token }] },
-            {
-                $unset: { pushToken: '' },
-                $pull: { pushTokens: { token } },
-            }
+            { pushToken: token },
+            { $unset: { pushToken: '' } }
         );
         console.log(`🗑️ Removed invalid push token: ${token.slice(0, 30)}...`);
     } catch (err) {

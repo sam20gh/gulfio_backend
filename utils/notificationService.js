@@ -47,19 +47,12 @@ class NotificationService {
                 return false;
             }
 
-            // Collect all push tokens (legacy + multi-device array)
-            const tokens = [];
-            if (user.pushToken) tokens.push(user.pushToken);
-            if (user.pushTokens && user.pushTokens.length > 0) {
-                user.pushTokens.forEach(t => {
-                    if (t.token && !tokens.includes(t.token)) tokens.push(t.token);
-                });
-            }
-
-            if (tokens.length === 0) {
+            if (!user.pushToken) {
                 console.log(`No push token for user: ${userId}`);
                 return false;
             }
+
+            const tokens = [user.pushToken];
 
             // Check if the specific notification type is enabled
             const notificationSettings = user.notificationSettings;
@@ -329,34 +322,16 @@ class NotificationService {
 
             // Get all users with push tokens and breaking news enabled
             const users = await User.find({
-                $or: [
-                    { pushToken: { $exists: true, $ne: null } }, // Legacy single token
-                    { 'pushTokens.0': { $exists: true } }, // New multiple tokens array
-                ],
-                'notificationSettings.breakingNews': { $ne: false }, // Breaking news not explicitly disabled
-            }).select('pushToken pushTokens notificationSettings');
+                pushToken: { $exists: true, $ne: null },
+                'notificationSettings.breakingNews': { $ne: false },
+            }).select('pushToken supabase_id');
 
             if (!users.length) {
                 console.log('⚠️ No users with push tokens found');
                 return { totalSent: 0, totalFailed: 0 };
             }
 
-            // Collect all valid tokens
-            const allTokens = [];
-            users.forEach((user) => {
-                // Add legacy pushToken if it exists
-                if (user.pushToken) {
-                    allTokens.push(user.pushToken);
-                }
-                // Add all tokens from pushTokens array
-                if (user.pushTokens && user.pushTokens.length > 0) {
-                    user.pushTokens.forEach((tokenObj) => {
-                        if (tokenObj.token) {
-                            allTokens.push(tokenObj.token);
-                        }
-                    });
-                }
-            });
+            const allTokens = users.map(u => u.pushToken);
 
             if (!allTokens.length) {
                 console.log('⚠️ No valid push tokens found');

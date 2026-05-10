@@ -263,51 +263,13 @@ router.post('/push-token', auth, ensureMongoUser, async (req, res) => {
     }
 
     try {
-        const user = await User.findById(req.mongoUser._id);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Rebuild pushTokens array to avoid Mongoose missing mutations on undefined/plain-JS arrays
-        const existingTokens = Array.isArray(user.pushTokens) ? user.pushTokens : [];
-        const existingIndex = existingTokens.findIndex(t => t.token === token);
-
-        let updatedTokens;
-        if (existingIndex >= 0) {
-            updatedTokens = existingTokens.map((t, i) =>
-                i === existingIndex
-                    ? { ...t.toObject ? t.toObject() : t, platform, deviceId, updatedAt: new Date() }
-                    : t.toObject ? t.toObject() : t
-            );
-            console.log(`♻️ Updated existing push token for user ${user._id}`);
-        } else {
-            updatedTokens = [...existingTokens.map(t => t.toObject ? t.toObject() : t), {
-                token,
-                platform,
-                deviceId,
-                updatedAt: new Date(),
-            }];
-            console.log(`➕ Added new push token for user ${user._id}`);
-        }
-
-        // Use $set to bypass Mongoose change-detection issues on subdocument arrays
         await User.updateOne(
-            { _id: user._id },
-            {
-                $set: {
-                    pushToken: token,       // legacy field
-                    pushTokens: updatedTokens,
-                },
-            }
+            { _id: req.mongoUser._id },
+            { $set: { pushToken: token } }
         );
 
-        console.log(`✅ Push token saved for user ${user._id} (total devices: ${updatedTokens.length})`);
-        res.json({
-            success: true,
-            message: 'Push token saved',
-            totalDevices: updatedTokens.length,
-        });
+        console.log(`✅ Push token saved for user ${req.mongoUser._id}`);
+        res.json({ success: true, message: 'Push token saved' });
     } catch (err) {
         console.error('❌ Error saving push token:', err);
         res.status(500).json({ message: 'Failed to save push token' });
@@ -320,26 +282,17 @@ router.post('/test-notify', auth, ensureMongoUser, async (req, res) => {
     try {
         const user = await User.findById(req.mongoUser._id);
 
-        // Collect all tokens (legacy + multi-device array)
-        const tokens = [];
-        if (user?.pushToken) tokens.push(user.pushToken);
-        if (user?.pushTokens?.length > 0) {
-            user.pushTokens.forEach(t => {
-                if (t.token && !tokens.includes(t.token)) tokens.push(t.token);
-            });
-        }
-
-        if (tokens.length === 0) {
+        if (!user?.pushToken) {
             return res.status(404).json({ message: 'No push token for this user' });
         }
 
         await sendExpoNotification(
             '🧪 Test Notification',
             'If you see this, Expo push is working!',
-            tokens
+            [user.pushToken]
         );
 
-        res.json({ success: true, tokenCount: tokens.length });
+        res.json({ success: true });
     } catch (err) {
         console.error('Test notify error:', err);
         res.status(500).json({ success: false, error: err.message });
@@ -350,10 +303,9 @@ router.post('/test-notify', auth, ensureMongoUser, async (req, res) => {
 router.get('/debug-push-tokens', auth, ensureMongoUser, async (req, res) => {
     try {
         const user = await User.findById(req.mongoUser._id)
-            .select('pushToken pushTokens notificationSettings');
+            .select('pushToken notificationSettings');
         res.json({
-            legacyToken: user.pushToken || null,
-            pushTokens: user.pushTokens || [],
+            pushToken: user.pushToken || null,
             notificationSettings: user.notificationSettings || {},
         });
     } catch (err) {
@@ -934,17 +886,16 @@ router.put('/notification-settings', auth, async (req, res) => {
         const supabase_id = req.user.sub;
         const { notificationSettings } = req.body;
 
-        const user = await User.findOne({ supabase_id });
+        // Use findOneAndUpdate + $set to avoid Mongoose markModified issues with Mixed type
+        const user = await User.findOneAndUpdate(
+            { supabase_id },
+            { $set: { notificationSettings } },
+            { new: true }
+        );
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        user.notificationSettings = {
-            ...user.notificationSettings,
-            ...notificationSettings
-        };
-
-        await user.save();
         res.json({ success: true, notificationSettings: user.notificationSettings });
     } catch (err) {
         console.error('Error updating notification settings:', err);
