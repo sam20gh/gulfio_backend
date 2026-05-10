@@ -154,6 +154,34 @@ router.put('/mark-all-read', auth, async (req, res) => {
 });
 
 /**
+ * DELETE /api/notifications/clear-all
+ * Delete all read notifications for the user
+ * MUST be registered before DELETE /:id to avoid the wildcard shadowing it.
+ */
+router.delete('/clear-all', auth, async (req, res) => {
+    try {
+        const userId = req.user?.sub;
+
+        if (!userId) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const result = await Notification.deleteMany({
+            userId,
+            read: true,
+        });
+
+        res.json({
+            success: true,
+            deletedCount: result.deletedCount,
+        });
+    } catch (error) {
+        console.error('❌ Error clearing notifications:', error);
+        res.status(500).json({ error: 'Failed to clear notifications' });
+    }
+});
+
+/**
  * DELETE /api/notifications/:id
  * Delete a notification
  */
@@ -182,33 +210,6 @@ router.delete('/:id', auth, async (req, res) => {
     } catch (error) {
         console.error('❌ Error deleting notification:', error);
         res.status(500).json({ error: 'Failed to delete notification' });
-    }
-});
-
-/**
- * DELETE /api/notifications/clear-all
- * Delete all read notifications for the user
- */
-router.delete('/clear-all', auth, async (req, res) => {
-    try {
-        const userId = req.user?.sub;
-
-        if (!userId) {
-            return res.status(401).json({ error: 'User not authenticated' });
-        }
-
-        const result = await Notification.deleteMany({
-            userId,
-            read: true,
-        });
-
-        res.json({
-            success: true,
-            deletedCount: result.deletedCount,
-        });
-    } catch (error) {
-        console.error('❌ Error clearing notifications:', error);
-        res.status(500).json({ error: 'Failed to clear notifications' });
     }
 });
 
