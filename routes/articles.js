@@ -134,6 +134,165 @@ function simpleHash(str) {
   return Math.abs(hash);
 }
 
+/** ---- Personalization v2 helpers ---- **/
+
+// Scoring weights — tuned for Gulf news feed (bold/fast hero accent feed)
+const PERS_W = {
+  recency: 4.0,
+  engagement: 1.0,
+  categoryAffinity: 3.0,
+  followingBoost: 2.5,
+  preferredSourceBoost: 1.5,
+  vector: 6.0,
+  dislikedCategoryPenalty: -8.0,
+};
+
+/**
+ * Load all personalization signals for a user in one Mongo query.
+ * Returns null if user not found. Sets are used for O(1) exclusion/lookup.
+ */
+async function loadUserPersonalizationContext(userId) {
+  const user = await User.findOne({ supabase_id: userId })
+    .select(
+      'preferred_categories preferred_sources disliked_categories ' +
+      'liked_articles disliked_articles saved_articles viewed_articles ' +
+      'following_sources embedding_pca language'
+    )
+    .lean();
+  if (!user) return null;
+
+  const toIdStringSet = (arr) =>
+    new Set((arr || []).map((id) => (id && id.toString ? id.toString() : id)).filter(Boolean));
+
+  const preferredCategories = new Set(user.preferred_categories || []);
+  const preferredSourceIds = new Set(
+    (user.preferred_sources || []).map((id) => (id && id.toString ? id.toString() : id))
+  );
+
+  return {
+    preferredCategories,
+    preferredSourceIds,
+    dislikedCategories: new Set(user.disliked_categories || []),
+    likedIds: toIdStringSet(user.liked_articles),
+    dislikedIds: toIdStringSet(user.disliked_articles),
+    savedIds: toIdStringSet(user.saved_articles),
+    viewedIds: toIdStringSet(user.viewed_articles),
+    followingSourceGroups: new Set(user.following_sources || []),
+    embedding:
+      Array.isArray(user.embedding_pca) && user.embedding_pca.length > 0
+        ? user.embedding_pca
+        : null,
+    language: (user.language || 'English').toLowerCase(),
+    hasSignal:
+      preferredCategories.size +
+        (user.liked_articles?.length || 0) +
+        (user.saved_articles?.length || 0) +
+        (user.following_sources?.length || 0) +
+        preferredSourceIds.size >
+      0,
+  };
+}
+
+/**
+ * Score candidate articles using the user's personalization context.
+ * Returns an array sorted by descending score (mutates each item with `_score`).
+ *
+ * page argument shifts the blend: page 1 favors recency (feels fresh),
+ * deeper pages favor relevance (give them what they like).
+ */
+function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
+  if (!candidates?.length) return [];
+
+  const recencyMult = page === 1 ? 1.2 : page === 2 ? 1.0 : 0.8;
+  const relMult = page === 1 ? 0.8 : page === 2 ? 1.0 : 1.2;
+  const hasEmbedding = !!ctx?.embedding;
+
+  for (const a of candidates) {
+    const recency = basicRecencyScore(a.publishedAt);
+
+    // Tanh-squash engagement so a single viral article can't dominate the feed
+    const rawEng =
+      (a.viewCount || 0) * viewsWeight +
+      (a.likes || 0) * likesWeight +
+      (a.dislikes || 0) * dislikesWeight;
+    const engagement = Math.tanh(rawEng / 80);
+
+    let categoryScore = 0;
+    if (a.category) {
+      if (ctx.preferredCategories.has(a.category)) categoryScore += 1;
+      if (ctx.dislikedCategories.has(a.category)) {
+        // Penalty is heavy and applied directly (not multiplied by relMult)
+        // so it dominates regardless of page bias.
+        a._dislikedCat = true;
+      }
+    }
+
+    const sourceIdStr = a.sourceId ? a.sourceId.toString() : null;
+    const followingScore = a.sourceGroupName && ctx.followingSourceGroups.has(a.sourceGroupName) ? 1 : 0;
+    const preferredSourceScore = sourceIdStr && ctx.preferredSourceIds.has(sourceIdStr) ? 1 : 0;
+
+    let vectorScore = 0;
+    if (
+      hasEmbedding &&
+      Array.isArray(a.embedding_pca) &&
+      a.embedding_pca.length === ctx.embedding.length
+    ) {
+      // Clamp to [0,1] — negative similarity shouldn't actively penalize, just contribute nothing
+      vectorScore = Math.max(0, cosineSimilarity(ctx.embedding, a.embedding_pca));
+    }
+
+    let score =
+      recencyMult * PERS_W.recency * recency +
+      PERS_W.engagement * engagement +
+      relMult * PERS_W.categoryAffinity * categoryScore +
+      relMult * PERS_W.followingBoost * followingScore +
+      relMult * PERS_W.preferredSourceBoost * preferredSourceScore +
+      relMult * PERS_W.vector * vectorScore;
+
+    if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
+
+    a._score = score;
+  }
+
+  return candidates.sort((x, y) => y._score - x._score);
+}
+
+/** Apply source-group diversity cap (max N per group) preserving incoming order. */
+function applySourceGroupCap(articles, maxPerGroup = 3) {
+  const counts = new Map();
+  const out = [];
+  for (const a of articles) {
+    const g = a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown');
+    const c = counts.get(g) || 0;
+    if (c < maxPerGroup) {
+      counts.set(g, c + 1);
+      out.push(a);
+    }
+  }
+  return out;
+}
+
+/**
+ * Hash that changes whenever the user's view/like/follow state changes.
+ * Embedded in the cache key so refresh after activity returns fresh content.
+ */
+function userStateHash(ctx) {
+  if (!ctx) return 0;
+  return simpleHash(
+    `${ctx.viewedIds.size}|${ctx.likedIds.size}|${ctx.dislikedIds.size}|` +
+      `${ctx.savedIds.size}|${ctx.preferredCategories.size}|` +
+      `${ctx.followingSourceGroups.size}|${ctx.embedding ? ctx.embedding.length : 0}`
+  );
+}
+
+/** Strip internal/heavy fields before sending to client. */
+function sanitizeForResponse(articles, extra = {}) {
+  return articles.map((a) => {
+    const { _score, _dislikedCat, embedding_pca, sourceGroupName, ...rest } = a;
+    return { ...rest, ...extra };
+  });
+}
+
 /**
  * OPTIMIZED COUNT CACHING
  * Pre-warm common article counts in background to avoid expensive countDocuments() calls
@@ -515,233 +674,188 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 // });
 articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
 
   try {
     const userId = req.mongoUser.supabase_id;
-    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
     const forceRefresh = req.query.noCache === 'true';
-
-    // Use user's language preference from database if not specified in query
     const userLanguagePref = req.mongoUser.language || 'English';
-    const defaultLang = userLanguagePref.toLowerCase();
-    const language = req.query.language || defaultLang;
+    const language = (req.query.language || userLanguagePref).toLowerCase();
 
-    console.log(`🚀 OPTIMIZED Light personalized for user ${userId}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref}), forceRefresh: ${forceRefresh}`);
+    const ctx = await loadUserPersonalizationContext(userId);
+    if (ctx) ctx.language = language;
 
-    // Fetch user's preferred categories/sources for semi-personalization
-    const user = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
-    const preferredCategories = user?.preferred_categories || [];
-    const preferredSources = user?.preferred_sources || []; // Assuming this field exists or add it to User model
+    // Cache key: includes user state hash so refresh after activity returns fresh content.
+    // 10-minute slot keeps content fresh without thrashing the cache.
+    const stateHash = userStateHash(ctx);
+    const tenMinSlot = Math.floor(Date.now() / (10 * 60 * 1000));
+    const cacheKey = `articles_pers_v2_${userId}_${language}_${limit}_${stateHash}_${tenMinSlot}`;
 
-    // Enhanced cache key: now user-specific with preferences hash for invalidation
-    const prefsHash = simpleHash(JSON.stringify({ cats: preferredCategories, srcs: preferredSources }));
-    const thirtyMinSlot = Math.floor(Date.now() / (30 * 60 * 1000)); // 30-minute cache slots
-    const cacheKey = `articles_ultrafast_${userId}_${language}_${limit}_${prefsHash}_${thirtyMinSlot}`;
-
-    let cached;
     if (!forceRefresh) {
       try {
-        cached = await redis.get(cacheKey);
+        const cached = await redis.get(cacheKey);
         if (cached) {
-          const result = JSON.parse(cached);
-          console.log(`⚡ OPTIMIZED cache hit in ${Date.now() - startTime}ms - ${result.length} articles`);
-          return res.json(result);
+          console.log(`⚡ pers-v2 light cache hit in ${Date.now() - startTime}ms`);
+          return res.json(JSON.parse(cached));
         }
       } catch (err) {
         console.error('⚠️ Redis get error:', err.message);
       }
     }
 
-    console.log(`🔍 OPTIMIZED: Starting aggregation query for ${language} language with prefs: cats=${preferredCategories.length}, srcs=${preferredSources.length}`);
-    const queryStart = Date.now();
-
-    // OPTIMIZATION 1: Use aggregation pipeline instead of populate()
-    // OPTIMIZATION 2: Reduce time window to 24 hours for good content variety
-    // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
-    // NEW: Semi-personalization via preferred categories/sources in match stage
-
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const matchFilter = {
-      language: language,
-      publishedAt: { $gte: twentyFourHoursAgo }
+    // Build candidate filter
+    // - exclude already-viewed/disliked articles so refresh shows new content
+    // - filter out disliked categories at the DB level
+    // - keep candidate window wide enough to allow proper ranking
+    const buildMatch = (sinceMs) => {
+      const match = {
+        language,
+        publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+      };
+      if (ctx) {
+        const excludeIds = [...new Set([...ctx.viewedIds, ...ctx.dislikedIds])];
+        if (excludeIds.length > 0) {
+          // Cap to keep $nin fast; oldest seen articles will fall off the time window anyway
+          match._id = {
+            $nin: excludeIds.slice(0, 1000).map((id) => new mongoose.Types.ObjectId(id)),
+          };
+        }
+        if (ctx.dislikedCategories.size > 0) {
+          match.category = { $nin: [...ctx.dislikedCategories] };
+        }
+      }
+      return match;
     };
 
-    // Add personalization filters if preferences exist
-    if (preferredCategories.length > 0) {
-      matchFilter.category = { $in: preferredCategories.slice(0, 5) }; // Limit to top 5 for speed
-    }
-    if (preferredSources.length > 0) {
-      matchFilter.sourceId = { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) }; // Assuming source IDs are ObjectIds
-    }
+    const candidateLimit = Math.min(limit * 6, 250);
+    const includeEmbedding = !!ctx?.embedding;
 
-    // Get more articles initially to allow for source group filtering and randomization
-    const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
+    const runCandidateQuery = (sinceMs) =>
+      Article.aggregate([
+        { $match: buildMatch(sinceMs) },
+        { $sort: { publishedAt: -1 } },
+        { $limit: candidateLimit },
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'sourceId',
+            foreignField: '_id',
+            as: 'source',
+            pipeline: [
+              { $match: { status: { $ne: 'blocked' } } },
+              { $project: { groupName: 1, name: 1, icon: 1 } },
+            ],
+          },
+        },
+        { $match: { 'source.0': { $exists: true } } },
+        {
+          $addFields: {
+            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+            sourceName: { $arrayElemAt: ['$source.name', 0] },
+            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            content: 1,
+            contentFormat: 1,
+            url: 1,
+            category: 1,
+            publishedAt: 1,
+            image: 1,
+            viewCount: 1,
+            likes: 1,
+            dislikes: 1,
+            likedBy: 1,
+            dislikedBy: 1,
+            sourceId: 1,
+            sourceName: 1,
+            sourceIcon: 1,
+            sourceGroupName: 1,
+            language: 1,
+            ...(includeEmbedding ? { embedding_pca: 1 } : {}),
+          },
+        },
+      ]);
 
-    const articles = await Article.aggregate([
-      {
-        // Stage 1: Match with optimized filter (use compound index)
-        $match: matchFilter
-      },
-      {
-        // Stage 2: Sort BEFORE limiting for better performance
-        $sort: { publishedAt: -1 }
-      },
-      {
-        // Stage 3: Get more articles for source group filtering
-        $limit: initialLimit
-      },
-      {
-        // Stage 4: Lookup source to get groupName for filtering
-        $lookup: {
-          from: 'sources',
-          localField: 'sourceId',
-          foreignField: '_id',
-          as: 'source',
-          pipeline: [
-            { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
-            { $project: { groupName: 1, name: 1, icon: 1, status: 1 } } // Include icon for display
-          ]
-        }
-      },
-      {
-        // Stage 4.5: Filter out articles from blocked sources
-        $match: { 'source.0': { $exists: true } }
-      },
-      {
-        // Stage 5: Add source group name for filtering
-        $addFields: {
-          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
-          sourceName: { $arrayElemAt: ['$source.name', 0] },
-          sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
-          isLight: { $literal: true },
-          fetchedAt: { $literal: new Date() },
-          isRefreshed: { $literal: forceRefresh },
-          fetchId: { $literal: new mongoose.Types.ObjectId().toString() },
-          isPersonalized: { $literal: preferredCategories.length > 0 || preferredSources.length > 0 }
-        }
-      },
-      {
-        // Stage 6: Project essential fields (keep sourceGroupName for filtering)
-        $project: {
-          title: 1,
-          content: 1,
-          contentFormat: 1, // ✅ Include contentFormat for markdown rendering
-          url: 1,
-          category: 1,
-          publishedAt: 1,
-          image: 1,
-          viewCount: 1,
-          likes: 1,
-          dislikes: 1,
-          likedBy: 1,
-          dislikedBy: 1,
-          sourceId: 1,
-          sourceName: 1, // ✅ Include sourceName for client display
-          sourceIcon: 1, // ✅ Include sourceIcon for client display
-          sourceGroupName: 1, // Keep for internal filtering
-          language: 1, // ✅ Include language for RTL support
-          isLight: 1,
-          fetchedAt: 1,
-          isRefreshed: 1,
-          fetchId: 1,
-          isPersonalized: 1
-        }
+    const queryStart = Date.now();
+    let candidates = await runCandidateQuery(24 * 60 * 60 * 1000);
+    // Widen to 48h if 24h doesn't yield enough variety (off-peak / quiet news days)
+    if (candidates.length < limit * 2) {
+      candidates = await runCandidateQuery(48 * 60 * 60 * 1000);
+    }
+    const dbTime = Date.now() - queryStart;
+
+    // Score (or fall back to recency+engagement for users with no signal)
+    let scored;
+    if (ctx?.hasSignal) {
+      scored = scorePersonalizedCandidates(candidates, ctx, { page: 1 });
+    } else {
+      for (const a of candidates) {
+        a._score =
+          PERS_W.recency * basicRecencyScore(a.publishedAt) +
+          PERS_W.engagement *
+            Math.tanh(
+              ((a.viewCount || 0) * viewsWeight +
+                (a.likes || 0) * likesWeight +
+                (a.dislikes || 0) * dislikesWeight) /
+                80
+            );
       }
-    ]);
-
-    console.log(`⚡ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} initial articles`);
-
-    // Apply source group filtering and randomization
-    const filteringStart = Date.now();
-
-    // Step 1: Apply source group filtering (max 3 per group)
-    const sourceGroupCounts = {};
-    const filteredArticles = [];
-
-    for (const article of articles) {
-      const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
-      const currentCount = sourceGroupCounts[groupName] || 0;
-
-      if (currentCount < 3) { // Max 3 per source group
-        sourceGroupCounts[groupName] = currentCount + 1;
-        // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
-        const { sourceGroupName, ...cleanArticle } = article;
-        filteredArticles.push(cleanArticle);
-
-        // Stop if we have enough articles
-        if (filteredArticles.length >= limit) break;
-      }
+      scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Step 2: Randomize while preserving recency bias
-    // Use a deterministic seed based on user ID and day for consistent randomization
-    const seed = simpleHash(userId + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed
-    const rng = lcg(seed);
+    // Source-group diversity cap (max 3 per group), preserves the relevance order
+    const diversified = applySourceGroupCap(scored, 3).slice(0, limit);
 
-    // Apply gentle randomization: shuffle articles within time-based buckets
-    const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
-    const randomizedArticles = [];
+    const finalArticles = sanitizeForResponse(diversified, {
+      isLight: true,
+      fetchedAt: new Date(),
+      isRefreshed: forceRefresh,
+      isPersonalized: !!ctx?.hasSignal,
+    });
 
-    for (let i = 0; i < filteredArticles.length; i += bucketSize) {
-      const bucket = filteredArticles.slice(i, i + bucketSize);
-
-      // Fisher-Yates shuffle with deterministic RNG for this bucket
-      for (let j = bucket.length - 1; j > 0; j--) {
-        const k = Math.floor(rng() * (j + 1));
-        [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
-      }
-
-      randomizedArticles.push(...bucket);
-    }
-
-    // Take only the requested limit
-    const finalArticles = randomizedArticles.slice(0, limit);
-
-    console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
-    console.log(`📊 Source group distribution:`, sourceGroupCounts);
-    console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
-
-    const totalTime = Date.now() - startTime;
-    console.log(`🚀 Light personalized complete in ${totalTime}ms - ${finalArticles.length} articles with source group filtering`);
-
-    // Cache the final result
     try {
-      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 900); // 15 min cache for speed
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600); // 10 min
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
 
-    // Add performance headers for monitoring
+    const totalTime = Date.now() - startTime;
+    console.log(
+      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+    );
+
     res.setHeader('X-Performance-Time', totalTime);
-    res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
-    res.setHeader('X-Filtering-Time', Date.now() - filteringStart);
-    res.setHeader('X-Optimization-Applied', 'source-group-filtering-randomization');
-    res.setHeader('X-Personalized', preferredCategories.length > 0 || preferredSources.length > 0 ? 'semi' : 'none');
-    res.setHeader('X-Source-Groups', Object.keys(sourceGroupCounts).length);
+    res.setHeader('X-DB-Query-Time', dbTime);
+    res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
+    res.setHeader('X-Candidates', candidates.length);
 
     res.json(finalArticles);
-
   } catch (error) {
     const errorTime = Date.now() - startTime;
-    console.error(`❌ OPTIMIZED Light personalized error in ${errorTime}ms:`, error);
+    console.error(`❌ pers-v2 light error in ${errorTime}ms:`, error);
 
-    // Fallback to basic query if aggregation fails (without personalization for speed)
-    console.log('🔄 Falling back to basic query...');
+    // Fallback to basic recency query so users still see content
     try {
+      const language = (req.query.language || 'english').toLowerCase();
       const fallbackArticles = await Article.find({
-        language: req.query.language || 'english',
-        publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
+        language,
+        publishedAt: { $gte: new Date(Date.now() - 12 * 60 * 60 * 1000) },
       })
-        .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+        .select(
+          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+        )
         .sort({ publishedAt: -1 })
         .limit(limit)
         .lean();
-
-      console.log(`🔄 Fallback completed with ${fallbackArticles.length} articles`);
-      res.json(fallbackArticles);
+      return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
-      res.status(500).json({ error: 'Optimized light personalized error', message: error.message });
+      return res
+        .status(500)
+        .json({ error: 'personalized-light error', message: error.message });
     }
   }
 });
@@ -1060,37 +1174,27 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
 // Performance configuration constants
 articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) => {
   const startTime = Date.now();
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
 
   try {
     const userId = req.mongoUser.supabase_id;
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
     const forceRefresh = req.query.noCache === 'true';
-
-    // Use user's language preference from database if not specified in query
     const userLanguagePref = req.mongoUser.language || 'English';
-    const defaultLang = userLanguagePref.toLowerCase();
-    const language = req.query.language || defaultLang;
+    const language = (req.query.language || userLanguagePref).toLowerCase();
 
-    console.log(`⚡ ULTRA-FAST personalized-fast for user ${userId}, page ${page}, limit ${limit}, lang: ${language} (user pref: ${userLanguagePref}), forceRefresh: ${forceRefresh}`);
+    const ctx = await loadUserPersonalizationContext(userId);
+    if (ctx) ctx.language = language;
 
-    // Fetch user's preferred categories/sources for semi-personalization
-    const user = await User.findOne({ supabase_id: userId }).select('preferred_categories preferred_sources').lean();
-    const preferredCategories = user?.preferred_categories || [];
-    const preferredSources = user?.preferred_sources || []; // Assuming this field exists or add it to User model
+    const stateHash = userStateHash(ctx);
+    const tenMinSlot = Math.floor(Date.now() / (10 * 60 * 1000));
+    const cacheKey = `articles_pers_v2_page_${userId}_${language}_${page}_${limit}_${stateHash}_${tenMinSlot}`;
 
-    // Enhanced cache key: now user-specific with preferences hash for invalidation
-    const prefsHash = simpleHash(JSON.stringify({ cats: preferredCategories, srcs: preferredSources }));
-    const fifteenMinSlot = Math.floor(Date.now() / (15 * 60 * 1000)); // 15-minute cache slots
-    const cacheKey = `articles_ultrafast_page_${userId}_${language}_${page}_${limit}_${prefsHash}_${fifteenMinSlot}`;
-
-    // Cache check
-    let cached;
     if (!forceRefresh) {
       try {
-        cached = await redis.get(cacheKey);
+        const cached = await redis.get(cacheKey);
         if (cached) {
-          console.log(`⚡ ULTRA-FAST cache hit in ${Date.now() - startTime}ms`);
+          console.log(`⚡ pers-v2 fast cache hit in ${Date.now() - startTime}ms (page ${page})`);
           return res.json(JSON.parse(cached));
         }
       } catch (err) {
@@ -1098,204 +1202,162 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       }
     }
 
-    console.log(`🔍 ULTRA-FAST: Starting aggregation query for page ${page}, ${language} language with prefs: cats=${preferredCategories.length}, srcs=${preferredSources.length}`);
-    const queryStart = Date.now();
-
-    // OPTIMIZATION 1: Use aggregation pipeline for speed
-    // OPTIMIZATION 2: Use 24-hour window for content variety
-    // OPTIMIZATION 3: Skip $lookup for ultra-fast performance (sources handled client-side)
-    // NEW: Semi-personalization via preferred categories/sources in match stage
-
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const skip = (page - 1) * limit;
-    const matchFilter = {
-      language: language,
-      publishedAt: { $gte: twentyFourHoursAgo }
+    // Build candidate filter (same shape as personalized-light)
+    const buildMatch = (sinceMs) => {
+      const match = {
+        language,
+        publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+      };
+      if (ctx) {
+        const excludeIds = [...new Set([...ctx.viewedIds, ...ctx.dislikedIds])];
+        if (excludeIds.length > 0) {
+          match._id = {
+            $nin: excludeIds.slice(0, 1000).map((id) => new mongoose.Types.ObjectId(id)),
+          };
+        }
+        if (ctx.dislikedCategories.size > 0) {
+          match.category = { $nin: [...ctx.dislikedCategories] };
+        }
+      }
+      return match;
     };
 
-    // Add personalization filters if preferences exist
-    if (preferredCategories.length > 0) {
-      matchFilter.category = { $in: preferredCategories.slice(0, 5) }; // Limit to top 5 for speed
-    }
-    if (preferredSources.length > 0) {
-      matchFilter.sourceId = { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) }; // Assuming source IDs are ObjectIds
-    }
+    // For pagination we need a wide enough candidate window to safely skip into.
+    // Cap so deep pagination doesn't blow up memory.
+    const candidateLimit = Math.min(page * limit + 100, 300);
+    const includeEmbedding = !!ctx?.embedding;
 
-    // Get more articles initially to allow for source group filtering and randomization
-    const initialLimit = Math.min(limit * 3, 150); // Get 3x more articles but cap at 150
-    const initialSkip = Math.max(0, skip - Math.floor(initialLimit / 3)); // Adjust skip for larger initial fetch
+    const runCandidateQuery = (sinceMs) =>
+      Article.aggregate([
+        { $match: buildMatch(sinceMs) },
+        { $sort: { publishedAt: -1 } },
+        { $limit: candidateLimit },
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'sourceId',
+            foreignField: '_id',
+            as: 'source',
+            pipeline: [
+              { $match: { status: { $ne: 'blocked' } } },
+              { $project: { groupName: 1, name: 1, icon: 1 } },
+            ],
+          },
+        },
+        { $match: { 'source.0': { $exists: true } } },
+        {
+          $addFields: {
+            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+            sourceName: { $arrayElemAt: ['$source.name', 0] },
+            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            content: 1,
+            contentFormat: 1,
+            url: 1,
+            category: 1,
+            publishedAt: 1,
+            image: 1,
+            viewCount: 1,
+            likes: 1,
+            dislikes: 1,
+            likedBy: 1,
+            dislikedBy: 1,
+            sourceId: 1,
+            sourceName: 1,
+            sourceIcon: 1,
+            sourceGroupName: 1,
+            language: 1,
+            ...(includeEmbedding ? { embedding_pca: 1 } : {}),
+          },
+        },
+      ]);
 
-    const articles = await Article.aggregate([
-      {
-        // Stage 1: Match with optimized filter (use compound index)
-        $match: matchFilter
-      },
-      {
-        // Stage 2: Sort BEFORE skipping/limiting for better performance
-        $sort: { publishedAt: -1 }
-      },
-      {
-        // Stage 3: Skip for pagination (adjusted for larger fetch)
-        $skip: initialSkip
-      },
-      {
-        // Stage 4: Get more articles for source group filtering
-        $limit: initialLimit
-      },
-      {
-        // Stage 5: Lookup source to get groupName for filtering
-        $lookup: {
-          from: 'sources',
-          localField: 'sourceId',
-          foreignField: '_id',
-          as: 'source',
-          pipeline: [
-            { $match: { status: { $ne: 'blocked' } } }, // Only get non-blocked sources
-            { $project: { groupName: 1, name: 1, status: 1 } } // Only get needed fields
-          ]
-        }
-      },
-      {
-        // Stage 5.5: Filter out articles from blocked sources
-        $match: { 'source.0': { $exists: true } }
-      },
-      {
-        // Stage 6: Add source group name and performance markers
-        $addFields: {
-          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
-          sourceName: { $arrayElemAt: ['$source.name', 0] },
-          isFast: { $literal: true },
-          fetchedAt: { $literal: new Date() },
-          isRefreshed: { $literal: forceRefresh },
-          fetchId: { $literal: new mongoose.Types.ObjectId().toString() },
-          page: { $literal: page },
-          isPersonalized: { $literal: preferredCategories.length > 0 || preferredSources.length > 0 }
-        }
-      },
-      {
-        // Stage 7: Project essential fields (keep sourceGroupName for filtering but don't expose sourceName to avoid conflicts)
-        $project: {
-          title: 1,
-          content: 1,
-          contentFormat: 1, // ✅ Include contentFormat for markdown rendering
-          url: 1,
-          category: 1,
-          publishedAt: 1,
-          image: 1,
-          viewCount: 1,
-          likes: 1,
-          dislikes: 1,
-          likedBy: 1,
-          dislikedBy: 1,
-          sourceId: 1,
-          sourceGroupName: 1, // Keep for internal filtering
-          language: 1, // ✅ Include language for RTL support
-          isFast: 1,
-          fetchedAt: 1,
-          isRefreshed: 1,
-          fetchId: 1,
-          page: 1,
-          isPersonalized: 1
-        }
+    const queryStart = Date.now();
+    // Page 1 uses 24h window; deeper pages widen to 48h since freshness matters less past page 1
+    let candidates = await runCandidateQuery(page === 1 ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000);
+    if (candidates.length < limit + (page - 1) * limit) {
+      // Widen further if we don't have enough to paginate into
+      candidates = await runCandidateQuery(72 * 60 * 60 * 1000);
+    }
+    const dbTime = Date.now() - queryStart;
+
+    let scored;
+    if (ctx?.hasSignal) {
+      scored = scorePersonalizedCandidates(candidates, ctx, { page });
+    } else {
+      for (const a of candidates) {
+        a._score =
+          PERS_W.recency * basicRecencyScore(a.publishedAt) +
+          PERS_W.engagement *
+            Math.tanh(
+              ((a.viewCount || 0) * viewsWeight +
+                (a.likes || 0) * likesWeight +
+                (a.dislikes || 0) * dislikesWeight) /
+                80
+            );
       }
-    ]);
-
-    console.log(`⚡ DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} initial articles for page ${page}`);
-
-    // Apply source group filtering and randomization
-    const filteringStart = Date.now();
-
-    // Step 1: Apply source group filtering (max 3 per group)
-    const sourceGroupCounts = {};
-    const filteredArticles = [];
-
-    for (const article of articles) {
-      const groupName = article.sourceGroupName || article.sourceId?.toString() || 'unknown';
-      const currentCount = sourceGroupCounts[groupName] || 0;
-
-      if (currentCount < 3) { // Max 3 per source group
-        sourceGroupCounts[groupName] = currentCount + 1;
-        // Remove sourceGroupName before sending to client to avoid conflicts with frontend source resolution
-        const { sourceGroupName, ...cleanArticle } = article;
-        filteredArticles.push(cleanArticle);
-
-        // Stop if we have enough articles
-        if (filteredArticles.length >= limit) break;
-      }
+      scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Step 2: Randomize while preserving recency bias
-    // Use a deterministic seed based on user ID, page, and day for consistent randomization
-    const seed = simpleHash(userId + page.toString() + Math.floor(Date.now() / (24 * 60 * 60 * 1000))); // Daily seed with page
-    const rng = lcg(seed);
+    // Diversity cap on full sorted list, then page-slice
+    const diversified = applySourceGroupCap(scored, 3);
+    const skip = (page - 1) * limit;
+    const pageSlice = diversified.slice(skip, skip + limit);
 
-    // Apply gentle randomization: shuffle articles within time-based buckets
-    const bucketSize = Math.max(3, Math.floor(filteredArticles.length / 5)); // 5 buckets
-    const randomizedArticles = [];
+    const finalArticles = sanitizeForResponse(pageSlice, {
+      isFast: true,
+      fetchedAt: new Date(),
+      isRefreshed: forceRefresh,
+      page,
+      isPersonalized: !!ctx?.hasSignal,
+    });
 
-    for (let i = 0; i < filteredArticles.length; i += bucketSize) {
-      const bucket = filteredArticles.slice(i, i + bucketSize);
-
-      // Fisher-Yates shuffle with deterministic RNG for this bucket
-      for (let j = bucket.length - 1; j > 0; j--) {
-        const k = Math.floor(rng() * (j + 1));
-        [bucket[j], bucket[k]] = [bucket[k], bucket[j]];
-      }
-
-      randomizedArticles.push(...bucket);
-    }
-
-    // Take only the requested limit
-    const finalArticles = randomizedArticles.slice(0, limit);
-
-    console.log(`🔀 Filtering and randomization completed in ${Date.now() - filteringStart}ms`);
-    console.log(`📊 Source group distribution for page ${page}:`, sourceGroupCounts);
-    console.log(`🎯 Final result: ${finalArticles.length} articles from ${Object.keys(sourceGroupCounts).length} source groups`);
-
-    const totalTime = Date.now() - startTime;
-    console.log(`🚀 personalized-fast complete in ${totalTime}ms - ${finalArticles.length} articles (page ${page}, with source group filtering)`);
-
-    // Cache the final result
     try {
-      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 900); // 15 min cache
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600);
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
 
-    // Add performance headers for monitoring
+    const totalTime = Date.now() - startTime;
+    console.log(
+      `🚀 pers-v2 fast: page ${page}, ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+    );
+
     res.setHeader('X-Performance-Time', totalTime);
-    res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
-    res.setHeader('X-Filtering-Time', Date.now() - filteringStart);
-    res.setHeader('X-Optimization-Applied', 'source-group-filtering-randomization-pagination');
+    res.setHeader('X-DB-Query-Time', dbTime);
     res.setHeader('X-Page', page);
-    res.setHeader('X-Personalized', preferredCategories.length > 0 || preferredSources.length > 0 ? 'semi' : 'none');
-    res.setHeader('X-Source-Groups', Object.keys(sourceGroupCounts).length);
+    res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
+    res.setHeader('X-Candidates', candidates.length);
 
     res.json(finalArticles);
-
   } catch (error) {
     const errorTime = Date.now() - startTime;
-    console.error(`❌ ULTRA-FAST personalized-fast error in ${errorTime}ms:`, error);
+    console.error(`❌ pers-v2 fast error in ${errorTime}ms (page ${page}):`, error);
 
-    // Fallback to basic query if aggregation fails (without personalization for speed)
-    console.log(`🔄 Fallback query for page ${page}...`);
     try {
+      const language = (req.query.language || 'english').toLowerCase();
       const skip = (page - 1) * limit;
       const fallbackArticles = await Article.find({
-        language: req.query.language || 'english',
-        publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
+        language,
+        publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
       })
-        .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+        .select(
+          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+        )
         .sort({ publishedAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean();
-
-      console.log(`🔄 Fallback completed with ${fallbackArticles.length} articles for page ${page}`);
-      res.json(fallbackArticles);
+      return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
-      res.status(500).json({ error: 'Ultra-fast personalized-fast error', message: error.message });
+      return res
+        .status(500)
+        .json({ error: 'personalized-fast error', message: error.message });
     }
   }
 });
