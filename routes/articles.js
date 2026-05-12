@@ -145,6 +145,9 @@ const PERS_W = {
   preferredSourceBoost: 1.5,
   vector: 6.0,
   dislikedCategoryPenalty: -8.0,
+  // Viewed articles are demoted (not excluded) so the feed never starves.
+  // They sink below fresh content but reappear if no better candidates exist.
+  viewedPenalty: -3.0,
 };
 
 /**
@@ -228,8 +231,10 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     }
 
     const sourceIdStr = a.sourceId ? a.sourceId.toString() : null;
+    const idStr = a._id ? a._id.toString() : null;
     const followingScore = a.sourceGroupName && ctx.followingSourceGroups.has(a.sourceGroupName) ? 1 : 0;
     const preferredSourceScore = sourceIdStr && ctx.preferredSourceIds.has(sourceIdStr) ? 1 : 0;
+    const alreadyViewed = idStr ? ctx.viewedIds.has(idStr) : false;
 
     let vectorScore = 0;
     if (
@@ -250,6 +255,7 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
       relMult * PERS_W.vector * vectorScore;
 
     if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
+    if (alreadyViewed) score += PERS_W.viewedPenalty;
 
     a._score = score;
   }
@@ -257,18 +263,58 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
   return candidates.sort((x, y) => y._score - x._score);
 }
 
-/** Apply source-group diversity cap (max N per group) preserving incoming order. */
-function applySourceGroupCap(articles, maxPerGroup = 3) {
-  const counts = new Map();
+/**
+ * Interleave articles by source group so consecutive items don't come from
+ * the same source, without throwing away total count.
+ *
+ * `minGap` is the minimum number of other articles that must separate two
+ * articles from the same group. `perGroupCap` is a soft ceiling per group —
+ * generous, just prevents one source from dominating the whole feed.
+ *
+ * Preserves the incoming relevance order as much as possible: high-scored
+ * articles still appear early; only those that would bunch with a recent
+ * same-group article are deferred to a second pass.
+ */
+function interleaveBySourceGroup(scored, { minGap = 2, perGroupCap = 8 } = {}) {
+  if (!scored?.length) return scored;
+
+  const groupCount = new Map();
+  const lastIdx = new Map();
   const out = [];
-  for (const a of articles) {
-    const g = a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown');
-    const c = counts.get(g) || 0;
-    if (c < maxPerGroup) {
-      counts.set(g, c + 1);
+  const deferred = [];
+
+  const groupOf = (a) =>
+    a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown');
+
+  // Pass 1: greedy placement with gap enforcement
+  for (const a of scored) {
+    const g = groupOf(a);
+    if ((groupCount.get(g) || 0) >= perGroupCap) continue;
+
+    const last = lastIdx.get(g);
+    if (last !== undefined && out.length - 1 - last < minGap) {
+      deferred.push(a);
+      continue;
+    }
+
+    out.push(a);
+    groupCount.set(g, (groupCount.get(g) || 0) + 1);
+    lastIdx.set(g, out.length - 1);
+  }
+
+  // Pass 2: append deferred articles where the gap now allows
+  for (const a of deferred) {
+    const g = groupOf(a);
+    if ((groupCount.get(g) || 0) >= perGroupCap) continue;
+
+    const last = lastIdx.get(g);
+    if (last === undefined || out.length - 1 - last >= minGap) {
       out.push(a);
+      groupCount.set(g, (groupCount.get(g) || 0) + 1);
+      lastIdx.set(g, out.length - 1);
     }
   }
+
   return out;
 }
 
@@ -704,20 +750,20 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     }
 
     // Build candidate filter
-    // - exclude already-viewed/disliked articles so refresh shows new content
-    // - filter out disliked categories at the DB level
-    // - keep candidate window wide enough to allow proper ranking
+    // - HARD exclude disliked articles + disliked categories (explicit negative signal)
+    // - Viewed articles are NOT excluded here — they're demoted in scoring instead,
+    //   so the feed never starves for an active user with a long view history.
     const buildMatch = (sinceMs) => {
       const match = {
         language,
         publishedAt: { $gte: new Date(Date.now() - sinceMs) },
       };
       if (ctx) {
-        const excludeIds = [...new Set([...ctx.viewedIds, ...ctx.dislikedIds])];
-        if (excludeIds.length > 0) {
-          // Cap to keep $nin fast; oldest seen articles will fall off the time window anyway
+        if (ctx.dislikedIds.size > 0) {
           match._id = {
-            $nin: excludeIds.slice(0, 1000).map((id) => new mongoose.Types.ObjectId(id)),
+            $nin: [...ctx.dislikedIds]
+              .slice(0, 500)
+              .map((id) => new mongoose.Types.ObjectId(id)),
           };
         }
         if (ctx.dislikedCategories.size > 0) {
@@ -727,7 +773,9 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       return match;
     };
 
-    const candidateLimit = Math.min(limit * 6, 250);
+    // Pull a generous candidate pool so the 3-per-source-group cap + viewed demotion
+    // still leave plenty of articles to fill the page.
+    const candidateLimit = Math.min(limit * 12, 400);
     const includeEmbedding = !!ctx?.embedding;
 
     const runCandidateQuery = (sinceMs) =>
@@ -806,8 +854,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Source-group diversity cap (max 3 per group), preserves the relevance order
-    const diversified = applySourceGroupCap(scored, 3).slice(0, limit);
+    // Interleave by source group so consecutive items don't come from the same
+    // publisher, but without capping total count. Page 1 takes the top `limit`.
+    const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+    const diversified = interleaved.slice(0, limit);
 
     const finalArticles = sanitizeForResponse(diversified, {
       isLight: true,
@@ -1202,17 +1252,20 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       }
     }
 
-    // Build candidate filter (same shape as personalized-light)
+    // Build candidate filter — only hard-exclude explicit dislikes.
+    // Viewed articles are demoted in scoring, not excluded, so the feed
+    // doesn't collapse for users with long view histories.
     const buildMatch = (sinceMs) => {
       const match = {
         language,
         publishedAt: { $gte: new Date(Date.now() - sinceMs) },
       };
       if (ctx) {
-        const excludeIds = [...new Set([...ctx.viewedIds, ...ctx.dislikedIds])];
-        if (excludeIds.length > 0) {
+        if (ctx.dislikedIds.size > 0) {
           match._id = {
-            $nin: excludeIds.slice(0, 1000).map((id) => new mongoose.Types.ObjectId(id)),
+            $nin: [...ctx.dislikedIds]
+              .slice(0, 500)
+              .map((id) => new mongoose.Types.ObjectId(id)),
           };
         }
         if (ctx.dislikedCategories.size > 0) {
@@ -1224,7 +1277,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
 
     // For pagination we need a wide enough candidate window to safely skip into.
     // Cap so deep pagination doesn't blow up memory.
-    const candidateLimit = Math.min(page * limit + 100, 300);
+    const candidateLimit = Math.min(page * limit + 200, 500);
     const includeEmbedding = !!ctx?.embedding;
 
     const runCandidateQuery = (sinceMs) =>
@@ -1303,10 +1356,12 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Diversity cap on full sorted list, then page-slice
-    const diversified = applySourceGroupCap(scored, 3);
+    // Interleave the full sorted list, then page-slice. The interleaved list
+    // retains essentially all scored articles (just reordered), so pagination
+    // has plenty of headroom — no more empty page 2 from a too-tight cap.
+    const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
     const skip = (page - 1) * limit;
-    const pageSlice = diversified.slice(skip, skip + limit);
+    const pageSlice = interleaved.slice(skip, skip + limit);
 
     const finalArticles = sanitizeForResponse(pageSlice, {
       isFast: true,
@@ -2638,37 +2693,31 @@ articleRouter.get('/', async (req, res) => {
       })
       .sort((x, y) => (y.finalScore ?? 0) - (x.finalScore ?? 0));
 
-    // Apply source group limiting (general users only - publishers skip this)
+    // Source-group handling: publishers see all their allowed sources unchanged;
+    // general (guest) users get interleaving — same total count, just reordered
+    // so consecutive items don't come from the same source.
     let processedArticles = [];
     const sourceGroupCounts = {};
 
+    // Tag _score for interleaving stability (uses already-computed finalScore)
+    for (const a of enhancedArticles) {
+      a._score = a.finalScore;
+    }
+
     if (userPublisherGroups) {
-      // Publishers: Skip source group limiting entirely since they're already filtered to their allowed sources
       console.log(`🔀 PUBLISHER MODE: Skipping source group limits, using all ${enhancedArticles.length} articles`);
       processedArticles = enhancedArticles;
-
-      // Count source groups for logging
-      enhancedArticles.forEach(article => {
-        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-        sourceGroupCounts[sourceGroup] = (sourceGroupCounts[sourceGroup] || 0) + 1;
-      });
     } else {
-      // General users: Apply source group limiting (max 2 per source group)
-      const maxPerSourceGroup = 2;
-      console.log(`🔀 GENERAL MODE: Applying source group limiting: target limit ${limit}, maxPerGroup ${maxPerSourceGroup}`);
-
-      for (let i = 0; i < enhancedArticles.length; i++) {
-        const article = enhancedArticles[i];
-        const sourceGroup = article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
-
-        // Check if adding this article would exceed the source group limit
-        const currentCount = sourceGroupCounts[sourceGroup] || 0;
-        if (currentCount < maxPerSourceGroup) {
-          processedArticles.push(article);
-          sourceGroupCounts[sourceGroup] = currentCount + 1;
-        }
-      }
+      console.log(`🔀 GENERAL MODE: Interleaving source groups (minGap=2, perGroupCap=8)`);
+      processedArticles = interleaveBySourceGroup(enhancedArticles, { minGap: 2, perGroupCap: 8 });
     }
+
+    // Distribution stats for logging
+    processedArticles.forEach((article) => {
+      const sourceGroup =
+        article.sourceGroupName || article.sourceId?.toString() || article.source || 'unknown-group';
+      sourceGroupCounts[sourceGroup] = (sourceGroupCounts[sourceGroup] || 0) + 1;
+    });
 
     // Take only the requested limit from processed articles
     const finalArticles = processedArticles.slice(0, limit);
