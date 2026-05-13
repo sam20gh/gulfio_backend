@@ -75,6 +75,7 @@ const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
+const { generateBlurhash } = require('../utils/blurhash');
 const { scrapeYouTubeShortsViaRSS } = require('./youtubeRSSShortsScraper.js'); // Using RSS-based scraper
 const { scrapeYouTubeForSource } = require('./youtubeScraper');
 const mongoose = require('mongoose');
@@ -584,6 +585,12 @@ async function scrapeAllSources(frequency = null) {
                             console.log(`📸 Using Open Graph/Twitter image: ${og}`);
                         }
                     }
+                    let blurhash = null;
+                    if (images.length > 0) {
+                        blurhash = await generateBlurhash(images[0]);
+                        if (blurhash) console.log(`🎨 Generated blurhash (${blurhash.length} chars): ${blurhash}`);
+                    }
+
                     let embedding = [];
                     let embedding_pca = null;
                     try {
@@ -633,6 +640,7 @@ async function scrapeAllSources(frequency = null) {
                             const newArticle = new Article(articleData);
 
                             if (images.length > 0) newArticle.image = images;
+                            if (blurhash) newArticle.blurhash = blurhash;
 
                             console.log(`💾 About to save article to database...`);
                             const savedArticle = await newArticle.save();

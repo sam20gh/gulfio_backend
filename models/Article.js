@@ -16,6 +16,7 @@ const ArticleSchema = new mongoose.Schema({
         type: [String],
         default: []
     },
+    blurhash: { type: String, default: null },
     viewCount: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
     dislikes: { type: Number, default: 0 },
