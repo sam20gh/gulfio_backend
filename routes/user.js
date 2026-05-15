@@ -82,13 +82,24 @@ router.get('/dashboard-summary/:id', async (req, res) => {
         // Use find instead of aggregation for better reliability
         console.log(`Querying user directly: ${userId}`);
         const user = await User.findOne({ supabase_id: userId })
-            .select('email name avatar_url profile_image following_sources following_users liked_articles disliked_articles saved_articles saved_reels')
+            .select('_id email name avatar_url profile_image following_sources following_users liked_articles disliked_articles saved_articles saved_reels')
             .lean()
             .maxTimeMS(3000);
 
         if (!user) {
             console.log(`User not found in DB: ${userId}`);
             return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Count followers (users whose following_users contains this user's _id).
+        // following_users is stored as String, so compare against the stringified _id.
+        let followers_count = 0;
+        try {
+            followers_count = await User.countDocuments({
+                following_users: user._id.toString()
+            }).maxTimeMS(2000);
+        } catch (followersErr) {
+            console.warn('followers count failed, defaulting to 0:', followersErr.message);
         }
 
         const result = [{
@@ -98,6 +109,7 @@ router.get('/dashboard-summary/:id', async (req, res) => {
             profile_image: user.profile_image || null,
             following_sources_count: (user.following_sources || []).length,
             following_users_count: (user.following_users || []).length,
+            followers_count,
             liked_count: (user.liked_articles || []).length,
             disliked_count: (user.disliked_articles || []).length,
             saved_count: (user.saved_articles || []).length,
@@ -144,6 +156,7 @@ router.get('/dashboard-summary/:id', async (req, res) => {
             profile_image: null,
             following_sources_count: 0,
             following_users_count: 0,
+            followers_count: 0,
             liked_count: 0,
             disliked_count: 0,
             saved_count: 0,
@@ -177,6 +190,130 @@ router.get('/by-supabase/:id/with-preferences', async (req, res) => {
         res.json(user);
     } catch (err) {
         console.error('Error in /by-supabase/:id/with-preferences:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET the users that this user is following (populated profile cards)
+router.get('/:id/following-users', async (req, res) => {
+    try {
+        const user = await User.findOne({ supabase_id: req.params.id })
+            .select('following_users')
+            .lean();
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const ids = (user.following_users || []).filter(Boolean);
+        if (ids.length === 0) return res.json({ count: 0, users: [] });
+
+        // following_users is stored as Strings; convert to ObjectIds for the $in.
+        const objectIds = ids
+            .map((id) => {
+                try {
+                    return new mongoose.Types.ObjectId(id);
+                } catch {
+                    return null;
+                }
+            })
+            .filter(Boolean);
+
+        const users = await User.find({ _id: { $in: objectIds } })
+            .select('_id supabase_id name email avatar_url profile_image')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        res.json({ count: users.length, users });
+    } catch (err) {
+        console.error('Error in /:id/following-users:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET the users who follow this user (populated profile cards)
+router.get('/:id/followers', async (req, res) => {
+    try {
+        const me = await User.findOne({ supabase_id: req.params.id })
+            .select('_id')
+            .lean();
+        if (!me) return res.status(404).json({ message: 'User not found' });
+
+        // following_users is a String[], so match against the stringified _id.
+        const followers = await User.find({ following_users: me._id.toString() })
+            .select('_id supabase_id name email avatar_url profile_image')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        res.json({ count: followers.length, users: followers });
+    } catch (err) {
+        console.error('Error in /:id/followers:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// GET the source groups this user is following, with populated metadata
+router.get('/:id/followed-sources', async (req, res) => {
+    try {
+        const Source = require('../models/Source');
+        const user = await User.findOne({ supabase_id: req.params.id })
+            .select('following_sources')
+            .lean();
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const groupNames = (user.following_sources || []).filter(Boolean);
+        if (groupNames.length === 0) return res.json({ count: 0, groups: [] });
+
+        // Aggregate all sources under each followed group into a single card.
+        const groups = await Source.aggregate([
+            { $match: { groupName: { $in: groupNames } } },
+            {
+                $group: {
+                    _id: '$groupName',
+                    groupName: { $first: '$groupName' },
+                    icon: { $first: '$icon' },
+                    category: { $first: '$category' },
+                    sourcesCount: { $sum: 1 },
+                    followers: { $sum: { $ifNull: ['$followers', 0] } },
+                    sourceIds: { $push: '$_id' }
+                }
+            },
+            { $project: { _id: 0 } }
+        ]);
+
+        // Article counts per group (one aggregation, $in over all source ids).
+        const allSourceIds = groups.flatMap((g) => g.sourceIds);
+        let articleCountsByGroup = {};
+        if (allSourceIds.length > 0) {
+            const sourceIdToGroup = {};
+            groups.forEach((g) => {
+                g.sourceIds.forEach((sid) => {
+                    sourceIdToGroup[sid.toString()] = g.groupName;
+                });
+            });
+
+            const counts = await Article.aggregate([
+                { $match: { sourceId: { $in: allSourceIds } } },
+                { $group: { _id: '$sourceId', count: { $sum: 1 } } }
+            ]);
+
+            counts.forEach((c) => {
+                const gn = sourceIdToGroup[c._id.toString()];
+                if (gn) {
+                    articleCountsByGroup[gn] = (articleCountsByGroup[gn] || 0) + c.count;
+                }
+            });
+        }
+
+        // Drop the internal sourceIds before responding; preserve the user's order.
+        const order = new Map(groupNames.map((g, i) => [g, i]));
+        const enriched = groups
+            .map(({ sourceIds, ...rest }) => ({
+                ...rest,
+                articleCount: articleCountsByGroup[rest.groupName] || 0
+            }))
+            .sort((a, b) => (order.get(a.groupName) ?? 0) - (order.get(b.groupName) ?? 0));
+
+        res.json({ count: enriched.length, groups: enriched });
+    } catch (err) {
+        console.error('Error in /:id/followed-sources:', err);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
