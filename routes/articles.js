@@ -828,10 +828,18 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       ]);
 
     const queryStart = Date.now();
-    let candidates = await runCandidateQuery(24 * 60 * 60 * 1000);
-    // Widen to 48h if 24h doesn't yield enough variety (off-peak / quiet news days)
-    if (candidates.length < limit * 2) {
-      candidates = await runCandidateQuery(48 * 60 * 60 * 1000);
+    // Progressively widen until we have enough candidates. Sparse languages
+    // (e.g. Farsi) can have <10 articles in 48h; without widening, the feed
+    // would degenerate to 1-2 items.
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const windows = [24 * HOUR, 48 * HOUR, 7 * DAY, 30 * DAY];
+    let candidates = [];
+    let usedWindowMs = windows[0];
+    for (const sinceMs of windows) {
+      candidates = await runCandidateQuery(sinceMs);
+      usedWindowMs = sinceMs;
+      if (candidates.length >= limit * 2) break;
     }
     const dbTime = Date.now() - queryStart;
 
@@ -873,33 +881,43 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     }
 
     const totalTime = Date.now() - startTime;
+    const usedWindowHours = Math.round(usedWindowMs / (60 * 60 * 1000));
     console.log(
-      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, window ${usedWindowHours}h, lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
     );
 
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', dbTime);
     res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
     res.setHeader('X-Candidates', candidates.length);
+    res.setHeader('X-Window-Hours', usedWindowHours);
 
     res.json(finalArticles);
   } catch (error) {
     const errorTime = Date.now() - startTime;
     console.error(`❌ pers-v2 light error in ${errorTime}ms:`, error);
 
-    // Fallback to basic recency query so users still see content
+    // Fallback to basic recency query so users still see content.
+    // Widen progressively for low-volume languages (e.g. Farsi).
     try {
       const language = (req.query.language || 'english').toLowerCase();
-      const fallbackArticles = await Article.find({
-        language,
-        publishedAt: { $gte: new Date(Date.now() - 12 * 60 * 60 * 1000) },
-      })
-        .select(
-          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
-        )
-        .sort({ publishedAt: -1 })
-        .limit(limit)
-        .lean();
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      const windows = [24 * HOUR, 7 * DAY, 30 * DAY];
+      let fallbackArticles = [];
+      for (const sinceMs of windows) {
+        fallbackArticles = await Article.find({
+          language,
+          publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+        })
+          .select(
+            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+          )
+          .sort({ publishedAt: -1 })
+          .limit(limit)
+          .lean();
+        if (fallbackArticles.length >= Math.min(limit, 5)) break;
+      }
       return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
@@ -989,17 +1007,22 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
       }
     }
 
-    // Step 4: Query articles from followed sources
+    // Step 4: Query articles from followed sources.
+    // Progressively widen the time window for low-volume languages (e.g. Farsi)
+    // so a user following Farsi sources doesn't see an empty/near-empty feed.
     const queryStart = Date.now();
     const skip = (page - 1) * limit;
-    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000); // 3 days for following feed
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const windows = [72 * HOUR, 7 * DAY, 30 * DAY];
+    const minNeeded = skip + Math.min(limit + 1, 5);
 
-    const articles = await Article.aggregate([
+    const runFollowingQuery = (sinceMs) => Article.aggregate([
       {
         $match: {
           sourceId: { $in: followedSourceIds },
           language: language,
-          publishedAt: { $gte: seventyTwoHoursAgo }
+          publishedAt: { $gte: new Date(Date.now() - sinceMs) }
         }
       },
       {
@@ -1030,7 +1053,16 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
       }
     ]);
 
-    console.log(`⚡ Following feed DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles`);
+    let articles = [];
+    let usedWindowMs = windows[0];
+    for (const sinceMs of windows) {
+      articles = await runFollowingQuery(sinceMs);
+      usedWindowMs = sinceMs;
+      if (skip + articles.length >= minNeeded) break;
+    }
+
+    const usedWindowHours = Math.round(usedWindowMs / HOUR);
+    console.log(`⚡ Following feed DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles (window ${usedWindowHours}h, lang=${language})`);
 
     // Check if there are more articles
     const hasMore = articles.length > limit;
@@ -1070,6 +1102,7 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
     res.setHeader('X-DB-Query-Time', Date.now() - queryStart);
     res.setHeader('X-Following-Groups', followedGroups.length);
     res.setHeader('X-Following-Sources', followedSourceIds.length);
+    res.setHeader('X-Window-Hours', usedWindowHours);
 
     res.json(result);
 
@@ -1330,11 +1363,19 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       ]);
 
     const queryStart = Date.now();
-    // Page 1 uses 24h window; deeper pages widen to 48h since freshness matters less past page 1
-    let candidates = await runCandidateQuery(page === 1 ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000);
-    if (candidates.length < limit + (page - 1) * limit) {
-      // Widen further if we don't have enough to paginate into
-      candidates = await runCandidateQuery(72 * 60 * 60 * 1000);
+    // Progressively widen until we have enough candidates to fill the requested page.
+    // Sparse languages (e.g. Farsi) can have very few articles in 72h.
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const startWindow = page === 1 ? 24 * HOUR : 48 * HOUR;
+    const windows = [startWindow, 72 * HOUR, 7 * DAY, 30 * DAY];
+    const minCandidates = limit + (page - 1) * limit;
+    let candidates = [];
+    let usedWindowMs = windows[0];
+    for (const sinceMs of windows) {
+      candidates = await runCandidateQuery(sinceMs);
+      usedWindowMs = sinceMs;
+      if (candidates.length >= minCandidates) break;
     }
     const dbTime = Date.now() - queryStart;
 
@@ -1378,8 +1419,9 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     }
 
     const totalTime = Date.now() - startTime;
+    const usedWindowHours = Math.round(usedWindowMs / (60 * 60 * 1000));
     console.log(
-      `🚀 pers-v2 fast: page ${page}, ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+      `🚀 pers-v2 fast: page ${page}, ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, window ${usedWindowHours}h, lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
     );
 
     res.setHeader('X-Performance-Time', totalTime);
@@ -1387,6 +1429,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     res.setHeader('X-Page', page);
     res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
     res.setHeader('X-Candidates', candidates.length);
+    res.setHeader('X-Window-Hours', usedWindowHours);
 
     res.json(finalArticles);
   } catch (error) {
@@ -1396,17 +1439,25 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     try {
       const language = (req.query.language || 'english').toLowerCase();
       const skip = (page - 1) * limit;
-      const fallbackArticles = await Article.find({
-        language,
-        publishedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-      })
-        .select(
-          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
-        )
-        .sort({ publishedAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean();
+      const HOUR = 60 * 60 * 1000;
+      const DAY = 24 * HOUR;
+      const windows = [24 * HOUR, 72 * HOUR, 7 * DAY, 30 * DAY];
+      const minNeeded = skip + Math.min(limit, 5);
+      let fallbackArticles = [];
+      for (const sinceMs of windows) {
+        fallbackArticles = await Article.find({
+          language,
+          publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+        })
+          .select(
+            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+          )
+          .sort({ publishedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean();
+        if (fallbackArticles.length >= Math.min(limit, 5) || skip + fallbackArticles.length >= minNeeded) break;
+      }
       return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
