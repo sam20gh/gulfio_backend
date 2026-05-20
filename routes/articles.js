@@ -2385,168 +2385,236 @@ articleRouter.get('/category', async (req, res) => {
   }
 });
 
-// GET: Personalized articles by category (similar to personalized but filtered by category)
+// GET: Personalized articles by category
+// Uses the same context/scorer/interleaver as /personalized-light so the
+// category browse benefits from embeddings, following boost, source
+// preference, and disliked-category penalty — not just recency+engagement.
 articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, res) => {
+  const startTime = Date.now();
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
     const category = req.query.category;
-    const userId = req.mongoUser._id;
-
-    // Use user's language preference from database if not specified in query
-    const userLanguagePref = req.mongoUser.language || 'English';
-    const defaultLang = userLanguagePref.toLowerCase();
-    const language = req.query.language || defaultLang;
+    const forceRefresh = req.query.noCache === 'true';
 
     if (!category) {
       return res.status(400).json({ error: 'Category parameter is required' });
     }
 
-    console.log(`🏷️ Fetching personalized articles for user ${userId}, category: "${category}", page: ${page}, limit: ${limit}, lang: ${language} (user pref: ${userLanguagePref})`);
-    console.log(`🔍 Raw query params:`, req.query);
+    const supabaseId = req.mongoUser.supabase_id;
+    const mongoId = req.mongoUser._id;
+    const userLanguagePref = req.mongoUser.language || 'English';
+    const language = (req.query.language || userLanguagePref).toLowerCase();
 
-    const startTime = Date.now();
-    const skip = (page - 1) * limit;
+    const ctx = await loadUserPersonalizationContext(supabaseId);
+    if (ctx) ctx.language = language;
 
-    // Build cache key including category
-    const today = new Date().toISOString().split('T')[0];
-    const cacheKey = `articles_personalized_category_${userId}_${category}_page_${page}_limit_${limit}_lang_${language}_${today}`;
-
-    // Check cache first
-    let cached;
-    try {
-      cached = await redis.get(cacheKey);
-    } catch (err) {
-      console.error('⚠️ Redis get error (safe to ignore):', err.message);
-    }
-    if (!req.query.noCache && cached) {
-      console.log('🧠 Returning cached personalized category articles');
-      return res.json(JSON.parse(cached));
+    // Refuse to serve a category the user has explicitly disliked — they
+    // shouldn't be tapping it anyway, but if they do, return empty so the
+    // chip click doesn't reintroduce the rejected content.
+    if (ctx?.dislikedCategories?.has(category)) {
+      console.log(`🏷️ User ${supabaseId} has disliked category "${category}"; returning empty`);
+      return res.json([]);
     }
 
-    // Get user preferences
-    const user = await User.findById(userId).lean();
-    const likedArticles = user?.liked_articles || [];
-    const dislikedArticles = user?.disliked_articles || [];
+    const stateHash = userStateHash(ctx);
+    const tenMinSlot = Math.floor(Date.now() / (10 * 60 * 1000));
+    const cacheKey =
+      `articles_pers_cat_v2_${supabaseId}_${category}_${language}_${page}_${limit}_${stateHash}_${tenMinSlot}`;
 
-    // Build base query with category filter
-    const filter = {
-      language,
-      category,
-      _id: { $nin: [...likedArticles, ...dislikedArticles] } // Exclude already interacted articles
+    if (!forceRefresh) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          console.log(`⚡ pers-cat-v2 cache hit in ${Date.now() - startTime}ms (page ${page})`);
+          return res.json(JSON.parse(cached));
+        }
+      } catch (err) {
+        console.error('⚠️ Redis get error:', err.message);
+      }
+    }
+
+    // Candidate filter — same shape as personalized-light, plus the
+    // category pin. Only disliked articles are hard-excluded; liked
+    // articles are NOT excluded (seeing a liked article again is fine,
+    // and the previous behavior of dropping them shrank thin categories).
+    const buildMatch = (sinceMs) => {
+      const match = {
+        language,
+        category,
+        publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+      };
+      if (ctx && ctx.dislikedIds.size > 0) {
+        match._id = {
+          $nin: [...ctx.dislikedIds]
+            .slice(0, 500)
+            .map((id) => new mongoose.Types.ObjectId(id)),
+        };
+      }
+      return match;
     };
 
-    console.log(`🔍 MongoDB query filter:`, filter);
-    console.log(`🔍 Searching for articles in category: "${category}"`);
+    // Need enough candidates to support pagination + interleave headroom.
+    const candidateLimit = Math.min(page * limit + 200, 500);
+    const includeEmbedding = !!ctx?.embedding;
 
-    // First, let's check how many articles exist in this category total
-    const totalInCategory = await Article.countDocuments({ language, category });
-    console.log(`📊 Total articles in category "${category}": ${totalInCategory}`);
-
-    // Fetch articles from the specified category
-    const raw = await Article.aggregate([
-      { $match: filter },
-      { $sort: { publishedAt: -1 } },
-      { $skip: skip },
-      { $limit: limit * 2 }, // Get more to allow for better ranking
-      {
-        $lookup: {
-          from: 'sources',
-          localField: 'sourceId',
-          foreignField: '_id',
-          as: 'source',
-          pipeline: [
-            { $match: { status: { $ne: 'blocked' } } },
-            { $project: { name: 1, icon: 1, groupName: 1 } }
-          ]
-        }
-      },
-      { $match: { 'source.0': { $exists: true } } }, // Only articles from non-blocked sources
-      {
-        $addFields: {
-          sourceName: { $arrayElemAt: ['$source.name', 0] },
-          sourceIcon: { $arrayElemAt: ['$source.icon', 0] }
-        }
-      },
-      { $unset: 'source' }
-    ]);
-
-    console.log(`📊 Found ${raw.length} articles after applying user exclusions`);
-
-    if (raw.length === 0) {
-      console.log(`⚠️ No articles found in category: "${category}" after applying user exclusions`);
-
-      // Try without user exclusions to see if that's the issue
-      const rawWithoutExclusions = await Article.aggregate([
-        { $match: { language, category } },
+    const runCandidateQuery = (sinceMs) =>
+      Article.aggregate([
+        { $match: buildMatch(sinceMs) },
         { $sort: { publishedAt: -1 } },
-        { $skip: skip },
-        { $limit: 5 },
+        { $limit: candidateLimit },
         {
           $lookup: {
             from: 'sources',
             localField: 'sourceId',
             foreignField: '_id',
             as: 'source',
-            pipeline: [{ $match: { status: { $ne: 'blocked' } } }]
-          }
+            pipeline: [
+              { $match: { status: { $ne: 'blocked' } } },
+              { $project: { groupName: 1, name: 1, icon: 1 } },
+            ],
+          },
         },
-        { $match: { 'source.0': { $exists: true } } }
+        { $match: { 'source.0': { $exists: true } } },
+        {
+          $addFields: {
+            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+            sourceName: { $arrayElemAt: ['$source.name', 0] },
+            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            content: 1,
+            contentFormat: 1,
+            url: 1,
+            category: 1,
+            publishedAt: 1,
+            image: 1,
+            viewCount: 1,
+            likes: 1,
+            dislikes: 1,
+            likedBy: 1,
+            dislikedBy: 1,
+            sourceId: 1,
+            sourceName: 1,
+            sourceIcon: 1,
+            sourceGroupName: 1,
+            language: 1,
+            ...(includeEmbedding ? { embedding_pca: 1 } : {}),
+          },
+        },
       ]);
 
-      console.log(`🔍 Articles in "${category}" without user exclusions: ${rawWithoutExclusions.length}`);
-
-      return res.json([]);
+    // Widen progressively for sparse category+language combinations
+    // (e.g. Farsi/Tech can have <10 articles in 24h).
+    const queryStart = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const startWindow = page === 1 ? 24 * HOUR : 48 * HOUR;
+    const windows = [startWindow, 72 * HOUR, 7 * DAY, 30 * DAY];
+    const minCandidates = limit + (page - 1) * limit;
+    let candidates = [];
+    let usedWindowMs = windows[0];
+    for (const sinceMs of windows) {
+      candidates = await runCandidateQuery(sinceMs);
+      usedWindowMs = sinceMs;
+      if (candidates.length >= minCandidates) break;
     }
+    const dbTime = Date.now() - queryStart;
 
-    // Apply personalized ranking based on user preferences
-    const freshRatio = page === 1 ? 0.75 : page === 2 ? 0.60 : page === 3 ? 0.50 : 0.40;
-
-    const enhancedArticles = raw
-      .map((article) => {
-        const engagement = calculateEngagementScore(article);
-        const recency = basicRecencyScore(article.publishedAt);
-
-        // Simple preference bonus if user has liked similar sources or recent articles
-        let preferenceBonus = 0;
-        if (likedArticles.length > 0) {
-          // Small bonus for articles from sources user has liked before
-          preferenceBonus = 0.1;
-        }
-
-        const baseScore = engagement + preferenceBonus;
-        const finalScore = freshRatio * recency + (1 - freshRatio) * baseScore;
-
-        return {
-          ...article,
-          fetchId: new mongoose.Types.ObjectId().toString(),
-          engagementScore: engagement,
-          finalScore,
-        };
-      })
-      .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
-      .slice(0, limit); // Take only the requested limit
-
-    // Cache the results
-    try {
-      await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300); // 5 minutes
-      // userId here is mongoUser._id (Mongo ObjectId); track under both
-      // that and supabase_id so the react path can clear with either.
-      await trackUserCacheKey(userId, cacheKey);
-      if (req.mongoUser?.supabase_id) {
-        await trackUserCacheKey(req.mongoUser.supabase_id, cacheKey);
+    let scored;
+    if (ctx?.hasSignal) {
+      scored = scorePersonalizedCandidates(candidates, ctx, { page });
+    } else {
+      for (const a of candidates) {
+        a._score =
+          PERS_W.recency * basicRecencyScore(a.publishedAt) +
+          PERS_W.engagement *
+            Math.tanh(
+              ((a.viewCount || 0) * viewsWeight +
+                (a.likes || 0) * likesWeight +
+                (a.dislikes || 0) * dislikesWeight) /
+                80
+            );
       }
-    } catch (err) {
-      console.error('⚠️ Redis set error (safe to ignore):', err.message);
+      scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    const duration = Date.now() - startTime;
-    console.log(`✅ Personalized category articles fetched in ${duration}ms - ${enhancedArticles.length} articles`);
+    const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+    const skip = (page - 1) * limit;
+    const pageSlice = interleaved.slice(skip, skip + limit);
 
-    res.json(enhancedArticles);
+    const finalArticles = sanitizeForResponse(pageSlice, {
+      isCategory: true,
+      category,
+      fetchedAt: new Date(),
+      isRefreshed: forceRefresh,
+      page,
+      isPersonalized: !!ctx?.hasSignal,
+    });
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600); // 10 min
+      // Cache key uses supabase_id, so track under that; also track under
+      // Mongo _id for any callers that still clear by Mongo id.
+      await trackUserCacheKey(supabaseId, cacheKey);
+      if (mongoId) await trackUserCacheKey(mongoId.toString(), cacheKey);
+    } catch (err) {
+      console.error('⚠️ Redis set error:', err.message);
+    }
+
+    const totalTime = Date.now() - startTime;
+    const usedWindowHours = Math.round(usedWindowMs / (60 * 60 * 1000));
+    console.log(
+      `🏷️ pers-cat-v2: cat="${category}" page ${page}, ${finalArticles.length} articles in ${totalTime}ms ` +
+      `(db ${dbTime}ms, candidates ${candidates.length}, window ${usedWindowHours}h, lang=${language}, ` +
+      `signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+    );
+
+    res.setHeader('X-Performance-Time', totalTime);
+    res.setHeader('X-DB-Query-Time', dbTime);
+    res.setHeader('X-Page', page);
+    res.setHeader(
+      'X-Personalized',
+      ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none'
+    );
+    res.setHeader('X-Candidates', candidates.length);
+    res.setHeader('X-Window-Hours', usedWindowHours);
+
+    return res.json(finalArticles);
   } catch (error) {
-    console.error('❌ Error fetching personalized category articles:', error);
-    res.status(500).json({ error: 'Error fetching personalized category articles', message: error.message });
+    const errorTime = Date.now() - startTime;
+    console.error(`❌ pers-cat-v2 error in ${errorTime}ms:`, error);
+
+    // Fallback: best-effort plain category articles (recency-only) so the
+    // category chip never returns 500 to the user.
+    try {
+      const page = Math.max(1, parseInt(req.query.page) || 1);
+      const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+      const language = (req.query.language || req.mongoUser?.language || 'english').toLowerCase();
+      const category = req.query.category;
+      const skip = (page - 1) * limit;
+      const fallback = await Article.find({
+        language,
+        category,
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+      })
+        .select(
+          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+        )
+        .sort({ publishedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+      return res.json(fallback);
+    } catch (fallbackError) {
+      console.error('❌ Category fallback also failed:', fallbackError);
+      return res
+        .status(500)
+        .json({ error: 'Error fetching personalized category articles', message: error.message });
+    }
   }
 });
 
