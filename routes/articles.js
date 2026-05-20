@@ -428,161 +428,6 @@ const Source = require('../models/Source');
 
 /** ---- Routes ---- **/
 
-/**
- * GET: Following Feed
- * Returns articles from sources the user is following (by groupName)
- */
-articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
-  const startTime = Date.now();
-
-  try {
-    const userId = req.mongoUser.supabase_id;
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
-    const userLanguagePref = req.mongoUser.language || 'English';
-    const language = req.query.language || userLanguagePref.toLowerCase();
-
-    console.log(`📰 [FOLLOWING] Fetching following feed for user ${userId}, page ${page}, limit ${limit}, lang: ${language}`);
-
-    // Get user's following sources (groupName strings)
-    const user = await User.findOne({ supabase_id: userId }).select('following_sources').lean();
-    const followingGroups = user?.following_sources || [];
-
-    console.log(`📰 [FOLLOWING] User is following ${followingGroups.length} source groups:`, followingGroups);
-
-    if (followingGroups.length === 0) {
-      console.log(`📭 [FOLLOWING] User has no followed sources`);
-      return res.json({
-        articles: [],
-        hasMore: false,
-        message: 'You are not following any sources yet. Follow sources to see their articles here.',
-        totalFollowed: 0
-      });
-    }
-
-    // Find all source IDs that belong to the followed groups
-    const followedSources = await Source.find({
-      groupName: { $in: followingGroups },
-      status: { $ne: 'blocked' }
-    }).select('_id groupName').lean();
-
-    const followedSourceIds = followedSources.map(s => s._id);
-    console.log(`📰 [FOLLOWING] Found ${followedSourceIds.length} source IDs for ${followingGroups.length} groups`);
-
-    if (followedSourceIds.length === 0) {
-      console.log(`📭 [FOLLOWING] No active sources found for followed groups`);
-      return res.json({
-        articles: [],
-        hasMore: false,
-        message: 'The sources you follow have no active articles.',
-        totalFollowed: followingGroups.length
-      });
-    }
-
-    // Cache check
-    const cacheKey = `following_${userId}_${language}_${page}_${limit}`;
-    let cached;
-    try {
-      cached = await redis.get(cacheKey);
-      if (cached) {
-        console.log(`⚡ [FOLLOWING] Cache hit in ${Date.now() - startTime}ms`);
-        return res.json(JSON.parse(cached));
-      }
-    } catch (err) {
-      console.warn('⚠️ Redis get error:', err.message);
-    }
-
-    // Fetch articles from followed sources
-    const skip = (page - 1) * limit;
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
-    const articles = await Article.aggregate([
-      {
-        $match: {
-          sourceId: { $in: followedSourceIds },
-          language: language,
-          publishedAt: { $gte: twentyFourHoursAgo }
-        }
-      },
-      {
-        $sort: { publishedAt: -1 }
-      },
-      {
-        $skip: skip
-      },
-      {
-        $limit: limit + 1 // Fetch one extra to check if there are more
-      },
-      {
-        $lookup: {
-          from: 'sources',
-          localField: 'sourceId',
-          foreignField: '_id',
-          as: 'sourceData'
-        }
-      },
-      {
-        $addFields: {
-          sourceName: { $arrayElemAt: ['$sourceData.name', 0] },
-          sourceIcon: { $arrayElemAt: ['$sourceData.icon', 0] },
-          sourceGroupName: { $arrayElemAt: ['$sourceData.groupName', 0] },
-          isFollowing: { $literal: true }
-        }
-      },
-      {
-        $project: {
-          title: 1,
-          content: 1,
-          contentFormat: 1,
-          url: 1,
-          category: 1,
-          publishedAt: 1,
-          image: 1,
-          viewCount: 1,
-          likes: 1,
-          dislikes: 1,
-          likedBy: 1,
-          dislikedBy: 1,
-          sourceId: 1,
-          sourceName: 1,
-          sourceIcon: 1,
-          sourceGroupName: 1,
-          language: 1, // Include language for RTL support
-          isFollowing: 1
-        }
-      }
-    ]);
-
-    // Check if there are more articles
-    const hasMore = articles.length > limit;
-    const finalArticles = hasMore ? articles.slice(0, limit) : articles;
-
-    console.log(`✅ [FOLLOWING] Returning ${finalArticles.length} articles (hasMore: ${hasMore}) in ${Date.now() - startTime}ms`);
-
-    const result = {
-      articles: finalArticles,
-      hasMore,
-      page,
-      totalFollowed: followingGroups.length
-    };
-
-    // Cache for 5 minutes
-    try {
-      await redis.set(cacheKey, JSON.stringify(result), 'EX', 300);
-    } catch (err) {
-      console.warn('⚠️ Redis set error:', err.message);
-    }
-
-    res.json(result);
-
-  } catch (error) {
-    console.error(`❌ [FOLLOWING] Error in ${Date.now() - startTime}ms:`, error);
-    res.status(500).json({
-      error: 'Failed to fetch following feed',
-      message: error.message
-    });
-  }
-});
 
 // GET: Quick performance test endpoint
 articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
@@ -1040,8 +885,9 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
 
     console.log(`🔍 Found ${followedSourceIds.length} source IDs for followed groups`);
 
-    // Step 3: Check cache
-    const cacheKey = `articles_following_${userId}_${language}_${page}_${limit}_${Math.floor(Date.now() / (15 * 60 * 1000))}`;
+    // Step 3: Check cache (v2 key bump — old `articles_following_*` entries
+    // may have a 24h-only window and would serve stale empty results)
+    const cacheKey = `articles_following_v2_${userId}_${language}_${page}_${limit}_${Math.floor(Date.now() / (15 * 60 * 1000))}`;
 
     let cached;
     if (!forceRefresh) {
@@ -1057,15 +903,21 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
       }
     }
 
-    // Step 4: Query articles from followed sources.
-    // Progressively widen the time window for low-volume languages (e.g. Farsi)
-    // so a user following Farsi sources doesn't see an empty/near-empty feed.
+    // Step 4: Query articles from followed sources with progressive window
+    // widening. Dense followers (mainstream English sources) succeed at 24h;
+    // sparse followers (a couple of Farsi/niche sources) widen to 7d / 30d
+    // so the feed isn't empty. Each widening pass is cheap because the
+    // $match is narrowly scoped by followedSourceIds.
     const queryStart = Date.now();
     const skip = (page - 1) * limit;
     const HOUR = 60 * 60 * 1000;
     const DAY = 24 * HOUR;
-    const windows = [72 * HOUR, 7 * DAY, 30 * DAY];
-    const minNeeded = skip + Math.min(limit + 1, 5);
+    const windows = [
+      { ms: 24 * HOUR, label: '24h' },
+      { ms: 72 * HOUR, label: '3d' },
+      { ms: 7 * DAY, label: '7d' },
+      { ms: 30 * DAY, label: '30d' },
+    ];
 
     const runFollowingQuery = (sinceMs) => Article.aggregate([
       {
@@ -1098,18 +950,25 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
           dislikes: 1,
           likedBy: 1,
           dislikedBy: 1,
-          sourceId: 1
+          sourceId: 1,
+          language: 1 // needed for RTL rendering on Arabic/Farsi
         }
       }
     ]);
 
     let articles = [];
-    let usedWindowMs = windows[0];
-    for (const sinceMs of windows) {
-      articles = await runFollowingQuery(sinceMs);
-      usedWindowMs = sinceMs;
-      if (skip + articles.length >= minNeeded) break;
+    let usedWindow = windows[0];
+    for (const w of windows) {
+      articles = await runFollowingQuery(w.ms);
+      usedWindow = w;
+      // Got a full page? stop — wider windows would just re-fetch the same
+      // most-recent articles followed by older ones the user doesn't need.
+      if (articles.length >= limit + 1) break;
+      // Deep pagination edge case: if we're past page 1 and even 7d returns
+      // nothing, there genuinely isn't more — don't waste a 30d query.
+      if (page > 1 && articles.length === 0 && w.ms >= 7 * DAY) break;
     }
+    const usedWindowMs = usedWindow.ms;
 
     const usedWindowHours = Math.round(usedWindowMs / HOUR);
     console.log(`⚡ Following feed DB query completed in ${Date.now() - queryStart}ms - found ${articles.length} articles (window ${usedWindowHours}h, lang=${language})`);
@@ -1140,6 +999,7 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
     // Step 6: Cache the result
     try {
       await redis.set(cacheKey, JSON.stringify(result), 'EX', 300); // 5 min cache for following feed
+      await trackUserCacheKey(userId, cacheKey);
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
