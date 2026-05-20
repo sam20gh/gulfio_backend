@@ -27,15 +27,33 @@ const likesWeight = 3.0;
 const dislikesWeight = -2.0;
 const recencyWeight = 4.0;
 
+/**
+ * Time constant for the recency decay. exp(-hours/τ).
+ *
+ *   τ=72  →  24h: 0.72   48h: 0.51   72h: 0.37   7d: 0.10   30d: 4e-5
+ *
+ * Picked to match the brand voice ("Bold · Fast · Energetic"): fresher
+ * content scores meaningfully higher than 24h-old, and 7-day content is
+ * a faint signal rather than the 0.4 the old piecewise function gave it.
+ *
+ * Single tunable knob — adjust here to re-weight freshness without
+ * touching PERS_W or any caller.
+ */
+const RECENCY_TAU_HOURS = 72;
+
+/**
+ * Recency score in [0, 1] using continuous exponential decay.
+ *
+ * Replaces a piecewise step function that had visible cliffs at 24/48/72h
+ * (an article scored 1.0 at 23h and 0.8 at 25h). Smooth decay means a
+ * 2-hour-old breaking story now beats a 22-hour-old one on the recency
+ * term alone — useful for breaking news.
+ */
 function basicRecencyScore(publishedAt) {
   const now = Date.now();
   const t = new Date(publishedAt || Date.now()).getTime();
-  const hours = (now - t) / (1000 * 60 * 60);
-  if (hours <= 24) return 1.0;
-  if (hours <= 48) return 0.8;
-  if (hours <= 72) return 0.6;
-  if (hours <= 168) return 0.4; // 7 days
-  return Math.max(0, 1 - hours / (24 * 30)); // taper over ~30 days
+  const hours = Math.max(0, (now - t) / (1000 * 60 * 60));
+  return Math.exp(-hours / RECENCY_TAU_HOURS);
 }
 
 function calculateEngagementScore(article) {
