@@ -78,34 +78,83 @@ function cosineSimilarity(a, b) {
   return magA && magB ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
 }
 
-/** Clear all article caches (used after reacts) */
+/**
+ * Per-user cache index. When a personalized endpoint SETs a key, it also
+ * SADDs the key into `user_cache_keys:{userId}` so we can purge that user's
+ * keys without a global SCAN. Set itself carries a 1h TTL so stale members
+ * don't accumulate if a clear is missed.
+ */
+const USER_CACHE_INDEX_TTL = 60 * 60; // 1 hour
+
+function userCacheIndexKey(userId) {
+  return `user_cache_keys:${userId}`;
+}
+
+async function trackUserCacheKey(userId, cacheKey) {
+  if (!userId || !cacheKey) return;
+  try {
+    await redis.sadd(userCacheIndexKey(userId), cacheKey);
+    await redis.expire(userCacheIndexKey(userId), USER_CACHE_INDEX_TTL);
+  } catch (err) {
+    // Non-fatal: cache tracking failure just falls back to TTL-based expiry.
+    console.warn('⚠️ trackUserCacheKey error:', err.message);
+  }
+}
+
+/**
+ * Clear the cache entries belonging to a single user.
+ *
+ * Safe to call on every like/dislike: O(N) over THIS user's keys, not the
+ * full keyspace. Combined with `stateHash` (which already rotates the cache
+ * key on every action), this is belt-and-suspenders — the new request will
+ * generate a fresh key regardless.
+ */
+async function clearUserArticleCaches(userId) {
+  if (!userId) return;
+  try {
+    const idxKey = userCacheIndexKey(userId);
+    const keys = await redis.smembers(idxKey);
+    if (keys && keys.length > 0) {
+      await redis.del(...keys, idxKey);
+      console.log(`🧹 Cleared ${keys.length} cache keys for user ${userId}`);
+    } else {
+      // No tracked keys; nothing to do.
+    }
+  } catch (error) {
+    console.error('⚠️ Error clearing user article caches:', error.message);
+    // Don't throw - cache clearing failure shouldn't break the like/dislike.
+  }
+}
+
+/**
+ * Clear ALL article caches across every user.
+ *
+ * Uses `KEYS *` so it's expensive — reserve for admin actions that
+ * legitimately affect every user's feed: breaking news (mark/unmark),
+ * find-replace migrations, manual /cache/clear. Do NOT call from the
+ * per-user like/dislike hot path — use `clearUserArticleCaches(userId)`
+ * there instead.
+ */
 async function clearArticlesCache() {
   try {
-    // Clear all article-related caches
     const articleKeys = await redis.keys('articles_*');
     const servedKeys = await redis.keys('served_personalized_*');
-
-    // Also specifically target the main articles endpoint cache that QuickStartContent uses
     const pageKeys = await redis.keys('articles_page_*');
 
     const allKeys = [...articleKeys, ...servedKeys, ...pageKeys];
 
-    console.log('🔍 Cache clear debug - Article keys found:', articleKeys.slice(0, 5), articleKeys.length > 5 ? `... and ${articleKeys.length - 5} more` : '');
-    console.log('🔍 Cache clear debug - Page keys found:', pageKeys.slice(0, 3), pageKeys.length > 3 ? `... and ${pageKeys.length - 3} more` : '');
-    console.log('🔍 Cache clear debug - Served keys found:', servedKeys.slice(0, 3), servedKeys.length > 3 ? `... and ${servedKeys.length - 3} more` : '');
-
     if (allKeys.length > 0) {
-      await redis.del(allKeys);
-      console.log('🧹 Cleared article caches:', allKeys.length, 'keys');
-      console.log('🧹 Article keys cleared:', articleKeys.length);
-      console.log('🧹 Page keys cleared:', pageKeys.length);
-      console.log('🧹 Served keys cleared:', servedKeys.length);
+      await redis.del(...allKeys);
+      console.log(
+        `🧹 [GLOBAL] Cleared ${allKeys.length} article cache keys ` +
+        `(articles: ${articleKeys.length}, page: ${pageKeys.length}, served: ${servedKeys.length})`
+      );
     } else {
-      console.log('🧹 No article caches to clear');
+      console.log('🧹 [GLOBAL] No article caches to clear');
     }
   } catch (error) {
-    console.error('⚠️ Error clearing article caches:', error.message);
-    // Don't throw - cache clearing failure shouldn't break the like/dislike
+    console.error('⚠️ Error clearing global article caches:', error.message);
+    // Don't throw - cache clearing failure shouldn't break the caller.
   }
 }
 
@@ -876,6 +925,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
 
     try {
       await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600); // 10 min
+      await trackUserCacheKey(userId, cacheKey);
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
@@ -1414,6 +1464,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
 
     try {
       await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600);
+      await trackUserCacheKey(userId, cacheKey);
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
@@ -2479,6 +2530,12 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     // Cache the results
     try {
       await redis.set(cacheKey, JSON.stringify(enhancedArticles), 'EX', 300); // 5 minutes
+      // userId here is mongoUser._id (Mongo ObjectId); track under both
+      // that and supabase_id so the react path can clear with either.
+      await trackUserCacheKey(userId, cacheKey);
+      if (req.mongoUser?.supabase_id) {
+        await trackUserCacheKey(req.mongoUser.supabase_id, cacheKey);
+      }
     } catch (err) {
       console.error('⚠️ Redis set error (safe to ignore):', err.message);
     }
@@ -2933,8 +2990,14 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     // Perform expensive operations asynchronously after responding
     setImmediate(async () => {
       try {
-        // Clear cache asynchronously
-        await clearArticlesCache();
+        // Clear only THIS user's cache entries (not a global KEYS scan).
+        // The stateHash in the cache key already rotates on every action,
+        // so the next request gets a fresh key regardless — this is
+        // belt-and-suspenders for users who refresh within 10 min.
+        // Track under both identities since personalized-light/fast key by
+        // supabase_id and personalized-category keys by Mongo _id.
+        await clearUserArticleCaches(userId);
+        await clearUserArticleCaches(mongoUser._id?.toString());
 
         // Recompute user embedding asynchronously (this is expensive)
         await updateUserProfileEmbedding(mongoUser._id);
