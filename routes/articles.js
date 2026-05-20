@@ -406,10 +406,105 @@ async function getCategoryEngagementStats(language) {
 }
 
 /**
+ * Per-user context cache (P2-1).
+ *
+ * loadUserPersonalizationContext used to run on every personalized request:
+ * one Mongo findOne + one UserActivity aggregation. With three handlers
+ * each loading ctx (personalized-light, fast, category), an active user
+ * scrolling + tapping a chip would trigger 3+ ctx loads in 5 seconds.
+ *
+ * Cache the entire ctx in Redis for CTX_CACHE_TTL seconds. Sets and Maps
+ * don't JSON-serialize, so we round-trip them as arrays and rebuild on
+ * read.
+ *
+ * Invalidation: tracked via trackUserCacheKey so the existing
+ * clearUserArticleCaches(userId) call in the /react hot path purges it
+ * along with the article caches. Other state mutations (follow, save,
+ * language change) rely on the 5-min TTL — acceptable lag.
+ */
+const CTX_CACHE_TTL = 5 * 60; // 5 min
+
+function ctxCacheKey(userId) {
+  return `user_ctx_v1_${userId}`;
+}
+
+function serializeCtx(ctx) {
+  if (!ctx) return null;
+  return {
+    userId: ctx.userId,
+    preferredCategories: Array.from(ctx.preferredCategories),
+    preferredSourceIds: Array.from(ctx.preferredSourceIds),
+    dislikedCategories: Array.from(ctx.dislikedCategories),
+    likedIds: Array.from(ctx.likedIds),
+    likedIdsOrdered: ctx.likedIdsOrdered,
+    dislikedIds: Array.from(ctx.dislikedIds),
+    savedIds: Array.from(ctx.savedIds),
+    viewedIds: Array.from(ctx.viewedIds),
+    viewReadFractions: Array.from(ctx.viewReadFractions.entries()),
+    followingSourceGroups: Array.from(ctx.followingSourceGroups),
+    embedding: ctx.embedding,
+    language: ctx.language,
+    hasSignal: ctx.hasSignal,
+  };
+}
+
+function deserializeCtx(plain) {
+  if (!plain) return null;
+  return {
+    userId: plain.userId,
+    preferredCategories: new Set(plain.preferredCategories || []),
+    preferredSourceIds: new Set(plain.preferredSourceIds || []),
+    dislikedCategories: new Set(plain.dislikedCategories || []),
+    likedIds: new Set(plain.likedIds || []),
+    likedIdsOrdered: plain.likedIdsOrdered || [],
+    dislikedIds: new Set(plain.dislikedIds || []),
+    savedIds: new Set(plain.savedIds || []),
+    viewedIds: new Set(plain.viewedIds || []),
+    viewReadFractions: new Map(plain.viewReadFractions || []),
+    followingSourceGroups: new Set(plain.followingSourceGroups || []),
+    embedding: plain.embedding || null,
+    language: plain.language,
+    hasSignal: !!plain.hasSignal,
+  };
+}
+
+/**
  * Load all personalization signals for a user in one Mongo query.
  * Returns null if user not found. Sets are used for O(1) exclusion/lookup.
+ *
+ * Cached in Redis for 5 min (P2-1). Pass `forceFresh: true` to bypass.
  */
-async function loadUserPersonalizationContext(userId) {
+async function loadUserPersonalizationContext(userId, { forceFresh = false } = {}) {
+  if (!userId) return null;
+
+  const cacheKey = ctxCacheKey(userId);
+
+  if (!forceFresh) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return deserializeCtx(JSON.parse(cached));
+      }
+    } catch (err) {
+      // Non-fatal: fall through and compute fresh.
+      console.warn(`⚠️ ctx cache GET error for ${userId}: ${err.message}`);
+    }
+  }
+
+  const ctx = await computeUserPersonalizationContext(userId);
+  if (ctx) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(serializeCtx(ctx)), 'EX', CTX_CACHE_TTL);
+      await trackUserCacheKey(userId, cacheKey);
+    } catch (err) {
+      console.warn(`⚠️ ctx cache SET error for ${userId}: ${err.message}`);
+    }
+  }
+  return ctx;
+}
+
+/** Inner: the actual Mongo work, unwrapped. */
+async function computeUserPersonalizationContext(userId) {
   const user = await User.findOne({ supabase_id: userId })
     .select(
       'preferred_categories preferred_sources disliked_categories ' +
