@@ -182,6 +182,7 @@ async function updateUserProfileEmbedding(userId) {
                         embedding: [],
                         embedding_pca: [],
                         disliked_categories: Array.from(dislikedCategories),
+                        implicit_preferred_categories: [],
                         updatedAt: new Date()
                     }
                 }
@@ -217,6 +218,32 @@ async function updateUserProfileEmbedding(userId) {
         }
 
         console.log(`📚 Using ${articles.length} articles + ${reels.length} reels (${allContent.length} total) for embedding generation`);
+
+        // Derive implicit preferred categories from weighted action history (P1-3).
+        // We've already paid for the content fetch above — reuse it. Aggregate
+        // each content's weight onto its category, then take top-3 by total.
+        // Exclude categories the user has explicitly disliked.
+        const categoryWeights = new Map();
+        for (const content of allContent) {
+            if (!content.category) continue;
+            if (dislikedCategories.has(content.category)) continue;
+            const weight = activityMap.get(content._id.toString()) || 0;
+            if (weight <= 0) continue; // skip dislikes-only contributions
+            categoryWeights.set(
+                content.category,
+                (categoryWeights.get(content.category) || 0) + weight
+            );
+        }
+        const implicitPreferred = Array.from(categoryWeights.entries())
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 3)
+            .map(([cat]) => cat);
+        if (implicitPreferred.length > 0) {
+            console.log(
+                `🏷️  Implicit preferred categories for ${user.email || userId}: ` +
+                implicitPreferred.join(', ')
+            );
+        }
 
         // Create weighted text based on activities (articles + reels)
         let weightedTexts = [];
@@ -260,7 +287,7 @@ async function updateUserProfileEmbedding(userId) {
             console.error(`❌ PCA conversion error for user ${user.email || userId}:`, err.message);
         }
 
-        // Update user with both embeddings
+        // Update user with both embeddings + implicit preferred categories
         await User.updateOne(
             { _id: user._id },
             {
@@ -268,6 +295,7 @@ async function updateUserProfileEmbedding(userId) {
                     embedding: embedding,
                     embedding_pca: embedding_pca || [],
                     disliked_categories: Array.from(dislikedCategories),
+                    implicit_preferred_categories: implicitPreferred,
                     updatedAt: new Date()
                 }
             }

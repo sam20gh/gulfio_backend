@@ -324,6 +324,7 @@ async function loadUserPersonalizationContext(userId) {
   const user = await User.findOne({ supabase_id: userId })
     .select(
       'preferred_categories preferred_sources disliked_categories ' +
+      'implicit_preferred_categories ' +
       'liked_articles disliked_articles saved_articles viewed_articles ' +
       'following_sources embedding_pca language'
     )
@@ -333,7 +334,13 @@ async function loadUserPersonalizationContext(userId) {
   const toIdStringSet = (arr) =>
     new Set((arr || []).map((id) => (id && id.toString ? id.toString() : id)).filter(Boolean));
 
-  const preferredCategories = new Set(user.preferred_categories || []);
+  // Merge explicit + implicit preferred categories (P1-3).
+  // Explicit are user-declared; implicit are derived nightly from
+  // 30d weighted action history. Scorer treats both equally.
+  const preferredCategories = new Set([
+    ...(user.preferred_categories || []),
+    ...(user.implicit_preferred_categories || []),
+  ]);
   const preferredSourceIds = new Set(
     (user.preferred_sources || []).map((id) => (id && id.toString ? id.toString() : id))
   );

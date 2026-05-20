@@ -45,6 +45,11 @@ const userSchema = new mongoose.Schema({
         default: [],
     },
     disliked_categories: [{ type: String }],
+    // Top categories inferred from behavior (P1-3). Written by the daily
+    // cron (utils/userEmbedding.js) from 30d weighted action history.
+    // Merged with explicit `preferred_categories` at scoring time so both
+    // signals contribute to categoryAffinity.
+    implicit_preferred_categories: [{ type: String }],
     city: {
         type: String,
         enum: ['Dubai', 'Abu Dhabi', 'Jeddah', 'Riyadh', 'Doha', 'Kuwait', 'Manamah', 'Tehran', 'Baghdad', 'Amman'],
