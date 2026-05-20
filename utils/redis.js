@@ -47,11 +47,16 @@ module.exports = {
         }
     },
     set: async (key, value, ...args) => {
-        if (!redis) return;
+        if (!redis) return null;
         try {
-            await redis.set(key, value, ...args);
+            // Return the result so callers can detect NX-lock acquisition
+            // (`SET key val EX 30 NX` returns 'OK' on success or null when the
+            // key already exists). Existing callers that ignore the return are
+            // unaffected.
+            return await redis.set(key, value, ...args);
         } catch (error) {
             console.warn('Redis SET error:', error.message);
+            return null;
         }
     },
     del: async (...keys) => {

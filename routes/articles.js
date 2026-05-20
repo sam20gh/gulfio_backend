@@ -389,6 +389,185 @@ function sanitizeForResponse(articles, extra = {}) {
 }
 
 /**
+ * Compute personalized-light articles for a user. Extracted so we can call it
+ * synchronously on cold miss and from the SWR background regen path with the
+ * same logic.
+ *
+ * @returns {Promise<{articles: object[], usedWindowMs: number, candidateCount: number, dbTime: number, includeEmbedding: boolean}>}
+ */
+async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) {
+  const buildMatch = (sinceMs) => {
+    const match = {
+      language,
+      publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+    };
+    if (ctx) {
+      if (ctx.dislikedIds.size > 0) {
+        match._id = {
+          $nin: [...ctx.dislikedIds]
+            .slice(0, 500)
+            .map((id) => new mongoose.Types.ObjectId(id)),
+        };
+      }
+      if (ctx.dislikedCategories.size > 0) {
+        match.category = { $nin: [...ctx.dislikedCategories] };
+      }
+    }
+    return match;
+  };
+
+  const candidateLimit = Math.min(limit * 12, 400);
+  const includeEmbedding = !!ctx?.embedding;
+
+  const runCandidateQuery = (sinceMs) =>
+    Article.aggregate([
+      { $match: buildMatch(sinceMs) },
+      { $sort: { publishedAt: -1 } },
+      { $limit: candidateLimit },
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } },
+            { $project: { groupName: 1, name: 1, icon: 1 } },
+          ],
+        },
+      },
+      { $match: { 'source.0': { $exists: true } } },
+      {
+        $addFields: {
+          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+        },
+      },
+      {
+        $project: {
+          title: 1,
+          content: 1,
+          contentFormat: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          likedBy: 1,
+          dislikedBy: 1,
+          sourceId: 1,
+          sourceName: 1,
+          sourceIcon: 1,
+          sourceGroupName: 1,
+          language: 1,
+          ...(includeEmbedding ? { embedding_pca: 1 } : {}),
+        },
+      },
+    ]);
+
+  const queryStart = Date.now();
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const windows = [24 * HOUR, 48 * HOUR, 7 * DAY, 30 * DAY];
+  let candidates = [];
+  let usedWindowMs = windows[0];
+  for (const sinceMs of windows) {
+    candidates = await runCandidateQuery(sinceMs);
+    usedWindowMs = sinceMs;
+    if (candidates.length >= limit * 2) break;
+  }
+  const dbTime = Date.now() - queryStart;
+
+  let scored;
+  if (ctx?.hasSignal) {
+    scored = scorePersonalizedCandidates(candidates, ctx, { page: 1 });
+  } else {
+    for (const a of candidates) {
+      a._score =
+        PERS_W.recency * basicRecencyScore(a.publishedAt) +
+        PERS_W.engagement *
+          Math.tanh(
+            ((a.viewCount || 0) * viewsWeight +
+              (a.likes || 0) * likesWeight +
+              (a.dislikes || 0) * dislikesWeight) /
+              80
+          );
+    }
+    scored = candidates.sort((x, y) => y._score - x._score);
+  }
+
+  const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+  const diversified = interleaved.slice(0, limit);
+
+  const articles = sanitizeForResponse(diversified, {
+    isLight: true,
+    fetchedAt: new Date(),
+    isRefreshed: forceRefresh,
+    isPersonalized: !!ctx?.hasSignal,
+  });
+
+  return { articles, usedWindowMs, candidateCount: candidates.length, dbTime, includeEmbedding };
+}
+
+/**
+ * Two-tier cache + stale-while-revalidate for personalized-light.
+ *
+ * The fresh key carries stateHash + 10-min slot — it auto-rotates on
+ * activity. The stale key has neither — it's a "latest known result" that
+ * survives slot rotations and user actions. When the fresh key misses but
+ * stale is warm, we return stale instantly and regenerate in the
+ * background. A NX-lock prevents two simultaneous misses from both
+ * regenerating.
+ */
+const SWR_STALE_TTL = 60 * 60; // 1h - stale tier survives across slots/actions
+const SWR_FRESH_TTL = 600;     // 10min - fresh tier (current behaviour)
+const SWR_LOCK_TTL = 30;       // 30s - max compute time
+
+function lightStaleKey(userId, language, limit) {
+  return `articles_pers_v2_stale_${userId}_${language}_${limit}`;
+}
+
+function lightLockKey(userId, language, limit) {
+  return `articles_pers_v2_lock_${userId}_${language}_${limit}`;
+}
+
+/**
+ * Acquire a distributed lock; returns true if we got it.
+ * Spawn a background regeneration that writes to fresh + stale keys.
+ */
+function spawnBackgroundRegen({ freshKey, staleKey, lockKey, userId, params }) {
+  setImmediate(async () => {
+    const lockStart = Date.now();
+    try {
+      const acquired = await redis.set(lockKey, '1', 'EX', SWR_LOCK_TTL, 'NX');
+      if (acquired !== 'OK') {
+        // Another instance is already regenerating; nothing to do.
+        return;
+      }
+      try {
+        const { articles } = await computePersonalizedLight(params);
+        await redis.set(freshKey, JSON.stringify(articles), 'EX', SWR_FRESH_TTL);
+        await trackUserCacheKey(userId, freshKey);
+        await redis.set(staleKey, JSON.stringify(articles), 'EX', SWR_STALE_TTL);
+        await trackUserCacheKey(userId, staleKey);
+        console.log(
+          `♻️  pers-v2 light SWR regen done for ${userId} in ${Date.now() - lockStart}ms`
+        );
+      } finally {
+        await redis.del(lockKey);
+      }
+    } catch (err) {
+      // Non-fatal: stale already served, regen failure just means next
+      // request also misses fresh. Log and move on.
+      console.warn(`⚠️ SWR background regen failed for ${userId}:`, err.message);
+    }
+  });
+}
+
+/**
  * OPTIMIZED COUNT CACHING
  * Pre-warm common article counts in background to avoid expensive countDocuments() calls
  */
@@ -625,152 +804,60 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const ctx = await loadUserPersonalizationContext(userId);
     if (ctx) ctx.language = language;
 
-    // Cache key: includes user state hash so refresh after activity returns fresh content.
-    // 10-minute slot keeps content fresh without thrashing the cache.
+    // Fresh tier: rotates on user activity (stateHash) and every 10 min.
+    // Stale tier: same content, but no stateHash/slot — survives across
+    // rotations so we can serve last-known-result on cold miss and
+    // regenerate in the background.
     const stateHash = userStateHash(ctx);
     const tenMinSlot = Math.floor(Date.now() / (10 * 60 * 1000));
-    const cacheKey = `articles_pers_v2_${userId}_${language}_${limit}_${stateHash}_${tenMinSlot}`;
+    const freshKey = `articles_pers_v2_${userId}_${language}_${limit}_${stateHash}_${tenMinSlot}`;
+    const staleKey = lightStaleKey(userId, language, limit);
+    const lockKey = lightLockKey(userId, language, limit);
 
     if (!forceRefresh) {
       try {
-        const cached = await redis.get(cacheKey);
+        const cached = await redis.get(freshKey);
         if (cached) {
-          console.log(`⚡ pers-v2 light cache hit in ${Date.now() - startTime}ms`);
+          console.log(`⚡ pers-v2 light fresh cache hit in ${Date.now() - startTime}ms`);
+          res.setHeader('X-Cache', 'fresh');
           return res.json(JSON.parse(cached));
         }
       } catch (err) {
-        console.error('⚠️ Redis get error:', err.message);
+        console.error('⚠️ Redis get error (fresh):', err.message);
       }
-    }
 
-    // Build candidate filter
-    // - HARD exclude disliked articles + disliked categories (explicit negative signal)
-    // - Viewed articles are NOT excluded here — they're demoted in scoring instead,
-    //   so the feed never starves for an active user with a long view history.
-    const buildMatch = (sinceMs) => {
-      const match = {
-        language,
-        publishedAt: { $gte: new Date(Date.now() - sinceMs) },
-      };
-      if (ctx) {
-        if (ctx.dislikedIds.size > 0) {
-          match._id = {
-            $nin: [...ctx.dislikedIds]
-              .slice(0, 500)
-              .map((id) => new mongoose.Types.ObjectId(id)),
-          };
+      // SWR: serve last-known-result instantly, regenerate in background.
+      try {
+        const stale = await redis.get(staleKey);
+        if (stale) {
+          spawnBackgroundRegen({
+            freshKey,
+            staleKey,
+            lockKey,
+            userId,
+            params: { ctx, language, limit, forceRefresh: false },
+          });
+          console.log(
+            `📦 pers-v2 light SWR stale-hit in ${Date.now() - startTime}ms ` +
+            `(regen scheduled)`
+          );
+          res.setHeader('X-Cache', 'stale');
+          return res.json(JSON.parse(stale));
         }
-        if (ctx.dislikedCategories.size > 0) {
-          match.category = { $nin: [...ctx.dislikedCategories] };
-        }
+      } catch (err) {
+        console.error('⚠️ Redis get error (stale):', err.message);
       }
-      return match;
-    };
-
-    // Pull a generous candidate pool so the 3-per-source-group cap + viewed demotion
-    // still leave plenty of articles to fill the page.
-    const candidateLimit = Math.min(limit * 12, 400);
-    const includeEmbedding = !!ctx?.embedding;
-
-    const runCandidateQuery = (sinceMs) =>
-      Article.aggregate([
-        { $match: buildMatch(sinceMs) },
-        { $sort: { publishedAt: -1 } },
-        { $limit: candidateLimit },
-        {
-          $lookup: {
-            from: 'sources',
-            localField: 'sourceId',
-            foreignField: '_id',
-            as: 'source',
-            pipeline: [
-              { $match: { status: { $ne: 'blocked' } } },
-              { $project: { groupName: 1, name: 1, icon: 1 } },
-            ],
-          },
-        },
-        { $match: { 'source.0': { $exists: true } } },
-        {
-          $addFields: {
-            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
-            sourceName: { $arrayElemAt: ['$source.name', 0] },
-            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
-          },
-        },
-        {
-          $project: {
-            title: 1,
-            content: 1,
-            contentFormat: 1,
-            url: 1,
-            category: 1,
-            publishedAt: 1,
-            image: 1,
-            viewCount: 1,
-            likes: 1,
-            dislikes: 1,
-            likedBy: 1,
-            dislikedBy: 1,
-            sourceId: 1,
-            sourceName: 1,
-            sourceIcon: 1,
-            sourceGroupName: 1,
-            language: 1,
-            ...(includeEmbedding ? { embedding_pca: 1 } : {}),
-          },
-        },
-      ]);
-
-    const queryStart = Date.now();
-    // Progressively widen until we have enough candidates. Sparse languages
-    // (e.g. Farsi) can have <10 articles in 48h; without widening, the feed
-    // would degenerate to 1-2 items.
-    const HOUR = 60 * 60 * 1000;
-    const DAY = 24 * HOUR;
-    const windows = [24 * HOUR, 48 * HOUR, 7 * DAY, 30 * DAY];
-    let candidates = [];
-    let usedWindowMs = windows[0];
-    for (const sinceMs of windows) {
-      candidates = await runCandidateQuery(sinceMs);
-      usedWindowMs = sinceMs;
-      if (candidates.length >= limit * 2) break;
-    }
-    const dbTime = Date.now() - queryStart;
-
-    // Score (or fall back to recency+engagement for users with no signal)
-    let scored;
-    if (ctx?.hasSignal) {
-      scored = scorePersonalizedCandidates(candidates, ctx, { page: 1 });
-    } else {
-      for (const a of candidates) {
-        a._score =
-          PERS_W.recency * basicRecencyScore(a.publishedAt) +
-          PERS_W.engagement *
-            Math.tanh(
-              ((a.viewCount || 0) * viewsWeight +
-                (a.likes || 0) * likesWeight +
-                (a.dislikes || 0) * dislikesWeight) /
-                80
-            );
-      }
-      scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Interleave by source group so consecutive items don't come from the same
-    // publisher, but without capping total count. Page 1 takes the top `limit`.
-    const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
-    const diversified = interleaved.slice(0, limit);
-
-    const finalArticles = sanitizeForResponse(diversified, {
-      isLight: true,
-      fetchedAt: new Date(),
-      isRefreshed: forceRefresh,
-      isPersonalized: !!ctx?.hasSignal,
-    });
+    // Cold miss (or forceRefresh): synchronous compute.
+    const { articles: finalArticles, usedWindowMs, candidateCount, dbTime, includeEmbedding } =
+      await computePersonalizedLight({ ctx, language, limit, forceRefresh });
 
     try {
-      await redis.set(cacheKey, JSON.stringify(finalArticles), 'EX', 600); // 10 min
-      await trackUserCacheKey(userId, cacheKey);
+      await redis.set(freshKey, JSON.stringify(finalArticles), 'EX', SWR_FRESH_TTL);
+      await trackUserCacheKey(userId, freshKey);
+      await redis.set(staleKey, JSON.stringify(finalArticles), 'EX', SWR_STALE_TTL);
+      await trackUserCacheKey(userId, staleKey);
     } catch (err) {
       console.error('⚠️ Redis set error:', err.message);
     }
@@ -778,13 +865,14 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const totalTime = Date.now() - startTime;
     const usedWindowHours = Math.round(usedWindowMs / (60 * 60 * 1000));
     console.log(
-      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidates.length}, window ${usedWindowHours}h, lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidateCount}, window ${usedWindowHours}h, lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
     );
 
+    res.setHeader('X-Cache', 'miss');
     res.setHeader('X-Performance-Time', totalTime);
     res.setHeader('X-DB-Query-Time', dbTime);
     res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
-    res.setHeader('X-Candidates', candidates.length);
+    res.setHeader('X-Candidates', candidateCount);
     res.setHeader('X-Window-Hours', usedWindowHours);
 
     res.json(finalArticles);
