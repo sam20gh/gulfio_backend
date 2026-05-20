@@ -320,6 +320,14 @@ const PERS_W = {
  * Load all personalization signals for a user in one Mongo query.
  * Returns null if user not found. Sets are used for O(1) exclusion/lookup.
  */
+/**
+ * Threshold in seconds at which a read is considered "full" for the
+ * read-time-weighted viewed penalty (P1-6). A read at this duration or
+ * longer applies the full viewedPenalty; shorter reads apply
+ * proportionally less.
+ */
+const FULL_READ_SECONDS = 60;
+
 async function loadUserPersonalizationContext(userId) {
   const user = await User.findOne({ supabase_id: userId })
     .select(
@@ -345,6 +353,61 @@ async function loadUserPersonalizationContext(userId) {
     (user.preferred_sources || []).map((id) => (id && id.toString ? id.toString() : id))
   );
 
+  // Source the viewed signal from BOTH the legacy User.viewed_articles
+  // (rarely populated by current routes) AND the live UserActivity log
+  // — that's where today's /article/:id/view and read_time events go.
+  // Also accumulate read-time durations so the penalty can scale by how
+  // deeply each article was consumed (P1-6).
+  const viewedIds = toIdStringSet(user.viewed_articles);
+  const viewReadFractions = new Map();
+  try {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const activityRows = await UserActivity.aggregate([
+      {
+        $match: {
+          userId,
+          articleId: { $exists: true, $ne: null },
+          eventType: { $in: ['view', 'read_time'] },
+          timestamp: { $gte: thirtyDaysAgo },
+        },
+      },
+      {
+        $group: {
+          _id: '$articleId',
+          totalReadTime: {
+            $sum: {
+              $cond: [{ $eq: ['$eventType', 'read_time'] }, { $ifNull: ['$duration', 0] }, 0],
+            },
+          },
+          hasView: {
+            $max: { $cond: [{ $eq: ['$eventType', 'view'] }, 1, 0] },
+          },
+        },
+      },
+      { $limit: 500 },
+    ]);
+    for (const row of activityRows) {
+      const idStr = row._id.toString();
+      viewedIds.add(idStr);
+      // Fraction maps total_read_time -> [0, 1] capped at FULL_READ_SECONDS.
+      // No read_time event but a 'view' event recorded -> default 0.5
+      // (they tapped through, but we don't know how long they stayed).
+      let fraction;
+      if (row.totalReadTime > 0) {
+        fraction = Math.min(1, row.totalReadTime / FULL_READ_SECONDS);
+      } else if (row.hasView) {
+        fraction = 0.5;
+      } else {
+        continue;
+      }
+      viewReadFractions.set(idStr, fraction);
+    }
+  } catch (err) {
+    // Non-fatal: missing read-time data just means the viewed penalty
+    // falls back to its flat -1.0 (default for "viewed but no fraction").
+    console.warn(`⚠️ Failed to load view/read activity for ${userId}: ${err.message}`);
+  }
+
   return {
     preferredCategories,
     preferredSourceIds,
@@ -352,7 +415,8 @@ async function loadUserPersonalizationContext(userId) {
     likedIds: toIdStringSet(user.liked_articles),
     dislikedIds: toIdStringSet(user.disliked_articles),
     savedIds: toIdStringSet(user.saved_articles),
-    viewedIds: toIdStringSet(user.viewed_articles),
+    viewedIds,
+    viewReadFractions,
     followingSourceGroups: new Set(user.following_sources || []),
     embedding:
       Array.isArray(user.embedding_pca) && user.embedding_pca.length > 0
@@ -428,7 +492,14 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
       relMult * PERS_W.vector * vectorScore;
 
     if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
-    if (alreadyViewed) score += PERS_W.viewedPenalty;
+    if (alreadyViewed) {
+      // P1-6: scale by how deeply this article was previously consumed.
+      // Full read (≥FULL_READ_SECONDS) gets the full -3.0 penalty;
+      // a glance gets proportionally less; legacy "view" with no
+      // read-time event falls back to the default 1/3 of full.
+      const fraction = ctx.viewReadFractions?.get(idStr) ?? (1 / 3);
+      score += PERS_W.viewedPenalty * fraction;
+    }
 
     a._score = score;
   }
