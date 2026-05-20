@@ -1222,16 +1222,184 @@ async function warmArticleCountCache() {
   }
 }
 
+/**
+ * P2-3: pre-warmed "recent articles" cache. The frontend uses this as
+ * a fast fallback when personalized takes too long (cold Cloud Run,
+ * stale-tier miss). One Mongo query per language every 5 minutes;
+ * served from Redis in <5ms.
+ */
+const RECENT_CACHE_TTL = 300; // 5 min
+const RECENT_LIMIT = 30;
+
+function recentCacheKey(language) {
+  return `articles_recent_v1_${language}`;
+}
+
+async function warmRecentArticlesCache() {
+  try {
+    for (const lang of COMMON_LANGUAGES) {
+      const recent = await Article.aggregate([
+        {
+          $match: {
+            language: lang,
+            publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+        },
+        { $sort: { publishedAt: -1 } },
+        { $limit: RECENT_LIMIT },
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'sourceId',
+            foreignField: '_id',
+            as: 'source',
+            pipeline: [
+              { $match: { status: { $ne: 'blocked' } } },
+              { $project: { groupName: 1, name: 1, icon: 1 } },
+            ],
+          },
+        },
+        { $match: { 'source.0': { $exists: true } } },
+        {
+          $addFields: {
+            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+            sourceName: { $arrayElemAt: ['$source.name', 0] },
+            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            content: 1,
+            contentFormat: 1,
+            url: 1,
+            category: 1,
+            publishedAt: 1,
+            image: 1,
+            viewCount: 1,
+            likes: 1,
+            dislikes: 1,
+            sourceId: 1,
+            sourceName: 1,
+            sourceIcon: 1,
+            sourceGroupName: 1,
+            language: 1,
+          },
+        },
+      ]);
+      await redis.set(recentCacheKey(lang), JSON.stringify(recent), 'EX', RECENT_CACHE_TTL);
+    }
+    // Don't log on every refresh — too chatty.
+  } catch (err) {
+    console.error('⚠️ warmRecentArticlesCache failed:', err.message);
+  }
+}
+
 // Warm cache on startup (after 30 seconds to let DB connect)
 setTimeout(warmArticleCountCache, 30000);
+setTimeout(warmRecentArticlesCache, 30000);
 
 // Refresh cache every 15 minutes
 setInterval(warmArticleCountCache, COUNT_CACHE_TTL * 1000);
+// Refresh recent cache slightly before TTL so reads never miss
+setInterval(warmRecentArticlesCache, (RECENT_CACHE_TTL - 30) * 1000);
 
 // Import Source model for following feed
 const Source = require('../models/Source');
 
 /** ---- Routes ---- **/
+
+/**
+ * GET /api/articles/recent (P2-3)
+ *
+ * Pre-warmed list of recent articles in the requested language. Served
+ * entirely from Redis (<5ms). Used by the frontend as an optimistic
+ * fallback when the personalized fetch takes too long — paint
+ * something usable in under a second, swap to personalized when it
+ * arrives.
+ *
+ * Public, no JWT required. Safe to call from cold-start guest
+ * sessions.
+ */
+articleRouter.get('/recent', async (req, res) => {
+  try {
+    const language = (req.query.language || 'english').toLowerCase();
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), RECENT_LIMIT);
+
+    try {
+      const cached = await redis.get(recentCacheKey(language));
+      if (cached) {
+        const articles = JSON.parse(cached).slice(0, limit);
+        res.setHeader('X-Cache', 'hit');
+        return res.json(articles);
+      }
+    } catch (err) {
+      // Fall through to direct query
+    }
+
+    // Cache miss (cold boot before warmer ran, or unsupported language).
+    // Compute inline once; the interval will keep it warm afterward.
+    const recent = await Article.aggregate([
+      {
+        $match: {
+          language,
+          publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+        },
+      },
+      { $sort: { publishedAt: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'sources',
+          localField: 'sourceId',
+          foreignField: '_id',
+          as: 'source',
+          pipeline: [
+            { $match: { status: { $ne: 'blocked' } } },
+            { $project: { groupName: 1, name: 1, icon: 1 } },
+          ],
+        },
+      },
+      { $match: { 'source.0': { $exists: true } } },
+      {
+        $addFields: {
+          sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+          sourceName: { $arrayElemAt: ['$source.name', 0] },
+          sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+        },
+      },
+      {
+        $project: {
+          title: 1,
+          content: 1,
+          contentFormat: 1,
+          url: 1,
+          category: 1,
+          publishedAt: 1,
+          image: 1,
+          viewCount: 1,
+          likes: 1,
+          dislikes: 1,
+          sourceId: 1,
+          sourceName: 1,
+          sourceIcon: 1,
+          sourceGroupName: 1,
+          language: 1,
+        },
+      },
+    ]);
+    try {
+      await redis.set(recentCacheKey(language), JSON.stringify(recent), 'EX', RECENT_CACHE_TTL);
+    } catch (err) {
+      // Non-fatal
+    }
+    res.setHeader('X-Cache', 'miss');
+    return res.json(recent);
+  } catch (error) {
+    console.error('❌ /articles/recent error:', error);
+    return res.status(500).json({ error: 'recent error', message: error.message });
+  }
+});
 
 
 // GET: Quick performance test endpoint
