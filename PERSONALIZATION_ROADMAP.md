@@ -18,7 +18,7 @@ Frontend in `menaApp/components/ArticleList.tsx` (React Query infinite list, pag
 | Tier | Theme | Done | Total |
 |---|---|---|---|
 | **P0** | Correctness & risk | **5 / 5** ✅ | 5 |
-| **P1** | Ranking quality | 0 / 6 | 6 |
+| **P1** | Ranking quality | **6 / 6** ✅ | 6 |
 | **P2** | Performance | 0 / 4 | 4 |
 | **P3** | Architecture & telemetry | 0 / 5 | 5 |
 
@@ -47,40 +47,29 @@ All shipped on `main`. Worth eyeballing in staging before the next prod push.
 
 ---
 
-## P1 — Ranking quality
+## P1 — DONE
 
-The next layer. Each of these touches the *output* of personalization (what users see), not just the pipes.
+All 6 shipped. The home feed is now substantially more personalized than the recency-and-popularity model it had a week ago.
 
-### P1-1 — Smooth time decay
-**Why:** `basicRecencyScore` (routes/articles.js:30) is piecewise (1.0 ≤24h, 0.8 ≤48h, etc.). Users see visible "cliffs" at the bucket boundaries — an article that was hot at 23h drops out of consideration at 25h.
-**How:** Replace with `exp(-hours / τ)` where τ ≈ 30. Smooth, single tunable, easier to A/B.
-**Files:** `routes/articles.js` — `basicRecencyScore` function.
+| # | Commit | Headline |
+|---|---|---|
+| P1-1 | `fd4f5e4` | Replaced piecewise `basicRecencyScore` with continuous `exp(-hours/τ)` where τ=72h. Single-knob recency tuning; also fixed a real monotonicity bug where articles just past 168h scored higher than at exactly 168h. |
+| P1-3 | `948f2b7` | `User.implicit_preferred_categories` derived nightly from 30d weighted action history (reuses the article fetch the cron already does). Merged with explicit `preferred_categories` in `loadUserPersonalizationContext` — `categoryAffinity` term now fires for users who never tapped the explicit settings. |
+| P1-6 | `e688a1a` | Sourced the viewed signal from `UserActivity` (was missing — `User.viewed_articles` is essentially never written by current routes). Scaled `viewedPenalty` by `min(1, totalReadTime/60)`, so a glance gets a light penalty and a full read gets the full -3.0. |
+| P1-2 | `c4ea6f7` | Engagement term now uses per-category z-score (cached 15min) instead of global tanh(rawEng/80). Below-average articles for a category get an active penalty; viral articles in heavy categories no longer dominate cross-category. |
+| P1-4 | `c25d67b` | ε-greedy exploration: 12% of page-1 requests for signal users get a random low-similarity article injected into slot 2-7. Marked with `_explorationInjected` and `X-Explore: 1` for telemetry. |
+| P1-5 | `4ea54ea` | Cohere `rerank-multilingual-v3.0` wired into `computePersonalizedLight`, feature-flagged via `COHERE_RERANK_ENABLED=1` (default off). Pseudo-query built from last 20 liked titles, cached 30min. Strictly additive — falls back to local order on any failure. The dormant `COHERE_API_KEY` is now load-bearing. |
 
-### P1-2 — Personalized engagement signal
-**Why:** `viewCount / likes / dislikes` are global popularity counters. Popular ≠ relevant for this user. A Football article going viral globally currently dominates the Business feed.
-**How:** Compute per-category z-score (popular *within its category*), use that instead of raw engagement. Cache per-category mean+stddev in Redis with 15-min slot.
-**Files:** `routes/articles.js` — `scorePersonalizedCandidates`, `calculateEngagementScore`. New: pre-warmed per-category stats helper.
+### P1 verification checklist for staging
 
-### P1-3 — Implicit preferred categories
-**Why:** `preferred_categories` is explicit-only — users must set it. The system never *learns* from behavior.
-**How:** In the daily cron (`jobs/update-user-embeddings.js`), derive an implicit top-3 categories by weighted action count over 30d and merge with the explicit set. Store as `User.implicit_preferred_categories` so we don't overwrite the explicit field.
-**Files:** `models/User.js` (new field), `utils/userEmbedding.js`, `routes/articles.js` (use union in `loadUserPersonalizationContext`).
-
-### P1-4 — Exploration / anti-filter-bubble
-**Why:** The scorer is fully greedy. Existing affinities get reinforced indefinitely. No way to recover from a wrong inferred preference.
-**How:** ε-greedy injection on page 1 — with ~10-15% probability, swap in a high-recency, low-similarity article from a category the user hasn't viewed in 7+ days. Position randomly in the top 10 slots.
-**Files:** `routes/articles.js` — after `interleaveBySourceGroup`, before slice.
-
-### P1-5 — Cohere reranker (DORMANT KEY)
-**Why:** `COHERE_API_KEY` is set in `backend/.env` line 19 but unused. `services/aiAgentService-backup.js` shows a working `rerank-english-v3.0` integration; current `aiAgentService.js` doesn't use it. You're paying for it and getting nothing.
-**How:** On feed (no query), use Cohere's rerank against a "pseudo-query" built from the user's last 20 liked article titles, applied to the top ~80 candidates after the local scorer. Wire behind an A/B flag so we can measure CTR/read-time delta vs control. Skip if Cohere fails — local scorer is the floor.
-**Files:** New: `utils/cohereRerank.js`. Hook into `routes/articles.js` between `scorePersonalizedCandidates` and `interleaveBySourceGroup` in `computePersonalizedLight` and `/personalized-fast`.
-**Caveat:** Rerank-on-feed (no explicit query) is unconventional. Validate with A/B before rolling out widely.
-
-### P1-6 — Read-time-weighted viewed penalty
-**Why:** `viewedPenalty: -3.0` (routes/articles.js:150) is binary. A 6h-old article the user briefly opened is penalized identically to one they fully read 30d ago.
-**How:** `UserActivity.create({ eventType: 'read_time', duration })` already exists. In `loadUserPersonalizationContext`, build `viewedReadFractions: Map<articleId, 0..1>`. In `scorePersonalizedCandidates`, scale the penalty by the read fraction.
-**Files:** `routes/articles.js` — `loadUserPersonalizationContext`, `scorePersonalizedCandidates`. Possibly an index on `UserActivity({ userId, eventType, timestamp })`.
+- [ ] Hit `/personalized-light` for a user with no signal — should see `X-Personalized: none`, recency-only feed.
+- [ ] Same user after 5+ likes — should see `X-Personalized: vector` and a different article ordering.
+- [ ] Inspect a same-category article's score path: `_score` should reflect z-score engagement (look at `X-Personalized` and the verbose log line — `signal=true` and stats showing).
+- [ ] Refresh `/personalized-light` ~20 times — roughly 2-3 responses should carry `X-Explore: 1` and have an article tagged `_explorationInjected: true`.
+- [ ] Set `COHERE_RERANK_ENABLED=1` in env, deploy, hit `/personalized-light` — should see `X-Rerank: 1` for users with ≥3 likes and a `🎯 Cohere rerank applied` log line.
+- [ ] Confirm Arabic/Farsi feed still works with rerank on (multilingual model).
+- [ ] Trigger the daily cron manually (`POST /api/jobs/update-user-embeddings`) — confirm `User.implicit_preferred_categories` populates for active users.
+- [ ] Verify a user with 30s read of article X gets a smaller subsequent score penalty than a user with 90s read of the same article.
 
 ---
 
