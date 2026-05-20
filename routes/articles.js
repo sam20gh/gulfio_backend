@@ -317,10 +317,6 @@ const PERS_W = {
 };
 
 /**
- * Load all personalization signals for a user in one Mongo query.
- * Returns null if user not found. Sets are used for O(1) exclusion/lookup.
- */
-/**
  * Threshold in seconds at which a read is considered "full" for the
  * read-time-weighted viewed penalty (P1-6). A read at this duration or
  * longer applies the full viewedPenalty; shorter reads apply
@@ -328,6 +324,91 @@ const PERS_W = {
  */
 const FULL_READ_SECONDS = 60;
 
+/**
+ * Per-(category, language) engagement statistics (mean + stddev of raw
+ * engagement signal) so we can score by z-score rather than absolute
+ * volume. Without this, a viral Football article (raw eng ~200) drowns
+ * out a typical Business article (raw eng ~20) even when a Business
+ * reader has explicit Business preference — the engagement term keeps
+ * dragging Football to the top.
+ *
+ * Returns Map<category, {mean, stddev}>. Empty Map if data unavailable;
+ * scorer falls back to the legacy tanh(rawEng/80) in that case.
+ *
+ * Cached in Redis on a 15-minute slot, refreshed on miss. Computed from
+ * articles published in the last 7 days for the given language.
+ */
+async function getCategoryEngagementStats(language) {
+  const lang = (language || 'english').toLowerCase();
+  const fifteenMinSlot = Math.floor(Date.now() / (15 * 60 * 1000));
+  const cacheKey = `cat_eng_stats_v1_${lang}_${fifteenMinSlot}`;
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      const obj = JSON.parse(cached);
+      return new Map(Object.entries(obj));
+    }
+  } catch (err) {
+    console.warn('⚠️ getCategoryEngagementStats GET error:', err.message);
+  }
+
+  try {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const rows = await Article.aggregate([
+      {
+        $match: {
+          language: lang,
+          publishedAt: { $gte: sevenDaysAgo },
+          category: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $project: {
+          category: 1,
+          rawEng: {
+            $add: [
+              { $multiply: [{ $ifNull: ['$viewCount', 0] }, viewsWeight] },
+              { $multiply: [{ $ifNull: ['$likes', 0] }, likesWeight] },
+              { $multiply: [{ $ifNull: ['$dislikes', 0] }, dislikesWeight] },
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: '$category',
+          mean: { $avg: '$rawEng' },
+          stddev: { $stdDevPop: '$rawEng' },
+          n: { $sum: 1 },
+        },
+      },
+      // Reject categories with too few samples — their stats are noise
+      { $match: { n: { $gte: 5 } } },
+    ]);
+
+    const stats = {};
+    for (const r of rows) {
+      stats[r._id] = { mean: r.mean || 0, stddev: r.stddev || 0 };
+    }
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(stats), 'EX', 900); // 15 min
+    } catch (err) {
+      console.warn('⚠️ getCategoryEngagementStats SET error:', err.message);
+    }
+
+    return new Map(Object.entries(stats));
+  } catch (err) {
+    console.warn('⚠️ getCategoryEngagementStats compute error:', err.message);
+    return new Map();
+  }
+}
+
+/**
+ * Load all personalization signals for a user in one Mongo query.
+ * Returns null if user not found. Sets are used for O(1) exclusion/lookup.
+ */
 async function loadUserPersonalizationContext(userId) {
   const user = await User.findOne({ supabase_id: userId })
     .select(
@@ -447,15 +528,31 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
   const relMult = page === 1 ? 0.8 : page === 2 ? 1.0 : 1.2;
   const hasEmbedding = !!ctx?.embedding;
 
+  const categoryStats = ctx.categoryStats; // Map<category, {mean, stddev}> | undefined
+
   for (const a of candidates) {
     const recency = basicRecencyScore(a.publishedAt);
 
-    // Tanh-squash engagement so a single viral article can't dominate the feed
+    // Engagement: if we have per-category stats (P1-2), score by z-score
+    // (deviation from category average) so a viral Football article doesn't
+    // outrank a typical Business article for a Business reader. Otherwise
+    // fall back to the legacy tanh(rawEng/80) absolute-volume form.
     const rawEng =
       (a.viewCount || 0) * viewsWeight +
       (a.likes || 0) * likesWeight +
       (a.dislikes || 0) * dislikesWeight;
-    const engagement = Math.tanh(rawEng / 80);
+    const stats = categoryStats && a.category ? categoryStats.get(a.category) : null;
+    let engagement;
+    if (stats && stats.stddev > 0) {
+      const z = (rawEng - stats.mean) / stats.stddev;
+      // tanh(z/2) maps z=2 (~95th pct) to 0.76, z=0 to 0, z=-2 to -0.76.
+      // Engagement can now actively penalize below-average articles, which
+      // is the intended behavior — "below typical for its category" is a
+      // real signal, not just absence of signal.
+      engagement = Math.tanh(z / 2);
+    } else {
+      engagement = Math.tanh(rawEng / 80);
+    }
 
     let categoryScore = 0;
     if (a.category) {
@@ -997,7 +1094,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const language = (req.query.language || userLanguagePref).toLowerCase();
 
     const ctx = await loadUserPersonalizationContext(userId);
-    if (ctx) ctx.language = language;
+    if (ctx) {
+      ctx.language = language;
+      ctx.categoryStats = await getCategoryEngagementStats(language);
+    }
 
     // Fresh tier: rotates on user activity (stateHash) and every 10 min.
     // Stale tier: same content, but no stateHash/slot — survives across
@@ -1460,7 +1560,10 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     const language = (req.query.language || userLanguagePref).toLowerCase();
 
     const ctx = await loadUserPersonalizationContext(userId);
-    if (ctx) ctx.language = language;
+    if (ctx) {
+      ctx.language = language;
+      ctx.categoryStats = await getCategoryEngagementStats(language);
+    }
 
     const stateHash = userStateHash(ctx);
     const tenMinSlot = Math.floor(Date.now() / (10 * 60 * 1000));
@@ -2550,7 +2653,10 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     const language = (req.query.language || userLanguagePref).toLowerCase();
 
     const ctx = await loadUserPersonalizationContext(supabaseId);
-    if (ctx) ctx.language = language;
+    if (ctx) {
+      ctx.language = language;
+      ctx.categoryStats = await getCategoryEngagementStats(language);
+    }
 
     // Refuse to serve a category the user has explicitly disliked — they
     // shouldn't be tapping it anyway, but if they do, return empty so the
