@@ -636,6 +636,12 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
 
   const categoryStats = ctx.categoryStats; // Map<category, {mean, stddev}> | undefined
 
+  // P2-2 telemetry: aggregate stats so we can decide whether to skip the
+  // embedding projection for heavy-category users. Logged at the bottom.
+  let totalAbsScore = 0;
+  let totalAbsVector = 0;
+  let withEmbeddingCount = 0;
+
   for (const a of candidates) {
     const recency = basicRecencyScore(a.publishedAt);
 
@@ -684,15 +690,17 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     ) {
       // Clamp to [0,1] — negative similarity shouldn't actively penalize, just contribute nothing
       vectorScore = Math.max(0, cosineSimilarity(ctx.embedding, a.embedding_pca));
+      withEmbeddingCount++;
     }
 
+    const vectorContribution = relMult * PERS_W.vector * vectorScore;
     let score =
       recencyMult * PERS_W.recency * recency +
       PERS_W.engagement * engagement +
       relMult * PERS_W.categoryAffinity * categoryScore +
       relMult * PERS_W.followingBoost * followingScore +
       relMult * PERS_W.preferredSourceBoost * preferredSourceScore +
-      relMult * PERS_W.vector * vectorScore;
+      vectorContribution;
 
     if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
     if (alreadyViewed) {
@@ -705,6 +713,27 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     }
 
     a._score = score;
+
+    if (hasEmbedding) {
+      // Track absolute contribution so a vector that pushes some scores up
+      // and others down still shows its real influence on the ranking.
+      totalAbsScore += Math.abs(score);
+      totalAbsVector += Math.abs(vectorContribution);
+    }
+  }
+
+  // P2-2 telemetry: log mean vector contribution as a % of total absolute
+  // ranking signal. After a week of these logs we can decide whether to
+  // skip the embedding projection for users where this is consistently
+  // below 5%.
+  if (hasEmbedding && withEmbeddingCount > 0 && totalAbsScore > 0) {
+    const vectorPct = Math.round((totalAbsVector / totalAbsScore) * 100);
+    if (process.env.PERS_LOG_VECTOR_PCT === '1' || vectorPct < 3) {
+      console.log(
+        `📐 vector contribution for ${ctx.userId?.substring?.(0, 8) || '?'}: ` +
+        `${vectorPct}% (${withEmbeddingCount}/${candidates.length} candidates had embedding)`
+      );
+    }
   }
 
   return candidates.sort((x, y) => y._score - x._score);
@@ -737,6 +766,30 @@ const COHERE_MIN_LIKES = 3;
 
 function cohereEnabled() {
   return !!process.env.COHERE_API_KEY && process.env.COHERE_RERANK_ENABLED === '1';
+}
+
+/**
+ * P2-2 conditional embedding projection.
+ *
+ * When a user has lots of explicit signal (many preferred categories,
+ * many followed source groups), the vector term contributes only
+ * marginally to the final ranking — category and following boosts
+ * already dominate. We can skip pulling `embedding_pca` from Mongo (128
+ * floats × ~240 candidates ≈ 31KB) and save the network/Mongo bandwidth.
+ *
+ * Feature-flagged: off by default. Turn on after a week of
+ * `📐 vector contribution` telemetry (PERS_LOG_VECTOR_PCT=1) confirms
+ * which user profiles see <5% vector contribution.
+ */
+function shouldSkipEmbedding(ctx) {
+  if (process.env.PERS_SKIP_VECTOR_FOR_HEAVY_PREFS !== '1') return false;
+  if (!ctx) return false;
+  const prefCats = ctx.preferredCategories?.size || 0;
+  const followSrc = ctx.followingSourceGroups?.size || 0;
+  // Users with 4+ category prefs AND 3+ followed source groups have
+  // enough non-vector signal that the embedding projection rarely shifts
+  // the top-K. Tune thresholds based on logged telemetry.
+  return prefCats >= 4 && followSrc >= 3;
 }
 
 async function getCohereQueryForUser(userId, likedIdsOrdered) {
@@ -1006,7 +1059,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
   };
 
   const candidateLimit = Math.min(limit * 12, 400);
-  const includeEmbedding = !!ctx?.embedding;
+  const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
   const runCandidateQuery = (sinceMs) =>
     Article.aggregate([
@@ -2122,7 +2175,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     // For pagination we need a wide enough candidate window to safely skip into.
     // Cap so deep pagination doesn't blow up memory.
     const candidateLimit = Math.min(page * limit + 200, 500);
-    const includeEmbedding = !!ctx?.embedding;
+    const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
     const runCandidateQuery = (sinceMs) =>
       Article.aggregate([
@@ -3220,7 +3273,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
 
     // Need enough candidates to support pagination + interleave headroom.
     const candidateLimit = Math.min(page * limit + 200, 500);
-    const includeEmbedding = !!ctx?.embedding;
+    const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
     const runCandidateQuery = (sinceMs) =>
       Article.aggregate([
