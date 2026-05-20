@@ -489,11 +489,22 @@ async function loadUserPersonalizationContext(userId) {
     console.warn(`⚠️ Failed to load view/read activity for ${userId}: ${err.message}`);
   }
 
+  // Preserve liked order as best as we can — Mongo array order is the
+  // order they were pushed (newest at end), so reversing gives us
+  // most-recent-first for the Cohere pseudo-query (P1-5).
+  const likedIdsOrdered = (user.liked_articles || [])
+    .slice(-20) // last 20 likes (most recent)
+    .reverse()
+    .map((id) => (id && id.toString ? id.toString() : id))
+    .filter(Boolean);
+
   return {
+    userId,
     preferredCategories,
     preferredSourceIds,
     dislikedCategories: new Set(user.disliked_categories || []),
     likedIds: toIdStringSet(user.liked_articles),
+    likedIdsOrdered,
     dislikedIds: toIdStringSet(user.disliked_articles),
     savedIds: toIdStringSet(user.saved_articles),
     viewedIds,
@@ -602,6 +613,125 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
   }
 
   return candidates.sort((x, y) => y._score - x._score);
+}
+
+/**
+ * Cohere rerank (P1-5).
+ *
+ * Feature-flagged via COHERE_RERANK_ENABLED=1. When on:
+ *   - Build a pseudo-query from the user's last 20 liked article titles
+ *     (cached per-user for 30 min — liked list changes rarely).
+ *   - Send the top-N candidates after local scoring/interleave to Cohere
+ *     rerank-multilingual-v3.0 (handles Arabic + Farsi as well as English).
+ *   - Use the returned order as the final ranking; on any failure
+ *     (no API key, timeout, HTTP error, no eligible query) fall back to
+ *     the local order — Cohere is additive, never required.
+ *
+ * Runs only for users with >=3 liked articles. Below that we can't build
+ * a meaningful pseudo-query.
+ *
+ * Cost notes: ~$2/1M docs. With 80 docs per request and a busy day at
+ * 10k personalized-light requests, that's ~800k docs/day ≈ $1.60/day.
+ * SWR (P0-2) means most calls are background regen, so latency cost is
+ * off the user's response path.
+ */
+const COHERE_RERANK_TOP_N = 80;
+const COHERE_RERANK_TIMEOUT_MS = 6000;
+const COHERE_QUERY_CACHE_TTL = 30 * 60; // 30 min
+const COHERE_MIN_LIKES = 3;
+
+function cohereEnabled() {
+  return !!process.env.COHERE_API_KEY && process.env.COHERE_RERANK_ENABLED === '1';
+}
+
+async function getCohereQueryForUser(userId, likedIdsOrdered) {
+  if (!likedIdsOrdered || likedIdsOrdered.length < COHERE_MIN_LIKES) return null;
+  // Cache key based on the prefix of liked IDs — if the user likes a new
+  // article, the prefix shifts and the cache rotates naturally.
+  const sample = likedIdsOrdered.slice(0, 10).join('|');
+  const cacheKey = `cohere_q_${userId}_${simpleHash(sample)}`;
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return cached;
+  } catch (err) {
+    // Non-fatal: just rebuild below.
+  }
+
+  try {
+    const ids = likedIdsOrdered.map((id) => new mongoose.Types.ObjectId(id));
+    const articles = await Article.find({ _id: { $in: ids } })
+      .select('title')
+      .lean();
+    if (!articles.length) return null;
+    // Order by the input array (the find() result order isn't guaranteed)
+    const byId = new Map(articles.map((a) => [a._id.toString(), a]));
+    const titles = likedIdsOrdered
+      .map((id) => byId.get(id)?.title)
+      .filter(Boolean)
+      .slice(0, 20)
+      .map((t) => t.replace(/\s+/g, ' ').trim());
+    if (titles.length === 0) return null;
+    const query = titles.join(' / ');
+    try {
+      await redis.set(cacheKey, query, 'EX', COHERE_QUERY_CACHE_TTL);
+    } catch (err) {
+      // Non-fatal
+    }
+    return query;
+  } catch (err) {
+    console.warn(`⚠️ getCohereQueryForUser failed for ${userId}: ${err.message}`);
+    return null;
+  }
+}
+
+async function rerankWithCohere(query, articles) {
+  if (!articles?.length || !query) return null;
+
+  const axios = require('axios');
+  const documents = articles.map((a) => {
+    const content = a.content
+      ? a.content.replace(/<[^>]*>/g, '').slice(0, 800)
+      : '';
+    return `${a.title || ''}\n${content}`.slice(0, 1024);
+  });
+
+  try {
+    const response = await axios.post(
+      'https://api.cohere.ai/v1/rerank',
+      {
+        // Multilingual handles Arabic + Farsi + English in one model.
+        model: 'rerank-multilingual-v3.0',
+        query,
+        documents,
+        top_n: documents.length,
+        return_documents: false,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.COHERE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: COHERE_RERANK_TIMEOUT_MS,
+      }
+    );
+
+    const results = response?.data?.results;
+    if (!Array.isArray(results) || results.length === 0) return null;
+
+    // Map Cohere's reordered indices back to our articles, attaching the
+    // relevance score for telemetry. Cohere's `results` is already sorted
+    // by relevance descending.
+    return results.map((r) => ({
+      ...articles[r.index],
+      _rerankScore: r.relevance_score,
+    }));
+  } catch (err) {
+    console.warn(
+      `⚠️ Cohere rerank failed (${err.response?.status || err.code || 'err'}): ${err.message}`
+    );
+    return null;
+  }
 }
 
 /**
@@ -863,7 +993,31 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
     scored = candidates.sort((x, y) => y._score - x._score);
   }
 
-  const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+  let interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+
+  // P1-5: optional Cohere rerank on the top-N pool. Reorders the top
+  // candidates based on semantic similarity to the user's pseudo-query
+  // (their last 20 liked titles). Strictly additive — any failure falls
+  // back to the local order.
+  let rerankApplied = false;
+  if (cohereEnabled() && ctx?.hasSignal && ctx?.userId) {
+    const topN = interleaved.slice(0, Math.min(COHERE_RERANK_TOP_N, interleaved.length));
+    if (topN.length >= 10) {
+      const query = await getCohereQueryForUser(ctx.userId, ctx.likedIdsOrdered);
+      if (query) {
+        const rerankStart = Date.now();
+        const reranked = await rerankWithCohere(query, topN);
+        if (reranked && reranked.length > 0) {
+          interleaved = [...reranked, ...interleaved.slice(topN.length)];
+          rerankApplied = true;
+          console.log(
+            `🎯 Cohere rerank applied to ${topN.length} candidates in ${Date.now() - rerankStart}ms`
+          );
+        }
+      }
+    }
+  }
+
   const diversified = interleaved.slice(0, limit);
 
   // P1-4: maybe inject a random low-similarity exploration article into a
@@ -885,6 +1039,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
     dbTime,
     includeEmbedding,
     explorationInjected,
+    rerankApplied,
   };
 }
 
@@ -1236,6 +1391,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       dbTime,
       includeEmbedding,
       explorationInjected,
+      rerankApplied,
     } = await computePersonalizedLight({ ctx, language, limit, forceRefresh });
 
     try {
@@ -1253,7 +1409,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms ` +
       `(db ${dbTime}ms, candidates ${candidateCount}, window ${usedWindowHours}h, ` +
       `lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding}, ` +
-      `explore=${explorationInjected ? 'yes' : 'no'})`
+      `explore=${explorationInjected ? 'yes' : 'no'}, ` +
+      `rerank=${rerankApplied ? 'yes' : 'no'})`
     );
 
     res.setHeader('X-Cache', 'miss');
@@ -1263,6 +1420,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Candidates', candidateCount);
     res.setHeader('X-Window-Hours', usedWindowHours);
     res.setHeader('X-Explore', explorationInjected ? '1' : '0');
+    res.setHeader('X-Rerank', rerankApplied ? '1' : '0');
 
     res.json(finalArticles);
   } catch (error) {
