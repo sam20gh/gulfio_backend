@@ -168,6 +168,105 @@ async function updateUserProfileEmbedding(userMongoId) {
   }
 }
 
+/**
+ * Incremental EMA embedding update for an article like/dislike.
+ *
+ * Mirrors the cheap path used by reels (routes/user.js): blend the user's
+ * 128D PCA embedding toward (or away from) the article's embedding by a
+ * small alpha. ~5ms of math, no OpenAI call, no full re-aggregation. The
+ * daily cron (jobs/update-user-embeddings.js) still recomputes the full
+ * embedding from scratch and catches up on views/saves/comments.
+ *
+ * Side effect: on dislike, also $addToSet the article's category into
+ * disliked_categories — preserves the behavior previously achieved by the
+ * heavy full re-aggregation, without scanning all disliked articles.
+ *
+ * Debounced via Redis: at most one incremental update per user per 2s,
+ * so rapid-tap scrolling doesn't thrash the vector.
+ *
+ * @param {string} supabaseId
+ * @param {mongoose.Types.ObjectId|string} articleId
+ * @param {'like'|'dislike'} action
+ */
+async function applyIncrementalEmbeddingUpdate(supabaseId, articleId, action) {
+  if (!supabaseId || !articleId) return;
+  if (action !== 'like' && action !== 'dislike') return;
+
+  try {
+    // Debounce: skip if we updated within the last 2 seconds for this user.
+    // NX returns 'OK' on first set; null if the key already exists.
+    const debounceKey = `emb_debounce:${supabaseId}`;
+    const acquired = await redis.set(debounceKey, '1', 'EX', 2, 'NX');
+    if (acquired !== 'OK') {
+      return;
+    }
+
+    const [article, user] = await Promise.all([
+      Article.findById(articleId).select('embedding_pca category').lean(),
+      User.findOne({ supabase_id: supabaseId }).select('embedding_pca').lean(),
+    ]);
+
+    if (!article?.embedding_pca || article.embedding_pca.length !== 128) {
+      // Article has no usable embedding yet (older article or scrape miss).
+      // For dislikes we can still update the category set below.
+    }
+
+    // EMA blend — like pulls toward, dislike pushes away.
+    if (
+      article?.embedding_pca?.length === 128 &&
+      user?.embedding_pca?.length === 128
+    ) {
+      const alpha = action === 'like' ? 0.12 : -0.15;
+      const w = 1 - Math.abs(alpha);
+      const newEmbedding = user.embedding_pca.map(
+        (v, i) => v * w + article.embedding_pca[i] * alpha
+      );
+      await User.updateOne(
+        { supabase_id: supabaseId },
+        { $set: { embedding_pca: newEmbedding, updatedAt: new Date() } }
+      );
+      console.log(
+        `🧠 EMA embedding update for ${supabaseId.substring(0, 8)} ` +
+        `(${action}, α=${alpha})`
+      );
+    } else if (
+      action === 'like' &&
+      article?.embedding_pca?.length === 128 &&
+      (!user?.embedding_pca || user.embedding_pca.length !== 128)
+    ) {
+      // Cold-start: user has no embedding yet (brand new account).
+      // Seed it with the article's vector so the very next request
+      // gets a vector-weighted feed instead of waiting for tonight's
+      // cron. Only on like (not dislike) — seeding with a negative
+      // signal would mean the user's vector starts as "the opposite
+      // of an article they didn't like", which is meaningless.
+      await User.updateOne(
+        { supabase_id: supabaseId },
+        { $set: { embedding_pca: article.embedding_pca, updatedAt: new Date() } }
+      );
+      console.log(
+        `🌱 Cold-start embedding seed for ${supabaseId.substring(0, 8)} ` +
+        `from first like`
+      );
+    }
+    // else: dislike on user with no embedding — daily cron will bootstrap.
+
+    // Dislike also marks the category as disliked. Hard $nin filter in
+    // personalized-light excludes this category from future feeds.
+    if (action === 'dislike' && article?.category) {
+      await User.updateOne(
+        { supabase_id: supabaseId },
+        { $addToSet: { disliked_categories: article.category } }
+      );
+    }
+  } catch (err) {
+    // Non-fatal: a missed EMA just means the daily cron handles it.
+    console.warn(
+      `⚠️ Incremental embedding update failed for ${supabaseId}: ${err.message}`
+    );
+  }
+}
+
 /** Deterministic LCG for stable pseudo-randomness */
 function lcg(seed) {
   let s = seed >>> 0;
@@ -3015,8 +3114,13 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
         await clearUserArticleCaches(userId);
         await clearUserArticleCaches(mongoUser._id?.toString());
 
-        // Recompute user embedding asynchronously (this is expensive)
-        await updateUserProfileEmbedding(mongoUser._id);
+        // Cheap O(128) EMA blend of the user's embedding toward (like) or
+        // away from (dislike) this article. ~5ms of math, no OpenAI call.
+        // Previously called updateUserProfileEmbedding here which did a
+        // full OpenAI re-embed on EVERY reaction (~500-2000ms, $0.0002
+        // per call). The daily cron still does the heavy re-aggregation
+        // for views/saves/comments and recalibrates from scratch.
+        await applyIncrementalEmbeddingUpdate(userId, articleObjectId, action);
 
         // 🎮 Log activity for gamification tracking
         await UserActivity.create({
