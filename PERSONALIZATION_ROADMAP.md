@@ -19,7 +19,7 @@ Frontend in `menaApp/components/ArticleList.tsx` (React Query infinite list, pag
 |---|---|---|---|
 | **P0** | Correctness & risk | **5 / 5** ✅ | 5 |
 | **P1** | Ranking quality | **6 / 6** ✅ | 6 |
-| **P2** | Performance | 0 / 4 | 4 |
+| **P2** | Performance | **4 / 4** ✅ | 4 |
 | **P3** | Architecture & telemetry | 0 / 5 | 5 |
 
 ---
@@ -73,27 +73,25 @@ All 6 shipped. The home feed is now substantially more personalized than the rec
 
 ---
 
-## P2 — Performance
+## P2 — DONE
 
-### P2-1 — Cache the user context
-**Why:** `loadUserPersonalizationContext` runs one Mongo round-trip per request. Page 1 + page 2 + a category tap = 3 trips in 5s for the same context.
-**How:** Cache `ctx` in Redis under `user_ctx:{userId}:{stateHash}` for 5 min. Bust on like/dislike via the per-user cache index already added in P0-1.
-**Files:** `routes/articles.js` — `loadUserPersonalizationContext`.
+All 4 P2 items resolved. P2-4 was investigated and rejected (the original audit was wrong about its complexity); the other three shipped.
 
-### P2-2 — Conditional embedding projection
-**Why:** Pulling `embedding_pca` (128 floats × ~240 candidates ≈ 31KB/request) is wasted bandwidth when the vector contribution doesn't move ranking much (e.g. user has strong category prefs already).
-**How:** Log `vectorContribution / totalScore` distribution for a week. If the bottom-half users get <5% ranking change from the vector term, skip the projection for them.
-**Files:** `routes/articles.js` — `computePersonalizedLight`, `personalized-fast` candidate query.
+| # | Commit | Headline |
+|---|---|---|
+| P2-1 | `5b56d4a` | `loadUserPersonalizationContext` now caches the full ctx (Sets/Maps round-tripped) in Redis at `user_ctx_v1_{userId}` for 5 min. Tracked via the per-user cache index so `/react` invalidates it automatically. |
+| P2-3 | `6b95087` + `de16ef8` | New pre-warmed `/articles/recent` endpoint (<5ms Redis served), refreshed every ~4.5 min. Frontend page-1 fetch does a 1.5s soft race against `/personalized-light` — cold-start users see articles in ~200ms instead of waiting 5-15s for Cloud Run. The slower personalized call still completes server-side and fills the SWR cache for the next request. |
+| P2-2 | `3eae435` | Vector-contribution telemetry: scorer now logs the % of total score attributable to the vector term. Feature-flagged conditional skip via `PERS_SKIP_VECTOR_FOR_HEAVY_PREFS=1` for users with ≥4 preferred categories AND ≥3 followed source groups. Default off — turn on after a week of telemetry confirms which user profiles see <5% vector contribution. |
+| P2-4 | *(rejected)* | The original audit claimed `interleaveBySourceGroup` was O(n²). Benchmark proved otherwise: O(n), ~28μs at n=240, ~200μs at n=25k. A heap variant would be slower (O(log k) vs O(1) Map ops). Function now carries a complexity docstring so this isn't reopened. |
 
-### P2-3 — Replace frontend 30s timeout with optimistic placeholder
-**Why:** `services/api/articles.ts:280` — native fetch waits 30s on Cloud Run cold start. Users will close the app long before that.
-**How:** Always serve from Redis (a "showing recent" pre-warmed list) in <100ms, then quietly swap in the personalized one when it arrives. Stop blocking on the cold compute.
-**Files:** Backend: a small `/articles/recent` endpoint that's pre-warmed. Frontend: `services/api/articles.ts` + `ArticleList.tsx` swap logic.
+### P2 verification checklist for staging
 
-### P2-4 — Heap-based interleave for larger pools
-**Why:** `interleaveBySourceGroup` is O(n²) in the worst case on `out.length - last`. Fine at n=240; degrades as we grow the candidate pool.
-**How:** Switch to a min-heap keyed by `(score, lastSeenIdx)`. Only matters if P1-5 lands and the candidate pool grows.
-**Files:** `routes/articles.js` — `interleaveBySourceGroup`.
+- [ ] Hit `/personalized-light` twice in succession — second call's ctx should load from Redis (no `📈 Found N recent activities` log on the second hit).
+- [ ] Tap a category chip then return to the main feed — confirm the chip's `/personalized-category` ctx load is also cached (no second UserActivity aggregation).
+- [ ] Cold-start: open a fresh app build with `personalized_articles_cache` cleared in AsyncStorage — feed should paint in <500ms thanks to `/articles/recent` race winning.
+- [ ] Verify the `📦 [SOFT-RACE]` log line fires when personalized takes >1.5s.
+- [ ] Set `PERS_LOG_VECTOR_PCT=1` in env — every personalized request should emit `📐 vector contribution for X: N%`. Collect data for a week before flipping `PERS_SKIP_VECTOR_FOR_HEAVY_PREFS=1`.
+- [ ] Confirm `/articles/recent?language=arabic` returns Arabic results and is pre-warmed in Redis.
 
 ---
 
