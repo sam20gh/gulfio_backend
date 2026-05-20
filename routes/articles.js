@@ -605,6 +605,78 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
 }
 
 /**
+ * ε-greedy exploration injection (P1-4).
+ *
+ * With probability EXPLORATION_RATE, swap a visible mid-page slot of the
+ * page-1 feed with a recent article from a category the user has NOT
+ * recently engaged with. Helps break out of filter bubbles — the greedy
+ * scorer otherwise reinforces existing affinities indefinitely.
+ *
+ * Criteria for an exploration candidate:
+ *   - Recent (recency >= 0.5, i.e. ~last 50h with τ=72)
+ *   - Category is NOT in user's explicit OR implicit preferred categories
+ *   - Article is NOT already in the visible page
+ *   - Article is NOT already in viewedIds
+ *
+ * No-op if no eligible candidate exists in the pool, or if user has no
+ * personalization signal (cold-start users are already exploring by
+ * default — pure recency feed).
+ *
+ * @param {Array} page - the page-sliced output array (mutated in place)
+ * @param {Array} fullPool - the full scored+interleaved pool
+ * @param {Object} ctx - personalization context
+ * @returns {boolean} true if a swap happened
+ */
+const EXPLORATION_RATE = 0.12;
+const EXPLORATION_MIN_SLOT = 2;
+const EXPLORATION_MAX_SLOT = 7;
+
+function maybeInjectExploration(page, fullPool, ctx) {
+  if (!ctx?.hasSignal) return false;
+  if (!page || page.length <= EXPLORATION_MIN_SLOT) return false;
+  if (Math.random() >= EXPLORATION_RATE) return false;
+
+  const pageIds = new Set(
+    page.map((a) => (a._id ? a._id.toString() : null)).filter(Boolean)
+  );
+
+  // Build eligibility filter — prefer articles from categories the user
+  // genuinely hasn't explored, not just ones missing from preferred.
+  const preferred = ctx.preferredCategories || new Set();
+  const viewed = ctx.viewedIds || new Set();
+
+  const eligible = [];
+  for (const a of fullPool) {
+    if (!a.category) continue;
+    if (preferred.has(a.category)) continue;
+    const idStr = a._id ? a._id.toString() : null;
+    if (!idStr) continue;
+    if (pageIds.has(idStr)) continue;
+    if (viewed.has(idStr)) continue;
+    const recency = basicRecencyScore(a.publishedAt);
+    if (recency < 0.5) continue;
+    eligible.push(a);
+  }
+
+  if (eligible.length === 0) return false;
+
+  // Pick uniformly at random — true exploration. We're explicitly not
+  // sorting by score here; the point is to surface what the greedy ranker
+  // would never pick.
+  const picked = eligible[Math.floor(Math.random() * eligible.length)];
+
+  // Pick a slot in the visible mid-page range. Clamp to actual length so
+  // we don't crash on a short page.
+  const maxSlot = Math.min(EXPLORATION_MAX_SLOT, page.length - 1);
+  const slot =
+    EXPLORATION_MIN_SLOT +
+    Math.floor(Math.random() * (maxSlot - EXPLORATION_MIN_SLOT + 1));
+
+  page[slot] = { ...picked, _explorationInjected: true };
+  return true;
+}
+
+/**
  * Interleave articles by source group so consecutive items don't come from
  * the same source, without throwing away total count.
  *
@@ -794,6 +866,11 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
   const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
   const diversified = interleaved.slice(0, limit);
 
+  // P1-4: maybe inject a random low-similarity exploration article into a
+  // mid-page slot. Fires probabilistically (~12% of requests) for users
+  // with signal — breaks filter bubbles without dominating the feed.
+  const explorationInjected = maybeInjectExploration(diversified, interleaved, ctx);
+
   const articles = sanitizeForResponse(diversified, {
     isLight: true,
     fetchedAt: new Date(),
@@ -801,7 +878,14 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
     isPersonalized: !!ctx?.hasSignal,
   });
 
-  return { articles, usedWindowMs, candidateCount: candidates.length, dbTime, includeEmbedding };
+  return {
+    articles,
+    usedWindowMs,
+    candidateCount: candidates.length,
+    dbTime,
+    includeEmbedding,
+    explorationInjected,
+  };
 }
 
 /**
@@ -1145,8 +1229,14 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     }
 
     // Cold miss (or forceRefresh): synchronous compute.
-    const { articles: finalArticles, usedWindowMs, candidateCount, dbTime, includeEmbedding } =
-      await computePersonalizedLight({ ctx, language, limit, forceRefresh });
+    const {
+      articles: finalArticles,
+      usedWindowMs,
+      candidateCount,
+      dbTime,
+      includeEmbedding,
+      explorationInjected,
+    } = await computePersonalizedLight({ ctx, language, limit, forceRefresh });
 
     try {
       await redis.set(freshKey, JSON.stringify(finalArticles), 'EX', SWR_FRESH_TTL);
@@ -1160,7 +1250,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     const totalTime = Date.now() - startTime;
     const usedWindowHours = Math.round(usedWindowMs / (60 * 60 * 1000));
     console.log(
-      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms (db ${dbTime}ms, candidates ${candidateCount}, window ${usedWindowHours}h, lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding})`
+      `🚀 pers-v2 light: ${finalArticles.length} articles in ${totalTime}ms ` +
+      `(db ${dbTime}ms, candidates ${candidateCount}, window ${usedWindowHours}h, ` +
+      `lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding}, ` +
+      `explore=${explorationInjected ? 'yes' : 'no'})`
     );
 
     res.setHeader('X-Cache', 'miss');
@@ -1169,6 +1262,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Personalized', ctx?.hasSignal ? (includeEmbedding ? 'vector' : 'signal') : 'none');
     res.setHeader('X-Candidates', candidateCount);
     res.setHeader('X-Window-Hours', usedWindowHours);
+    res.setHeader('X-Explore', explorationInjected ? '1' : '0');
 
     res.json(finalArticles);
   } catch (error) {
