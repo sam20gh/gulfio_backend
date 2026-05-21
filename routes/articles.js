@@ -4284,6 +4284,48 @@ articleRouter.get('/related/:id', async (req, res) => {
 
     console.log(`🔍 Fetching related articles for: ${id}, limit: ${limit}`);
 
+    // Optional auth (P3-4): if the caller sent a JWT, decode it and pull
+    // the user's disliked articles + categories so we can filter them
+    // out of the carousel. Unauthenticated callers get the unfiltered
+    // result (existing behavior preserved).
+    let dislikedArticleObjectIds = [];
+    let dislikedCategorySet = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        const jwt = require('jsonwebtoken');
+        // Verify if we can; fall back to decode-only — the dislike filter
+        // is a soft preference, not a security boundary.
+        let decoded;
+        try {
+          decoded = jwt.verify(token, process.env.SUPABASE_JWT_SECRET, {
+            algorithms: ['HS256'],
+            issuer: process.env.SUPABASE_JWT_ISSUER,
+          });
+        } catch {
+          decoded = jwt.decode(token);
+        }
+        const supabaseId = decoded?.sub;
+        if (supabaseId) {
+          const user = await User.findOne({ supabase_id: supabaseId })
+            .select('disliked_articles disliked_categories')
+            .lean();
+          if (user) {
+            dislikedArticleObjectIds = (user.disliked_articles || [])
+              .slice(0, 500)
+              .map((aid) => (typeof aid === 'string' ? new mongoose.Types.ObjectId(aid) : aid))
+              .filter(Boolean);
+            dislikedCategorySet = new Set(user.disliked_categories || []);
+          }
+        }
+      }
+    } catch (err) {
+      // Non-fatal: just serve unfiltered.
+      console.warn('⚠️ related/:id auth decode failed:', err.message);
+    }
+    const hasDislikedCats = dislikedCategorySet && dislikedCategorySet.size > 0;
+
     // Get the base article with its embedding
     const baseArticle = await Article.findById(id).select('title category language sourceId embedding_pca').lean();
     if (!baseArticle) {
@@ -4315,10 +4357,19 @@ articleRouter.get('/related/:id', async (req, res) => {
               }
             }
           },
-          // Exclude current article
+          // Exclude current article + disliked articles + disliked categories.
+          // Atlas $vectorSearch's `filter` param only supports a small subset
+          // of operators, so we apply user-specific dislikes here as a $match
+          // stage rather than baking them into the index pre-filter.
           {
             $match: {
-              _id: { $ne: new mongoose.Types.ObjectId(id) }
+              _id: {
+                $ne: new mongoose.Types.ObjectId(id),
+                ...(dislikedArticleObjectIds.length > 0 ? { $nin: dislikedArticleObjectIds } : {}),
+              },
+              ...(hasDislikedCats
+                ? { category: { $nin: [...dislikedCategorySet] } }
+                : {}),
             }
           },
           { $addFields: { similarity: { $meta: "vectorSearchScore" } } },
@@ -4376,30 +4427,45 @@ articleRouter.get('/related/:id', async (req, res) => {
     if (relatedArticles.length < limit) {
       console.log('🔍 Using category/language-based similarity as fallback');
 
+      // Build a reusable "respect user dislikes" filter for the fallback paths.
+      const dislikedCategoryFilter = hasDislikedCats
+        ? { category: { $nin: [...dislikedCategorySet] } }
+        : {};
+      const buildIdNin = (excludeIdObjs) => {
+        const combined = [...excludeIdObjs, ...dislikedArticleObjectIds];
+        return combined.length > 0 ? { _id: { $nin: combined } } : {};
+      };
+
       const remaining = limit - relatedArticles.length;
       const excludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+      const excludeIdObjs = excludeIds.map(eid => new mongoose.Types.ObjectId(eid));
 
-      // First try same category + language, different source
-      let categoryArticles = await Article.find({
-        _id: { $nin: excludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
-        category: baseArticle.category,
-        language: articleLanguage,
-        sourceId: { $ne: baseArticle.sourceId }
-      })
-        .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
-        .sort({ publishedAt: -1 })
-        .limit(remaining)
-        .lean();
+      // First try same category + language, different source.
+      // Skip this branch if the user has disliked the base article's category.
+      let categoryArticles = [];
+      if (!hasDislikedCats || !dislikedCategorySet.has(baseArticle.category)) {
+        categoryArticles = await Article.find({
+          ...buildIdNin(excludeIdObjs),
+          category: baseArticle.category,
+          language: articleLanguage,
+          sourceId: { $ne: baseArticle.sourceId }
+        })
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
+          .sort({ publishedAt: -1 })
+          .limit(remaining)
+          .lean();
+      }
 
       relatedArticles = relatedArticles.concat(categoryArticles.map(a => ({ ...a, similarity: 0.7 })));
 
       // If still not enough, try same source + language
       if (relatedArticles.length < limit) {
         const stillRemaining = limit - relatedArticles.length;
-        const newExcludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+        const newExcludeIdObjs = relatedArticles.map(a => new mongoose.Types.ObjectId(a._id.toString())).concat([new mongoose.Types.ObjectId(id)]);
 
         const sourceArticles = await Article.find({
-          _id: { $nin: newExcludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
+          ...buildIdNin(newExcludeIdObjs),
+          ...dislikedCategoryFilter,
           sourceId: baseArticle.sourceId,
           language: articleLanguage
         })
@@ -4411,13 +4477,14 @@ articleRouter.get('/related/:id', async (req, res) => {
         relatedArticles = relatedArticles.concat(sourceArticles.map(a => ({ ...a, similarity: 0.5 })));
       }
 
-      // Last resort: same language, any category
+      // Last resort: same language, any category (still filtered)
       if (relatedArticles.length < limit) {
         const stillRemaining = limit - relatedArticles.length;
-        const newExcludeIds = relatedArticles.map(a => a._id.toString()).concat([id]);
+        const newExcludeIdObjs = relatedArticles.map(a => new mongoose.Types.ObjectId(a._id.toString())).concat([new mongoose.Types.ObjectId(id)]);
 
         const languageArticles = await Article.find({
-          _id: { $nin: newExcludeIds.map(eid => new mongoose.Types.ObjectId(eid)) },
+          ...buildIdNin(newExcludeIdObjs),
+          ...dislikedCategoryFilter,
           language: articleLanguage
         })
           .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
