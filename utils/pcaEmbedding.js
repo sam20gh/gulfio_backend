@@ -3,70 +3,151 @@ const { PCA } = require('ml-pca');
 const { Matrix } = require('ml-matrix');
 const Article = require('../models/Article');
 const Reel = require('../models/Reel');
+const PCAModel = require('../models/PCAModel');
 
 let globalPCA = null;
 
+const PCA_MODEL_NAME = 'article_embedding_pca_v1';
+
 /**
- * Initialize the global PCA model from existing articles and reels
+ * Train a fresh PCA model from the current article+reel corpus.
+ * Does NOT persist — caller decides. Returns null if there isn't enough
+ * data to train (<50 valid 1536D embeddings).
+ */
+async function trainPCAFromCorpus() {
+    console.log('🔄 Training PCA from current article+reel corpus...');
+
+    const [sampleArticles, sampleReels] = await Promise.all([
+        Article.find({ embedding: { $exists: true, $ne: null } })
+            .limit(3000)
+            .select('embedding')
+            .lean(),
+        Reel.find({ embedding: { $exists: true, $ne: null } })
+            .limit(2000)
+            .select('embedding')
+            .lean(),
+    ]);
+
+    console.log(`📊 Found ${sampleArticles.length} articles + ${sampleReels.length} reels`);
+
+    const validEmbeddings = [
+        ...sampleArticles.map((a) => a.embedding),
+        ...sampleReels.map((r) => r.embedding),
+    ].filter((e) => Array.isArray(e) && e.length === 1536);
+
+    if (validEmbeddings.length < 50) {
+        console.warn('⚠️ Not enough valid 1536D embeddings for PCA training');
+        return null;
+    }
+
+    console.log(`📊 Training PCA with ${validEmbeddings.length} embeddings...`);
+    const matrix = new Matrix(validEmbeddings);
+    const pca = new PCA(matrix, { center: true, scale: false });
+    console.log(`✅ PCA trained — ${pca.explained.length} components`);
+    return { pca, sampleCount: validEmbeddings.length };
+}
+
+/**
+ * Initialize the global PCA model.
+ *
+ * Tries to load a persisted model from Mongo first (P3-3) — this keeps
+ * the 128-D basis stable across deploys / restarts so every embedding
+ * ever produced lives in the same space. Only trains from the corpus
+ * on a true cold start (no persisted model exists yet).
  */
 async function initializePCAModel() {
     if (globalPCA) return globalPCA;
 
     try {
-        console.log('🔄 Initializing PCA model from existing articles and reels...');
-
-        // Get embeddings from both articles and reels
-        const [sampleArticles, sampleReels] = await Promise.all([
-            Article.find({
-                embedding: { $exists: true, $ne: null }
-            })
-                .limit(3000) // Use max 3000 articles for PCA training
-                .select('embedding')
-                .lean(),
-            Reel.find({
-                embedding: { $exists: true, $ne: null }
-            })
-                .limit(2000) // Use max 2000 reels for PCA training
-                .select('embedding')
-                .lean()
-        ]);
-
-        const totalSamples = sampleArticles.length + sampleReels.length;
-        console.log(`📊 Found ${sampleArticles.length} articles and ${sampleReels.length} reels for PCA training`);
-
-        if (totalSamples < 50) {
-            console.warn('⚠️ Not enough content to train PCA model');
-            return null;
+        // 1. Load persisted model if present.
+        const persisted = await PCAModel.findOne({ name: PCA_MODEL_NAME }).lean();
+        if (persisted?.model) {
+            try {
+                globalPCA = PCA.load(persisted.model);
+                console.log(
+                    `✅ PCA loaded from Mongo ` +
+                    `(${persisted.components || '?'} components, ` +
+                    `trained ${persisted.trainedAt?.toISOString?.() || 'unknown'} ` +
+                    `on ${persisted.sampleCount || '?'} samples)`
+                );
+                return globalPCA;
+            } catch (loadErr) {
+                console.warn(
+                    '⚠️ Persisted PCA failed to hydrate, will retrain:',
+                    loadErr.message
+                );
+            }
+        } else {
+            console.log('ℹ️ No persisted PCA found — training fresh from corpus');
         }
 
-        // Filter valid 1536D embeddings from both sources
-        const validEmbeddings = [
-            ...sampleArticles.map(a => a.embedding),
-            ...sampleReels.map(r => r.embedding)
-        ].filter(e => Array.isArray(e) && e.length === 1536);
+        // 2. Fall back to training from current corpus.
+        const trained = await trainPCAFromCorpus();
+        if (!trained) return null;
 
-        if (validEmbeddings.length < 50) {
-            console.warn('⚠️ Not enough valid 1536D embeddings for PCA');
-            return null;
+        globalPCA = trained.pca;
+
+        // 3. Persist so subsequent boots are deterministic.
+        try {
+            await PCAModel.updateOne(
+                { name: PCA_MODEL_NAME },
+                {
+                    $set: {
+                        name: PCA_MODEL_NAME,
+                        model: globalPCA.toJSON(),
+                        components: globalPCA.explained.length,
+                        sampleCount: trained.sampleCount,
+                        trainedAt: new Date(),
+                    },
+                },
+                { upsert: true }
+            );
+            console.log(`💾 Persisted PCA model to Mongo as "${PCA_MODEL_NAME}"`);
+        } catch (saveErr) {
+            console.error('⚠️ Failed to persist PCA model:', saveErr.message);
+            // Non-fatal: the in-memory model still works for this process.
         }
 
-        console.log(`📊 Training PCA model with ${validEmbeddings.length} embeddings (${sampleArticles.length} articles + ${sampleReels.length} reels)...`);
-
-        // Create matrix and train PCA
-        console.log(`🔄 Creating matrix from ${validEmbeddings.length} x 1536 embeddings...`);
-        const matrix = new Matrix(validEmbeddings);
-
-        console.log(`🔄 Training PCA model...`);
-        globalPCA = new PCA(matrix, { center: true, scale: false });
-
-        console.log('✅ PCA model initialized successfully');
-        console.log(`📊 PCA model stats: ${globalPCA.explained.length} components available`);
         return globalPCA;
-
     } catch (error) {
         console.error('❌ Error initializing PCA model:', error);
         return null;
     }
+}
+
+/**
+ * Force a retrain from the current corpus and overwrite the persisted
+ * model. Use after a known content distribution shift (e.g. major new
+ * sources added, language mix changed significantly).
+ *
+ * WARNING: invalidates the 128-D basis. All previously-generated
+ * embedding_pca values become stale and should be regenerated.
+ */
+async function retrainAndPersistPCA() {
+    const trained = await trainPCAFromCorpus();
+    if (!trained) {
+        return { success: false, error: 'Not enough corpus to train' };
+    }
+    globalPCA = trained.pca;
+    await PCAModel.updateOne(
+        { name: PCA_MODEL_NAME },
+        {
+            $set: {
+                name: PCA_MODEL_NAME,
+                model: globalPCA.toJSON(),
+                components: globalPCA.explained.length,
+                sampleCount: trained.sampleCount,
+                trainedAt: new Date(),
+            },
+        },
+        { upsert: true }
+    );
+    console.log(`🔁 PCA retrained + persisted (${trained.sampleCount} samples)`);
+    return {
+        success: true,
+        components: globalPCA.explained.length,
+        sampleCount: trained.sampleCount,
+    };
 }
 
 /**
@@ -120,5 +201,6 @@ async function convertToPCAEmbedding(embedding) {
 
 module.exports = {
     initializePCAModel,
-    convertToPCAEmbedding
+    convertToPCAEmbedding,
+    retrainAndPersistPCA,
 };

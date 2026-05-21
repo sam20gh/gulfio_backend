@@ -37,6 +37,16 @@ try {
     updateSourceQualityScores = null;
 }
 
+let retrainAndPersistPCA;
+try {
+    console.log('📂 Loading retrainAndPersistPCA...');
+    retrainAndPersistPCA = require('../utils/pcaEmbedding').retrainAndPersistPCA;
+    console.log('✅ retrainAndPersistPCA loaded');
+} catch (error) {
+    console.error('❌ Failed to load retrainAndPersistPCA:', error.message);
+    retrainAndPersistPCA = null;
+}
+
 const { ADMIN_API_KEY } = process.env;
 
 // Middleware: Verify admin API key
@@ -135,6 +145,35 @@ router.post('/update-source-quality', verifyAdminKey, async (req, res) => {
 });
 
 /**
+ * POST /api/jobs/retrain-pca (P3-3)
+ *
+ * Force a retrain of the article-embedding PCA model from the current
+ * corpus and overwrite the persisted snapshot. Manual trigger only —
+ * the model is otherwise stable across deploys, which is the whole
+ * point of P3-3.
+ *
+ * WARNING: All previously-generated article and user embedding_pca
+ * values are now in a different 128-D basis and should be regenerated
+ * via backfill-embeddings.js or the daily user-embedding cron.
+ */
+router.post('/retrain-pca', verifyAdminKey, async (req, res) => {
+    try {
+        if (!retrainAndPersistPCA) {
+            return res.status(503).json({
+                success: false,
+                error: 'retrainAndPersistPCA not available - check server logs',
+            });
+        }
+        const result = await retrainAndPersistPCA();
+        const statusCode = result.success ? 200 : 500;
+        res.status(statusCode).json(result);
+    } catch (error) {
+        console.error('❌ retrain-pca error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/jobs/status
  * Check job system status
  */
@@ -153,6 +192,12 @@ router.get('/status', verifyAdminKey, (req, res) => {
                 endpoint: '/api/jobs/update-source-quality',
                 schedule: '30 2 * * *',
                 description: 'Recompute Source.quality_score from 30d like/dislike data (P3-5)'
+            },
+            {
+                name: 'retrain-pca',
+                endpoint: '/api/jobs/retrain-pca',
+                schedule: 'manual',
+                description: 'Force-retrain article-embedding PCA from current corpus (P3-3). Manual trigger only.'
             }
         ],
         timestamp: new Date().toISOString()
