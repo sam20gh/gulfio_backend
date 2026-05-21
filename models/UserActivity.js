@@ -8,6 +8,10 @@ const userActivitySchema = new mongoose.Schema({
     contentType: { type: String, enum: ['article', 'reel'], default: 'article' }, // Track content type
     duration: { type: Number }, // in seconds
     timestamp: { type: Date, default: Date.now },
+    // P3-1: A/B treatment ID at the moment the event was logged. Lets
+    // engagement analysis JOIN events back to the personalization
+    // variant the user was in. 'control' when no experiment is active.
+    treatment: { type: String, default: 'control' },
 });
 userActivitySchema.index({ userId: 1 });
 userActivitySchema.index({ articleId: 1 });
@@ -15,6 +19,7 @@ userActivitySchema.index({ reelId: 1 });
 userActivitySchema.index({ contentType: 1, timestamp: -1 });
 userActivitySchema.index({ timestamp: -1 });
 userActivitySchema.index({ eventType: 1, timestamp: -1 });
+userActivitySchema.index({ treatment: 1, timestamp: -1 });
 
 userActivitySchema.index({ timestamp: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 }); // 90 days
 

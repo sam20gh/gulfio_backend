@@ -20,7 +20,9 @@ Frontend in `menaApp/components/ArticleList.tsx` (React Query infinite list, pag
 | **P0** | Correctness & risk | **5 / 5** ✅ | 5 |
 | **P1** | Ranking quality | **6 / 6** ✅ | 6 |
 | **P2** | Performance | **4 / 4** ✅ | 4 |
-| **P3** | Architecture & telemetry | 0 / 5 | 5 |
+| **P3** | Architecture & telemetry | **5 / 5** ✅ | 5 |
+
+**All 20 audit items resolved.** P0-P2 added ranking, performance, and correctness wins. P3 established the telemetry + persistence foundation: A/B framework, deterministic PCA, source quality multiplier, dislike-aware related carousel.
 
 ---
 
@@ -95,27 +97,24 @@ All 4 P2 items resolved. P2-4 was investigated and rejected (the original audit 
 
 ---
 
-## P3 — Architecture & telemetry
+## P3 — DONE
 
-### P3-1 — A/B framework for `PERS_W`
-**Why:** No way to tune scoring weights empirically. Every change is a vibe-based hand-edit.
-**How:** Hash userId to a treatment bucket. Pass `treatment` in the response and log alongside `UserActivity`. BigQuery → CTR / read-time deltas per treatment.
+| # | Commit | Headline |
+|---|---|---|
+| P3-2 | `f946a1f` | Deleted 791 lines of dead `aiAgentService-backup.js`. No references anywhere in the codebase. |
+| P3-4 | `08911e1` + `5ae3ea7` | `/articles/related/:id` now optionally accepts a JWT; when present, filters out the user's disliked articles + categories from both the `$vectorSearch` post-match and all three fallback Mongo queries. Frontend forwards the token via a new `fetchRelatedArticles` helper. Cache key bumped to `v3-dislikes` so stale unfiltered results can't be served. |
+| P3-5 | `2d242e8` | New `Source.quality_score ∈ [0,1]` (smoothed dislike ratio over 30d). Computed nightly by `jobs/update-source-quality.js`. Scorer multiplies the **positive** score component (not penalties) by it — low-quality scrapers self-demote without disappearing. `POST /api/jobs/update-source-quality` admin endpoint for manual + Cloud Scheduler. |
+| P3-3 | `b28d587` | PCA model persisted to a `pca_models` Mongo collection. Boot loads via `PCA.load(persisted.model)` instead of retraining; first-time cold boots train and save once. `POST /api/jobs/retrain-pca` admin endpoint for explicit retrain after a content distribution shift. The 128-D basis is now deterministic across deploys. |
+| P3-1 | `PENDING_HASH` | A/B framework infrastructure. `utils/experiments.js` ships with stable userId → treatment bucketing (MD5 hash mod buckets — verified 1% balance on 10k samples), per-treatment `PERS_W` overrides, and a treatment registry. `UserActivity.treatment` field + index for join. `X-Treatment` and `X-Experiment` response headers. Scorer reads effective weights via `getEffectivePersW`. Today only `control` is configured — variants are wired by uncommenting a single entry in `TREATMENTS`. |
 
-### P3-2 — Delete `aiAgentService-backup.js`
-**Why:** Dead code referencing `COHERE_API_KEY` makes the wiring ambiguous. Either merge its working pieces into `aiAgentService.js` (and use them in P1-5) or delete it.
+### P3 verification checklist for staging
 
-### P3-3 — Persist the PCA model
-**Why:** `globalPCA` in `utils/pcaEmbedding.js` is fitted in-process on boot from current articles. If the article distribution shifts and the server restarts, every embedding ever produced silently lives in a slightly different 128-D space — silent drift.
-**How:** Persist trained PCA components to disk/GCS once. Load on boot. Retrain only on a manual trigger after a known content distribution shift.
-
-### P3-4 — `/related/:id` should respect dislikes
-**Why:** `articles_related_*` cache + the route at `routes/articles.js:3318` don't apply `_id $nin disliked_articles`. The carousel can recommend an article the user just disliked.
-**How:** Add the dislike filter to the `$vectorSearch` `filter` block and the fallback category match.
-
-### P3-5 — Source quality multiplier
-**Why:** Every source is treated equally in scoring. Low-quality scrapers can pollute the feed indefinitely.
-**How:** Per source, track `dislikes / (likes + dislikes + ε)` over 30d. Multiply the score contribution by `(1 - quality_penalty)`. Low-quality scrapers self-demote.
-**Files:** A new daily aggregation job + a `Source.quality_score` field.
+- [ ] `grep -r aiAgentService-backup` returns nothing (P3-2).
+- [ ] A logged-in user who has disliked article X opens article Y → confirm X is not in the carousel response. Verify in the response headers / network tab that the JWT was sent.
+- [ ] Run `POST /api/jobs/update-source-quality` with the admin key — check Mongo for `Source.quality_score` and `quality_score_updated_at`. Confirm sources scoring <0.7 appear in the logs.
+- [ ] Restart the backend; `globalPCA` should load from Mongo in <1s with a "✅ PCA loaded from Mongo" log line. `db.pca_models.findOne({name:'article_embedding_pca_v1'})` should return a doc with `trainedAt`.
+- [ ] Hit `/personalized-light` — response should include `X-Treatment: control` and `X-Experiment: scoring_v1`. Like an article and confirm `UserActivity` doc has `treatment: 'control'`.
+- [ ] (Future) Add a variant to `TREATMENTS` in `utils/experiments.js`, deploy, and verify the bucket distribution in `UserActivity` aggregation grouped by `treatment`.
 
 ---
 

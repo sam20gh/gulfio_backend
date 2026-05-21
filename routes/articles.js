@@ -16,6 +16,11 @@ const { searchArticles, findInContent } = require('../utils/atlasSearch');
 const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
 const NotificationService = require('../utils/notificationService'); // Phase 3.3: Notifications
+const {
+  EXPERIMENT_ID,
+  getTreatmentForUser,
+  getEffectivePersW,
+} = require('../utils/experiments'); // P3-1: A/B framework
 
 const articleRouter = express.Router();
 
@@ -432,6 +437,7 @@ function serializeCtx(ctx) {
   if (!ctx) return null;
   return {
     userId: ctx.userId,
+    treatment: ctx.treatment,
     preferredCategories: Array.from(ctx.preferredCategories),
     preferredSourceIds: Array.from(ctx.preferredSourceIds),
     dislikedCategories: Array.from(ctx.dislikedCategories),
@@ -452,6 +458,7 @@ function deserializeCtx(plain) {
   if (!plain) return null;
   return {
     userId: plain.userId,
+    treatment: plain.treatment || 'control',
     preferredCategories: new Set(plain.preferredCategories || []),
     preferredSourceIds: new Set(plain.preferredSourceIds || []),
     dislikedCategories: new Set(plain.dislikedCategories || []),
@@ -595,6 +602,9 @@ async function computeUserPersonalizationContext(userId) {
 
   return {
     userId,
+    // P3-1: stable A/B treatment ID. The scorer reads effective PERS_W
+    // through this; /react and /view log it onto UserActivity.
+    treatment: getTreatmentForUser(userId),
     preferredCategories,
     preferredSourceIds,
     dislikedCategories: new Set(user.disliked_categories || []),
@@ -633,6 +643,10 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
   const recencyMult = page === 1 ? 1.2 : page === 2 ? 1.0 : 0.8;
   const relMult = page === 1 ? 0.8 : page === 2 ? 1.0 : 1.2;
   const hasEmbedding = !!ctx?.embedding;
+
+  // P3-1: pull effective weights from the user's treatment. Falls
+  // through to PERS_W defaults when no overrides exist (today: always).
+  const W = getEffectivePersW(ctx?.treatment || 'control', PERS_W);
 
   const categoryStats = ctx.categoryStats; // Map<category, {mean, stddev}> | undefined
 
@@ -693,13 +707,13 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
       withEmbeddingCount++;
     }
 
-    const vectorContribution = relMult * PERS_W.vector * vectorScore;
+    const vectorContribution = relMult * W.vector * vectorScore;
     const positiveScore =
-      recencyMult * PERS_W.recency * recency +
-      PERS_W.engagement * engagement +
-      relMult * PERS_W.categoryAffinity * categoryScore +
-      relMult * PERS_W.followingBoost * followingScore +
-      relMult * PERS_W.preferredSourceBoost * preferredSourceScore +
+      recencyMult * W.recency * recency +
+      W.engagement * engagement +
+      relMult * W.categoryAffinity * categoryScore +
+      relMult * W.followingBoost * followingScore +
+      relMult * W.preferredSourceBoost * preferredSourceScore +
       vectorContribution;
 
     // P3-5: scale the positive component by source quality. Default 1.0
@@ -717,14 +731,14 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
       : 1.0;
     let score = positiveScore * sourceQuality;
 
-    if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
+    if (a._dislikedCat) score += W.dislikedCategoryPenalty;
     if (alreadyViewed) {
       // P1-6: scale by how deeply this article was previously consumed.
       // Full read (≥FULL_READ_SECONDS) gets the full -3.0 penalty;
       // a glance gets proportionally less; legacy "view" with no
       // read-time event falls back to the default 1/3 of full.
       const fraction = ctx.viewReadFractions?.get(idStr) ?? (1 / 3);
-      score += PERS_W.viewedPenalty * fraction;
+      score += W.viewedPenalty * fraction;
     }
 
     a._score = score;
@@ -1764,6 +1778,8 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Window-Hours', usedWindowHours);
     res.setHeader('X-Explore', explorationInjected ? '1' : '0');
     res.setHeader('X-Rerank', rerankApplied ? '1' : '0');
+    res.setHeader('X-Treatment', ctx?.treatment || 'control');
+    res.setHeader('X-Experiment', EXPERIMENT_ID);
 
     res.json(finalArticles);
   } catch (error) {
@@ -3921,13 +3937,14 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
         // for views/saves/comments and recalibrates from scratch.
         await applyIncrementalEmbeddingUpdate(userId, articleObjectId, action);
 
-        // 🎮 Log activity for gamification tracking
+        // 🎮 Log activity for gamification tracking + A/B telemetry (P3-1)
         await UserActivity.create({
           userId: userId,
           eventType: action, // 'like' or 'dislike'
           articleId: articleObjectId,
           contentType: 'article',
-          timestamp: new Date()
+          timestamp: new Date(),
+          treatment: getTreatmentForUser(userId),
         }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
 
         // 🎮 Award points for liking (gamification)

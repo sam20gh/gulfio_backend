@@ -11,6 +11,7 @@ const UserActivity = require('../models/UserActivity'); // Import UserActivity m
 const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
+const { getTreatmentForUser } = require('../utils/experiments'); // P3-1
 // Removed updateUserProfileEmbedding - now handled by daily cron job
 
 function validateObjectId(id) {
@@ -68,13 +69,14 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
         await article.save();
     }
 
-    // Log activity for daily embedding update (non-blocking)
+    // Log activity for daily embedding update (non-blocking) + A/B treatment (P3-1)
     UserActivity.create({
         userId: user.supabase_id,
         eventType: action, // 'like' or 'dislike'
         articleId: articleObjectId,
         contentType: 'article', // Specify content type
-        timestamp: new Date()
+        timestamp: new Date(),
+        treatment: getTreatmentForUser(user.supabase_id),
     }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
 
     // 🎮 Award points for liking (non-blocking)
@@ -166,7 +168,8 @@ router.post('/article/:articleId/view', async (req, res) => {
                         eventType: 'view',
                         articleId: articleObjectId,
                         contentType: 'article', // Specify content type
-                        timestamp: new Date()
+                        timestamp: new Date(),
+                        treatment: getTreatmentForUser(user.id), // P3-1
                     }).catch(err => console.error('⚠️ Failed to log view activity:', err.message));
 
                     // 🎮 Award points for reading article (non-blocking)
