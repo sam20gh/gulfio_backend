@@ -26,6 +26,16 @@ const SourceSchema = new mongoose.Schema({
     // Rev-share fields for AdMob revenue tracking
     revSharePercent: { type: Number, default: 70 }, // Default 70% to source
     payoutCurrency: { type: String, default: 'USD' },
+
+    // P3-5: aggregate quality signal in [0, 1]. 1.0 = neutral (default,
+    // no data yet); lower = more reliably disliked relative to liked.
+    // Computed periodically from articles published in the last 30 days:
+    // quality = 1 - dislikes/(likes+dislikes+SMOOTHING). Smoothing
+    // prevents brand-new sources with few interactions from being
+    // penalized as outliers. Scorer multiplies the article's score by
+    // this so low-quality scrapers self-demote.
+    quality_score: { type: Number, default: 1.0, min: 0, max: 1 },
+    quality_score_updated_at: { type: Date, default: null },
 });
 
 module.exports = mongoose.model('Source', SourceSchema);

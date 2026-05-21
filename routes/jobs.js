@@ -14,16 +14,27 @@
 const express = require('express');
 const router = express.Router();
 
-// Try to load background job with error handling
+// Try to load background jobs with error handling
 let updateActiveUserEmbeddings;
 try {
     console.log('📂 Loading update-user-embeddings job...');
     const jobModule = require('../jobs/update-user-embeddings');
     updateActiveUserEmbeddings = jobModule.updateActiveUserEmbeddings;
-    console.log('✅ Background job loaded successfully');
+    console.log('✅ update-user-embeddings loaded');
 } catch (error) {
-    console.error('❌ Failed to load background job:', error.message);
+    console.error('❌ Failed to load update-user-embeddings:', error.message);
     updateActiveUserEmbeddings = null;
+}
+
+let updateSourceQualityScores;
+try {
+    console.log('📂 Loading update-source-quality job...');
+    const jobModule = require('../jobs/update-source-quality');
+    updateSourceQualityScores = jobModule.updateSourceQualityScores;
+    console.log('✅ update-source-quality loaded');
+} catch (error) {
+    console.error('❌ Failed to load update-source-quality:', error.message);
+    updateSourceQualityScores = null;
 }
 
 const { ADMIN_API_KEY } = process.env;
@@ -95,6 +106,35 @@ router.post('/update-user-embeddings', verifyAdminKey, async (req, res) => {
 });
 
 /**
+ * POST /api/jobs/update-source-quality
+ *
+ * Recompute Source.quality_score from 30d of like/dislike data (P3-5).
+ * Multiplied into the personalized scorer so low-quality sources
+ * self-demote without manual intervention.
+ *
+ * SCHEDULE: Daily at 02:30 UTC (just after the embedding update job).
+ */
+router.post('/update-source-quality', verifyAdminKey, async (req, res) => {
+    try {
+        if (!updateSourceQualityScores) {
+            return res.status(503).json({
+                success: false,
+                error: 'update-source-quality job not available - check server logs',
+            });
+        }
+        const result = await updateSourceQualityScores();
+        if (result.success) {
+            res.status(200).json(result);
+        } else {
+            res.status(500).json(result);
+        }
+    } catch (error) {
+        console.error('❌ Job execution error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/jobs/status
  * Check job system status
  */
@@ -107,6 +147,12 @@ router.get('/status', verifyAdminKey, (req, res) => {
                 endpoint: '/api/jobs/update-user-embeddings',
                 schedule: '0 2 * * *',
                 description: 'Update User.embedding_pca for active users daily (Articles + Reels + Comments)'
+            },
+            {
+                name: 'update-source-quality',
+                endpoint: '/api/jobs/update-source-quality',
+                schedule: '30 2 * * *',
+                description: 'Recompute Source.quality_score from 30d like/dislike data (P3-5)'
             }
         ],
         timestamp: new Date().toISOString()

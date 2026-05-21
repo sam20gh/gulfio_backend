@@ -694,13 +694,28 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     }
 
     const vectorContribution = relMult * PERS_W.vector * vectorScore;
-    let score =
+    const positiveScore =
       recencyMult * PERS_W.recency * recency +
       PERS_W.engagement * engagement +
       relMult * PERS_W.categoryAffinity * categoryScore +
       relMult * PERS_W.followingBoost * followingScore +
       relMult * PERS_W.preferredSourceBoost * preferredSourceScore +
       vectorContribution;
+
+    // P3-5: scale the positive component by source quality. Default 1.0
+    // (neutral) so articles from sources with no aggregate data yet
+    // aren't penalized. Sources where dislikes dominate likes get
+    // quality < 1, which proportionally demotes their positive signal —
+    // they don't disappear, they just compete for fewer top slots.
+    //
+    // Penalties (dislikedCategory, viewedPenalty) are NOT scaled by
+    // quality. Multiplying a negative number by 0.7 makes it less
+    // negative, which would soften penalties for low-quality sources —
+    // the opposite of what we want.
+    const sourceQuality = typeof a.sourceQualityScore === 'number'
+      ? a.sourceQualityScore
+      : 1.0;
+    let score = positiveScore * sourceQuality;
 
     if (a._dislikedCat) score += PERS_W.dislikedCategoryPenalty;
     if (alreadyViewed) {
@@ -1083,7 +1098,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
           as: 'source',
           pipeline: [
             { $match: { status: { $ne: 'blocked' } } },
-            { $project: { groupName: 1, name: 1, icon: 1 } },
+            { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
           ],
         },
       },
@@ -1093,6 +1108,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
           sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
           sourceName: { $arrayElemAt: ['$source.name', 0] },
           sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
         },
       },
       {
@@ -1317,7 +1333,7 @@ async function warmRecentArticlesCache() {
             as: 'source',
             pipeline: [
               { $match: { status: { $ne: 'blocked' } } },
-              { $project: { groupName: 1, name: 1, icon: 1 } },
+              { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
             ],
           },
         },
@@ -1327,6 +1343,7 @@ async function warmRecentArticlesCache() {
             sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
             sourceName: { $arrayElemAt: ['$source.name', 0] },
             sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+            sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
           },
         },
         {
@@ -1418,7 +1435,7 @@ articleRouter.get('/recent', async (req, res) => {
           as: 'source',
           pipeline: [
             { $match: { status: { $ne: 'blocked' } } },
-            { $project: { groupName: 1, name: 1, icon: 1 } },
+            { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
           ],
         },
       },
@@ -1428,6 +1445,7 @@ articleRouter.get('/recent', async (req, res) => {
           sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
           sourceName: { $arrayElemAt: ['$source.name', 0] },
           sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+          sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
         },
       },
       {
@@ -2199,7 +2217,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
             as: 'source',
             pipeline: [
               { $match: { status: { $ne: 'blocked' } } },
-              { $project: { groupName: 1, name: 1, icon: 1 } },
+              { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
             ],
           },
         },
@@ -2209,6 +2227,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
             sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
             sourceName: { $arrayElemAt: ['$source.name', 0] },
             sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+            sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
           },
         },
         {
@@ -3297,7 +3316,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
             as: 'source',
             pipeline: [
               { $match: { status: { $ne: 'blocked' } } },
-              { $project: { groupName: 1, name: 1, icon: 1 } },
+              { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
             ],
           },
         },
@@ -3307,6 +3326,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
             sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
             sourceName: { $arrayElemAt: ['$source.name', 0] },
             sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+            sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
           },
         },
         {
