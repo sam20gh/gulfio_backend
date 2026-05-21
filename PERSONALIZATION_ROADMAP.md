@@ -127,3 +127,17 @@ All 4 P2 items resolved. P2-4 was investigated and rejected (the original audit 
 5. Move to the next.
 
 Don't ship cross-tier — finish a tier before starting the next. P0 is correctness; P1 is what users see; P2 is what the box feels like; P3 is what maintainers feel.
+
+ What ships next
+
+  A few things are infrastructure ready but need product/ops decisions before they're load-bearing:
+
+  1. COHERE_RERANK_ENABLED=1 — wired in P1-5 but default-off. Flip in staging after one A/B confirms it helps.
+  2. PERS_SKIP_VECTOR_FOR_HEAVY_PREFS=1 — wired in P2-2 but default-off. Turn on after a week of 📐 vector contribution logs.
+  3. Cloud Scheduler entries — add the cron job for POST /api/jobs/update-source-quality (02:30 UTC) and consider one for POST /api/jobs/retrain-pca only on
+  demand.
+  4. A/B variants — utils/experiments.js has commented-out example variants. Uncomment when you have a hypothesis and a way to measure outcomes.
+  5. menaApp commits to push: de16ef8 (P2-3 soft-race) and 5ae3ea7 (P3-4 JWT). Both currently sit unpushed on main.
+
+  The system is now meaningfully more personalized, more observable, more resilient to restarts, and gives you the levers to keep tuning it without writing
+  more code.
