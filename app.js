@@ -26,6 +26,7 @@ const puppeteerDebugRoutes = require('./routes/puppeteer-debug');
 const docsRouter = require('./routes/docs');
 const adsRoutes = require('./routes/ads'); // AdMob revenue tracking routes
 const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
+const aiArticleRoutes = require('./routes/aiArticle'); // AI article brief + fact-check
 const footballRoutes = require('./routes/football'); // Football follows routes
 const gamificationRoutes = require('./routes/gamification'); // 🎮 Gamification routes
 
@@ -256,6 +257,7 @@ app.use('/docs', docsRouter);
 app.use('/api', recommendationRoutes);
 app.use('/api/ads', adsRoutes); // AdMob revenue tracking routes
 app.use('/api/ai', aiAgentRoutes); // AI Agent routes
+app.use('/api/ai/article', aiArticleRoutes); // AI brief + fact-check per article
 app.use('/api/football', footballRoutes); // Football follows routes
 app.use('/api/gamification', gamificationRoutes); // 🎮 Gamification routes
 

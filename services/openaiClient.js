@@ -64,6 +64,28 @@ async function chatCompletion({ messages, model, max_tokens, temperature = 0.7, 
 }
 
 /**
+ * Like chatCompletion, but returns the full response including usage stats
+ * and supports response_format (e.g. { type: 'json_object' }) for strict JSON output.
+ */
+async function chatCompletionJSON({ messages, model, max_tokens, temperature = 0.7, response_format, signal, timeout = 25000 }) {
+    const body = {
+        model,
+        messages,
+        temperature,
+        max_tokens,
+        presence_penalty: 0.1,
+        frequency_penalty: 0.1,
+    };
+    if (response_format) body.response_format = response_format;
+    const { data } = await openaiAxios.post('/chat/completions', body, { timeout, signal });
+    return {
+        content: data.choices[0].message.content,
+        usage: data.usage || null,
+        model: data.model || model,
+    };
+}
+
+/**
  * Stream chat completion deltas. Calls onDelta(textChunk) for each token group,
  * resolves with the full assembled text when complete.
  */
@@ -118,6 +140,7 @@ module.exports = {
     openaiAxios,
     embedQuery,
     chatCompletion,
+    chatCompletionJSON,
     streamChatCompletion,
     EMBEDDING_MODEL,
     EMBEDDING_DIMS,

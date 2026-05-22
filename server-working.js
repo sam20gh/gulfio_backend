@@ -234,6 +234,10 @@ function loadRoutes() {
         const aiAgentRoutes = require('./routes/aiAgent'); // AI Agent routes
         console.log('✅ AI Agent routes loaded successfully');
 
+        console.log('🧠 Loading AI Article routes...');
+        const aiArticleRoutes = require('./routes/aiArticle'); // AI brief + fact-check per article
+        console.log('✅ AI Article routes loaded successfully');
+
         console.log('⚽ Loading Football routes...');
         const footballRoutes = require('./routes/football'); // Football follows routes
         console.log('✅ Football routes loaded successfully');
@@ -265,6 +269,9 @@ function loadRoutes() {
         console.log('🤖 Mounting AI Agent routes at /api/ai...');
         app.use('/api/ai', aiAgentRoutes); // AI Agent routes
         console.log('✅ AI Agent routes mounted successfully');
+        console.log('🧠 Mounting AI Article routes at /api/ai/article...');
+        app.use('/api/ai/article', aiArticleRoutes); // AI brief + fact-check per article
+        console.log('✅ AI Article routes mounted successfully');
         console.log('⚽ Mounting Football routes at /api/football...');
         app.use('/api/football', footballRoutes); // Football follows routes
         console.log('✅ Football routes mounted successfully');
