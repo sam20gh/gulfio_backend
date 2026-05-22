@@ -12,12 +12,57 @@ const redis = require('../utils/redis');
 
 // 🚀 Instagram-style instant comment loading with Redis caching
 const COMMENT_CACHE_TTL = 300; // 5 minutes cache for comment lists
+// Bumped to v2 so old cached payloads (without authorName/authorAvatar) are skipped.
+const ARTICLE_COMMENTS_CACHE_PREFIX = 'comments:v2:article:';
+const REEL_COMMENTS_CACHE_PREFIX = 'comments:v2:reel:';
+
+// Batch-enrich comments + nested replies with the latest author name/avatar
+// from the User collection. One round-trip regardless of how many distinct
+// authors appear, so this stays cheap even for popular threads.
+async function enrichCommentsWithAuthors(comments) {
+    if (!comments || !comments.length) return comments;
+
+    const userIds = new Set();
+    for (const c of comments) {
+        if (c.userId) userIds.add(c.userId);
+        const replies = c.replies || [];
+        for (const r of replies) {
+            if (r && r.userId) userIds.add(r.userId);
+        }
+    }
+    if (!userIds.size) return comments;
+
+    const users = await User
+        .find({ supabase_id: { $in: [...userIds] } })
+        .select('supabase_id name profile_image')
+        .lean();
+
+    const userMap = new Map(users.map(u => [u.supabase_id, u]));
+    const decorate = (entry, fallbackName) => {
+        const author = userMap.get(entry.userId);
+        return {
+            authorName: author?.name || fallbackName || 'Gulfio user',
+            authorAvatar: author?.profile_image || '',
+        };
+    };
+
+    return comments.map(c => ({
+        ...c,
+        ...decorate(c, c.username),
+        likedBy: c.likedBy || [],
+        dislikedBy: c.dislikedBy || [],
+        replies: (c.replies || []).map(r => ({
+            ...r,
+            ...decorate(r, r.username),
+        })),
+    }));
+}
 
 // GET comments for an article
 router.get('/:articleId', async (req, res) => {
     try {
         const { articleId } = req.params;
-        const cacheKey = `comments:article:${articleId}`;
+        const cacheKey = `${ARTICLE_COMMENTS_CACHE_PREFIX}${articleId}`;
 
         // Try cache first for instant response
         try {
@@ -32,12 +77,14 @@ router.get('/:articleId', async (req, res) => {
 
         // Cache miss - fetch from DB with optimized query
         console.log(`🔍 Comment cache MISS for article ${articleId}`);
-        const comments = await Comment.find({ articleId: articleId })
+        const rawComments = await Comment.find({ articleId: articleId })
             .select('userId username comment likedBy dislikedBy replies createdAt') // Only select needed fields
             .sort({ createdAt: -1 })
             .lean(); // Use lean() for 20% faster queries
 
-        // Cache the result
+        const comments = await enrichCommentsWithAuthors(rawComments);
+
+        // Cache the enriched result
         try {
             await redis.set(cacheKey, JSON.stringify(comments), 'EX', COMMENT_CACHE_TTL);
         } catch (cacheError) {
@@ -55,7 +102,7 @@ router.get('/:articleId', async (req, res) => {
 router.get('/reel/:reelId', async (req, res) => {
     try {
         const { reelId } = req.params;
-        const cacheKey = `comments:reel:${reelId}`;
+        const cacheKey = `${REEL_COMMENTS_CACHE_PREFIX}${reelId}`;
 
         // Try cache first for instant response
         try {
@@ -70,12 +117,14 @@ router.get('/reel/:reelId', async (req, res) => {
 
         // Cache miss - fetch from DB with optimized query
         console.log(`🔍 Comment cache MISS for reel ${reelId}`);
-        const comments = await Comment.find({ reelId })
+        const rawComments = await Comment.find({ reelId })
             .select('userId username comment likedBy dislikedBy replies createdAt')
             .sort({ createdAt: -1 })
             .lean();
 
-        // Cache the result
+        const comments = await enrichCommentsWithAuthors(rawComments);
+
+        // Cache the enriched result
         try {
             await redis.set(cacheKey, JSON.stringify(comments), 'EX', COMMENT_CACHE_TTL);
         } catch (cacheError) {
@@ -125,22 +174,33 @@ router.post('/', auth, async (req, res) => {
         // 🚀 Invalidate cache for instant updates
         try {
             if (articleId) {
-                await redis.del(`comments:article:${articleId}`);
+                await redis.del(`${ARTICLE_COMMENTS_CACHE_PREFIX}${articleId}`);
                 console.log(`🗑️ Cache invalidated for article ${articleId}`);
             }
             if (reelId) {
-                await redis.del(`comments:reel:${reelId}`);
+                await redis.del(`${REEL_COMMENTS_CACHE_PREFIX}${reelId}`);
                 console.log(`🗑️ Cache invalidated for reel ${reelId}`);
             }
         } catch (cacheError) {
             console.error('Cache invalidation error:', cacheError.message);
         }
 
+        // Fetch the commenter's profile once and use it for both the response payload
+        // and the mention notification name. The response includes authorName/authorAvatar
+        // so the client can replace its optimistic entry with the canonical record
+        // without firing a follow-up profile fetch.
+        let commenterUser = null;
+        try {
+            commenterUser = await User.findOne({ supabase_id: userId })
+                .select('name profile_image email')
+                .lean();
+        } catch (userLookupError) {
+            console.error('Commenter profile lookup failed:', userLookupError.message);
+        }
+        const commenterName = commenterUser ? (commenterUser.name || commenterUser.email) : username;
+
         // Check for mentions in the comment and send notifications
         try {
-            const commenterUser = await User.findOne({ supabase_id: userId });
-            const commenterName = commenterUser ? (commenterUser.name || commenterUser.email) : username;
-
             await NotificationService.sendMentionNotifications(
                 comment,
                 userId,
@@ -154,7 +214,15 @@ router.post('/', auth, async (req, res) => {
             // Don't fail the request if mention notifications fail
         }
 
-        res.status(201).json({ message: 'Comment added' });
+        const persisted = newComment.toObject();
+        res.status(201).json({
+            ...persisted,
+            authorName: commenterUser?.name || commenterName || 'Gulfio user',
+            authorAvatar: commenterUser?.profile_image || '',
+            likedBy: persisted.likedBy || [],
+            dislikedBy: persisted.dislikedBy || [],
+            replies: persisted.replies || [],
+        });
     } catch (error) {
         console.error('POST /comments error:', error);
         res.status(500).json({ message: 'Failed to post comment' });
@@ -173,10 +241,10 @@ router.patch('/:id', auth, async (req, res) => {
         // 🚀 Invalidate cache for instant updates
         try {
             if (updated.articleId) {
-                await redis.del(`comments:article:${updated.articleId}`);
+                await redis.del(`${ARTICLE_COMMENTS_CACHE_PREFIX}${updated.articleId}`);
             }
             if (updated.reelId) {
-                await redis.del(`comments:reel:${updated.reelId}`);
+                await redis.del(`${REEL_COMMENTS_CACHE_PREFIX}${updated.reelId}`);
             }
         } catch (cacheError) {
             console.error('Cache invalidation error:', cacheError.message);
@@ -208,10 +276,10 @@ router.delete('/:id', auth, async (req, res) => {
         // 🚀 Invalidate cache before deletion for instant updates
         try {
             if (comment.articleId) {
-                await redis.del(`comments:article:${comment.articleId}`);
+                await redis.del(`${ARTICLE_COMMENTS_CACHE_PREFIX}${comment.articleId}`);
             }
             if (comment.reelId) {
-                await redis.del(`comments:reel:${comment.reelId}`);
+                await redis.del(`${REEL_COMMENTS_CACHE_PREFIX}${comment.reelId}`);
             }
         } catch (cacheError) {
             console.error('Cache invalidation error:', cacheError.message);
@@ -381,6 +449,18 @@ router.post('/:id/reply', auth, async (req, res) => {
         return res.status(500).json({ message: 'Failed to add reply' });
     }
 
+    // Invalidate cached comment list so the next GET reflects the new reply.
+    try {
+        if (updatedComment?.articleId) {
+            await redis.del(`${ARTICLE_COMMENTS_CACHE_PREFIX}${updatedComment.articleId}`);
+        }
+        if (updatedComment?.reelId) {
+            await redis.del(`${REEL_COMMENTS_CACHE_PREFIX}${updatedComment.reelId}`);
+        }
+    } catch (cacheError) {
+        console.error('Cache invalidation error:', cacheError.message);
+    }
+
     // Send notification to the original commenter (if not replying to their own comment)
     if (parentComment.userId !== userId) {
         try {
@@ -445,6 +525,19 @@ router.delete('/:commentId/reply/:replyId', auth, async (req, res) => {
         if (!updated) {
             return res.status(404).json({ message: 'Reply not found or not yours' });
         }
+
+        // Invalidate cached comment list so the deletion is reflected immediately.
+        try {
+            if (updated.articleId) {
+                await redis.del(`${ARTICLE_COMMENTS_CACHE_PREFIX}${updated.articleId}`);
+            }
+            if (updated.reelId) {
+                await redis.del(`${REEL_COMMENTS_CACHE_PREFIX}${updated.reelId}`);
+            }
+        } catch (cacheError) {
+            console.error('Cache invalidation error:', cacheError.message);
+        }
+
         return res.json(updated);
     } catch (err) {
         console.error('DELETE /comments/:commentId/reply/:replyId error:', err);
