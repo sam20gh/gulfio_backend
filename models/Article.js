@@ -42,8 +42,11 @@ const ArticleSchema = new mongoose.Schema({
 // Add compound index for title + sourceId to prevent duplicate titles from same source
 ArticleSchema.index({ title: 1, sourceId: 1 }, { unique: true });
 
-// Add index for publishedAt for sorting recent articles
-ArticleSchema.index({ publishedAt: -1 });
+// Add index for publishedAt for sorting recent articles.
+// Also a TTL index: articles are auto-deleted ~9 months (274 days) after publishedAt.
+// Atlas runs the deletion server-side in the background; documents with a missing or
+// non-Date publishedAt are never expired. Apply to an existing DB via scripts/addArticleTTLIndex.js.
+ArticleSchema.index({ publishedAt: -1 }, { expireAfterSeconds: 60 * 60 * 24 * 274 });
 
 // Add index for category filtering
 ArticleSchema.index({ category: 1 });
