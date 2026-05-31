@@ -6,6 +6,9 @@ const Reel = require('../models/Reel');
 const PCAModel = require('../models/PCAModel');
 
 let globalPCA = null;
+// Single-flight lock: concurrent convertToPCAEmbedding() calls (e.g. a scraper batch)
+// must share ONE initialization, not each kick off a corpus-scan training.
+let initPromise = null;
 
 const PCA_MODEL_NAME = 'article_embedding_pca_v1';
 
@@ -17,14 +20,21 @@ const PCA_MODEL_NAME = 'article_embedding_pca_v1';
 async function trainPCAFromCorpus() {
     console.log('🔄 Training PCA from current article+reel corpus...');
 
+    // NOTE: { embedding: { $exists } } cannot use an index (embedding is a 1536-float
+    // array; a btree on it is multikey bloat). These are deliberately bounded collscans.
+    // maxTimeMS caps them so a slow/overloaded cluster fails fast instead of letting
+    // concurrent cold-start trainings pile up and saturate CPU. The persisted PCA model
+    // (see initializePCAModel) means this should run at most once per basis, not per boot.
     const [sampleArticles, sampleReels] = await Promise.all([
         Article.find({ embedding: { $exists: true, $ne: null } })
             .limit(3000)
             .select('embedding')
+            .maxTimeMS(45000)
             .lean(),
         Reel.find({ embedding: { $exists: true, $ne: null } })
             .limit(2000)
             .select('embedding')
+            .maxTimeMS(45000)
             .lean(),
     ]);
 
@@ -43,7 +53,7 @@ async function trainPCAFromCorpus() {
     console.log(`📊 Training PCA with ${validEmbeddings.length} embeddings...`);
     const matrix = new Matrix(validEmbeddings);
     const pca = new PCA(matrix, { center: true, scale: false });
-    console.log(`✅ PCA trained — ${pca.explained.length} components`);
+    console.log(`✅ PCA trained — ${pca.getExplainedVariance().length} components`);
     return { pca, sampleCount: validEmbeddings.length };
 }
 
@@ -56,6 +66,14 @@ async function trainPCAFromCorpus() {
  * on a true cold start (no persisted model exists yet).
  */
 async function initializePCAModel() {
+    if (globalPCA) return globalPCA;
+    // Coalesce concurrent initializations into a single in-flight attempt.
+    if (initPromise) return initPromise;
+    initPromise = _initializePCAModel().finally(() => { initPromise = null; });
+    return initPromise;
+}
+
+async function _initializePCAModel() {
     if (globalPCA) return globalPCA;
 
     try {
@@ -94,8 +112,8 @@ async function initializePCAModel() {
                 {
                     $set: {
                         name: PCA_MODEL_NAME,
-                        model: globalPCA.toJSON(),
-                        components: globalPCA.explained.length,
+                        model: JSON.parse(JSON.stringify(globalPCA.toJSON())),
+                        components: globalPCA.getExplainedVariance().length,
                         sampleCount: trained.sampleCount,
                         trainedAt: new Date(),
                     },
@@ -134,8 +152,8 @@ async function retrainAndPersistPCA() {
         {
             $set: {
                 name: PCA_MODEL_NAME,
-                model: globalPCA.toJSON(),
-                components: globalPCA.explained.length,
+                model: JSON.parse(JSON.stringify(globalPCA.toJSON())),
+                components: globalPCA.getExplainedVariance().length,
                 sampleCount: trained.sampleCount,
                 trainedAt: new Date(),
             },
@@ -145,7 +163,7 @@ async function retrainAndPersistPCA() {
     console.log(`🔁 PCA retrained + persisted (${trained.sampleCount} samples)`);
     return {
         success: true,
-        components: globalPCA.explained.length,
+        components: globalPCA.getExplainedVariance().length,
         sampleCount: trained.sampleCount,
     };
 }
