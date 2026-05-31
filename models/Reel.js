@@ -45,8 +45,10 @@ ReelSchema.index({ publishedAt: -1 }); // For recency-based sorting
 ReelSchema.index({ categories: 1 }); // For category-based filtering
 ReelSchema.index({ source: 1, scrapedAt: -1 }); // For source-specific queries
 ReelSchema.index({ reelId: 1 }); // For unique lookups
-ReelSchema.index({ embedding: 1 }); // For recommendation queries
-ReelSchema.index({ embedding_pca: 1 }); // For fast PCA-based recommendations
+// NOTE: do NOT btree-index `embedding` / `embedding_pca` — they are float arrays, so a
+// btree becomes a multikey index with one entry per array element (huge + write-heavy,
+// and useless for similarity). Vector search uses an Atlas Search vector index instead.
+// (Dropped via scripts/dropDeadIndexes.js — removed here so autoIndex won't recreate them.)
 
 // ===================== NEW OPTIMIZED INDEXES FOR CURSOR-BASED FEED =====================
 // These compound indexes significantly improve the new cursor-based feed queries

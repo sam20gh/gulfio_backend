@@ -1,0 +1,1874 @@
+{
+  "db": "test",
+  "generatedAt": "2026-05-31T12:12:08.860Z",
+  "collections": [
+    {
+      "name": "adrevenueevents",
+      "docCount": 50,
+      "dataSize": 10766,
+      "storageSize": 32768,
+      "totalIndexSize": 163840,
+      "indexCount": 5,
+      "indexes": [
+        {
+          "name": "sourceId_1_ts_-1",
+          "key": {
+            "sourceId": 1,
+            "ts": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.767Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "articleId_1_ts_-1",
+          "key": {
+            "articleId": 1,
+            "ts": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.767Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "ts_-1",
+          "key": {
+            "ts": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.767Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "adUnitId_1",
+          "key": {
+            "adUnitId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.767Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.767Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        }
+      ]
+    },
+    {
+      "name": "aiusages",
+      "docCount": 10,
+      "dataSize": 2799,
+      "storageSize": 36864,
+      "totalIndexSize": 294912,
+      "indexCount": 8,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "endpoint_1",
+          "key": {
+            "endpoint": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "apiKeyId_1",
+          "key": {
+            "apiKeyId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "createdAt_1",
+          "key": {
+            "createdAt": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_createdAt_-1",
+          "key": {
+            "userId": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "apiKeyId_1_createdAt_-1",
+          "key": {
+            "apiKeyId": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "endpoint_1_createdAt_-1",
+          "key": {
+            "endpoint": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.617Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "articles",
+      "docCount": 291190,
+      "dataSize": 6957097999,
+      "storageSize": 5959467008,
+      "totalIndexSize": 119644160,
+      "indexCount": 9,
+      "indexes": [
+        {
+          "name": "language_1_publishedAt_-1_source_1",
+          "key": {
+            "language": 1,
+            "publishedAt": -1,
+            "source": 1
+          },
+          "ops": 61,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 5201920,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "language_1_publishedAt_1",
+          "key": {
+            "language": 1,
+            "publishedAt": 1
+          },
+          "ops": 554,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 3506176,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "sourceId_1",
+          "key": {
+            "sourceId": 1
+          },
+          "ops": 10,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 2519040,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "title_1_sourceId_1",
+          "key": {
+            "title": 1,
+            "sourceId": 1
+          },
+          "ops": 1880,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 40706048,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "language_1_category_1_publishedAt_-1",
+          "key": {
+            "language": 1,
+            "category": 1,
+            "publishedAt": -1
+          },
+          "ops": 48,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 5033984,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "url_1",
+          "key": {
+            "url": 1
+          },
+          "ops": 2734,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 49446912,
+          "unique": true,
+          "sparse": true,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "publishedAt_-1",
+          "key": {
+            "publishedAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-31T02:28:26.552Z",
+          "size": 4059136,
+          "unique": false,
+          "sparse": false,
+          "ttl": 23673600,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 79,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 5283840,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "isBreakingNews_1_publishedAt_-1",
+          "key": {
+            "isBreakingNews": 1,
+            "publishedAt": -1
+          },
+          "ops": 21,
+          "since": "2026-05-30T21:10:58.086Z",
+          "size": 3887104,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "badges",
+      "docCount": 34,
+      "dataSize": 14012,
+      "storageSize": 45056,
+      "totalIndexSize": 180224,
+      "indexCount": 5,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 2,
+          "since": "2026-05-30T21:10:58.465Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "name_1",
+          "key": {
+            "name": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.465Z",
+          "size": 36864,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "category_1_tier_1",
+          "key": {
+            "category": 1,
+            "tier": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.465Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "isActive_1",
+          "key": {
+            "isActive": 1
+          },
+          "ops": 6,
+          "since": "2026-05-30T21:10:58.465Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "requirement.type_1",
+          "key": {
+            "requirement.type": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.465Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "chatmessages",
+      "docCount": 400,
+      "dataSize": 304290,
+      "storageSize": 233472,
+      "totalIndexSize": 192512,
+      "indexCount": 5,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.186Z",
+          "size": 40960,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "sessionId_1",
+          "key": {
+            "sessionId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.186Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.186Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "sessionId_1_timestamp_1",
+          "key": {
+            "sessionId": 1,
+            "timestamp": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.186Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_timestamp_-1",
+          "key": {
+            "userId": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.186Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "chatsessions",
+      "docCount": 200,
+      "dataSize": 43463,
+      "storageSize": 49152,
+      "totalIndexSize": 135168,
+      "indexCount": 4,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.517Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.517Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_lastMessageAt_-1",
+          "key": {
+            "userId": 1,
+            "lastMessageAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.517Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_isActive_1",
+          "key": {
+            "userId": 1,
+            "isActive": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.517Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "comments",
+      "docCount": 382,
+      "dataSize": 102336,
+      "storageSize": 61440,
+      "totalIndexSize": 172032,
+      "indexCount": 4,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.667Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "articleId_1_createdAt_-1",
+          "key": {
+            "articleId": 1,
+            "createdAt": -1
+          },
+          "ops": 3,
+          "since": "2026-05-30T21:10:56.667Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "reelId_1_createdAt_-1",
+          "key": {
+            "reelId": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.667Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_createdAt_-1",
+          "key": {
+            "userId": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.667Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "competitions",
+      "docCount": 1210,
+      "dataSize": 423481,
+      "storageSize": 270336,
+      "totalIndexSize": 385024,
+      "indexCount": 6,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.326Z",
+          "size": 61440,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "apiId_1",
+          "key": {
+            "apiId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.327Z",
+          "size": 53248,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "name_text_country_text",
+          "key": {
+            "_fts": "text",
+            "_ftsx": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.327Z",
+          "size": 131072,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "name_1",
+          "key": {
+            "name": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.327Z",
+          "size": 65536,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "country_1",
+          "key": {
+            "country": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.327Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "type_1",
+          "key": {
+            "type": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.327Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "engagementsummaries",
+      "docCount": 4,
+      "dataSize": 552,
+      "storageSize": 32768,
+      "totalIndexSize": 65536,
+      "indexCount": 2,
+      "indexes": [
+        {
+          "name": "date_1",
+          "key": {
+            "date": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.727Z",
+          "size": 32768,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.727Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        }
+      ]
+    },
+    {
+      "name": "lottoresults",
+      "docCount": 39,
+      "dataSize": 35730,
+      "storageSize": 45056,
+      "totalIndexSize": 65536,
+      "indexCount": 2,
+      "indexes": [
+        {
+          "name": "drawNumber_1",
+          "key": {
+            "drawNumber": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.826Z",
+          "size": 32768,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.826Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "docCount": 1698,
+      "dataSize": 1010988,
+      "storageSize": 712704,
+      "totalIndexSize": 593920,
+      "indexCount": 6,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 73728,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "read_1",
+          "key": {
+            "read": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 176128,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "expiresAt_1",
+          "key": {
+            "expiresAt": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 131072,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_read_1_createdAt_-1",
+          "key": {
+            "userId": 1,
+            "read": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 81920,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_type_1_createdAt_-1",
+          "key": {
+            "userId": 1,
+            "type": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.598Z",
+          "size": 77824,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "pcamodels",
+      "docCount": 0,
+      "dataSize": 0,
+      "storageSize": 4096,
+      "totalIndexSize": 8192,
+      "indexCount": 2,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.414Z",
+          "size": 4096,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "name_1",
+          "key": {
+            "name": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.414Z",
+          "size": 4096,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "pointtransactions",
+      "docCount": 2553,
+      "dataSize": 547192,
+      "storageSize": 196608,
+      "totalIndexSize": 446464,
+      "indexCount": 6,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 86016,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1_createdAt_-1",
+          "key": {
+            "userId": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 77824,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "action_1_createdAt_-1",
+          "key": {
+            "action": 1,
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 77824,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "createdAt_-1",
+          "key": {
+            "createdAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 81920,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "createdAt_1",
+          "key": {
+            "createdAt": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 69632,
+          "unique": false,
+          "sparse": false,
+          "ttl": 15552000,
+          "isId": false
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.896Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "reels",
+      "docCount": 576,
+      "dataSize": 12333114,
+      "storageSize": 13406208,
+      "totalIndexSize": 1277952,
+      "indexCount": 17,
+      "indexes": [
+        {
+          "name": "viewCount_-1",
+          "key": {
+            "viewCount": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "source_1_scrapedAt_-1",
+          "key": {
+            "source": 1,
+            "scrapedAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "reelId_1",
+          "key": {
+            "reelId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 77824,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "categories_1",
+          "key": {
+            "categories": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "likes_-1",
+          "key": {
+            "likes": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "publishedAt_-1",
+          "key": {
+            "publishedAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 27,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "completionRate_1",
+          "key": {
+            "completionRate": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "completionRate_-1",
+          "key": {
+            "completionRate": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "viewCount_-1_scrapedAt_-1",
+          "key": {
+            "viewCount": -1,
+            "scrapedAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "likes_-1_viewCount_-1_completionRate_-1",
+          "key": {
+            "likes": -1,
+            "viewCount": -1,
+            "completionRate": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "cursor_trending_compound",
+          "key": {
+            "scrapedAt": -1,
+            "viewCount": -1,
+            "engagement_score": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "cursor_exclusion_compound",
+          "key": {
+            "_id": 1,
+            "videoUrl": 1,
+            "scrapedAt": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 512000,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "cursor_engagement_compound",
+          "key": {
+            "engagement_score": -1,
+            "scrapedAt": -1,
+            "viewCount": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 73728,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "scrapedAt_-1",
+          "key": {
+            "scrapedAt": -1
+          },
+          "ops": 243,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "engagement_score_-1",
+          "key": {
+            "engagement_score": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "source_1_reelId_1",
+          "key": {
+            "source": 1,
+            "reelId": 1
+          },
+          "ops": 30,
+          "since": "2026-05-30T21:10:57.331Z",
+          "size": 53248,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "scraperstates",
+      "docCount": 1,
+      "dataSize": 109,
+      "storageSize": 36864,
+      "totalIndexSize": 73728,
+      "indexCount": 2,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.636Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "key_1",
+          "key": {
+            "key": 1
+          },
+          "ops": 21,
+          "since": "2026-05-30T21:10:58.636Z",
+          "size": 36864,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "sources",
+      "docCount": 227,
+      "dataSize": 248564,
+      "storageSize": 143360,
+      "totalIndexSize": 73728,
+      "indexCount": 2,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 36378,
+          "since": "2026-05-30T21:10:56.334Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "name_1",
+          "key": {
+            "name": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.334Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "teams",
+      "docCount": 300,
+      "dataSize": 94483,
+      "storageSize": 98304,
+      "totalIndexSize": 184320,
+      "indexCount": 5,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.410Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "apiId_1",
+          "key": {
+            "apiId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.410Z",
+          "size": 32768,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "name_text_country_text",
+          "key": {
+            "_fts": "text",
+            "_ftsx": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.410Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "name_1",
+          "key": {
+            "name": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.410Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "country_1",
+          "key": {
+            "country": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:57.410Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "useractivities",
+      "docCount": 2150,
+      "dataSize": 383140,
+      "storageSize": 208896,
+      "totalIndexSize": 921600,
+      "indexCount": 12,
+      "indexes": [
+        {
+          "name": "articleId_1",
+          "key": {
+            "articleId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 94208,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "timestamp_-1",
+          "key": {
+            "timestamp": -1
+          },
+          "ops": 2,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 69632,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "eventType_1_timestamp_-1",
+          "key": {
+            "eventType": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 73728,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "timestamp_1",
+          "key": {
+            "timestamp": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 69632,
+          "unique": false,
+          "sparse": false,
+          "ttl": 7776000,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 81920,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1_eventType_1_timestamp_-1",
+          "key": {
+            "userId": 1,
+            "eventType": 1,
+            "timestamp": -1
+          },
+          "ops": 8,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 77824,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "reelId_1",
+          "key": {
+            "reelId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "contentType_1_timestamp_-1",
+          "key": {
+            "contentType": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 81920,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_articleId_timestamp",
+          "key": {
+            "userId": 1,
+            "articleId": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 118784,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_timestamp",
+          "key": {
+            "userId": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 94208,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 53248,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "treatment_1_timestamp_-1",
+          "key": {
+            "treatment": 1,
+            "timestamp": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.323Z",
+          "size": 61440,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "userbadges",
+      "docCount": 48,
+      "dataSize": 8736,
+      "storageSize": 32768,
+      "totalIndexSize": 163840,
+      "indexCount": 5,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.716Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1_badgeId_1",
+          "key": {
+            "userId": 1,
+            "badgeId": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.716Z",
+          "size": 32768,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "earnedAt_-1",
+          "key": {
+            "earnedAt": -1
+          },
+          "ops": 2,
+          "since": "2026-05-30T21:10:55.716Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1_isDisplayed_1",
+          "key": {
+            "userId": 1,
+            "isDisplayed": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:55.716Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 4,
+          "since": "2026-05-30T21:10:55.716Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "userpoints",
+      "docCount": 12,
+      "dataSize": 5874,
+      "storageSize": 36864,
+      "totalIndexSize": 258048,
+      "indexCount": 7,
+      "indexes": [
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 5,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "userId_1",
+          "key": {
+            "userId": 1
+          },
+          "ops": 10,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "totalPoints_-1",
+          "key": {
+            "totalPoints": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "lifetimePoints_-1",
+          "key": {
+            "lifetimePoints": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "level_-1",
+          "key": {
+            "level": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "streak.current_-1",
+          "key": {
+            "streak.current": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "streak.longest_-1",
+          "key": {
+            "streak.longest": -1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.895Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "docCount": 12,
+      "dataSize": 213471,
+      "storageSize": 397312,
+      "totalIndexSize": 241664,
+      "indexCount": 6,
+      "indexes": [
+        {
+          "name": "supabase_id_1",
+          "key": {
+            "supabase_id": 1
+          },
+          "ops": 32,
+          "since": "2026-05-30T21:10:58.774Z",
+          "size": 32768,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "liked_articles_1",
+          "key": {
+            "liked_articles": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.783Z",
+          "size": 94208,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "disliked_articles_1",
+          "key": {
+            "disliked_articles": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.783Z",
+          "size": 36864,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 14,
+          "since": "2026-05-30T21:10:58.783Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "referralCode_1",
+          "key": {
+            "referralCode": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.783Z",
+          "size": 12288,
+          "unique": true,
+          "sparse": true,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "pushTokens.token_1",
+          "key": {
+            "pushTokens.token": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:58.783Z",
+          "size": 32768,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    },
+    {
+      "name": "videos",
+      "docCount": 959,
+      "dataSize": 20035324,
+      "storageSize": 18980864,
+      "totalIndexSize": 126976,
+      "indexCount": 3,
+      "indexes": [
+        {
+          "name": "videoId_1",
+          "key": {
+            "videoId": 1
+          },
+          "ops": 30,
+          "since": "2026-05-30T21:10:56.896Z",
+          "size": 61440,
+          "unique": true,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        },
+        {
+          "name": "_id_",
+          "key": {
+            "_id": 1
+          },
+          "ops": 0,
+          "since": "2026-05-30T21:10:56.896Z",
+          "size": 45056,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": true
+        },
+        {
+          "name": "source_1",
+          "key": {
+            "source": 1
+          },
+          "ops": 0,
+          "since": "2026-05-31T12:10:45.805Z",
+          "size": 20480,
+          "unique": false,
+          "sparse": false,
+          "ttl": null,
+          "isId": false
+        }
+      ]
+    }
+  ]
+}

@@ -160,6 +160,11 @@ async function initializeApp() {
             minPoolSize: 2,
             retryWrites: true,
             retryReads: true,
+            // Do NOT auto-build indexes on boot. On Cloud Run every cold start would
+            // otherwise re-run createIndexes across all models (wasteful CPU) and could
+            // resurrect indexes we intentionally dropped. Manage indexes explicitly via
+            // scripts/ (auditIndexes.js / dropDeadIndexes.js). See DATABASE_OPTIMIZATION_REPORT.md.
+            autoIndex: false,
         });
 
         console.log('✅ MongoDB connected');

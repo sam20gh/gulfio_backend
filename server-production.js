@@ -67,6 +67,7 @@ async function initializeApp() {
             bufferCommands: false,
             maxPoolSize: 5,
             minPoolSize: 1,
+            autoIndex: false, // manage indexes explicitly via scripts/ — see DATABASE_OPTIMIZATION_REPORT.md
         });
 
         console.log('✅ MongoDB connected');

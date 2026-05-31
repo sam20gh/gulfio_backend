@@ -48,8 +48,9 @@ ArticleSchema.index({ title: 1, sourceId: 1 }, { unique: true });
 // non-Date publishedAt are never expired. Apply to an existing DB via scripts/addArticleTTLIndex.js.
 ArticleSchema.index({ publishedAt: -1 }, { expireAfterSeconds: 60 * 60 * 24 * 274 });
 
-// Add index for category filtering
-ArticleSchema.index({ category: 1 });
+// Category filtering is always language-scoped in queries, so the bare { category: 1 }
+// index was dead (0 ops). Use the compound { language: 1, category: 1, publishedAt: -1 }
+// (defined via the perf-index script) instead. Removed so autoIndex won't recreate it.
 
 // Add index for sourceId filtering
 ArticleSchema.index({ sourceId: 1 });
