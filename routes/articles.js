@@ -2395,12 +2395,26 @@ let _vectorProbe = { ok: false, checkedAt: 0, dims: null };
 // Vector readiness probe
 async function isVectorSearchReady() {
   const now = Date.now();
+
+  // Hard off-switch — use during migrations/outages when Atlas Search is down.
+  // Avoids the listSearchIndexes() call entirely (it can hang ~9s when the Search
+  // Index Management service is unreachable).
+  if (process.env.DISABLE_VECTOR_SEARCH === 'true') {
+    _vectorProbe = { ok: false, checkedAt: now, dims: null };
+    return false;
+  }
+
   if (now - _vectorProbe.checkedAt < VECTOR_PROBE_TTL_MS) {
     return _vectorProbe.ok;
   }
 
   try {
-    const indexes = await Article.collection.listSearchIndexes({ name: VECTOR_INDEX }).toArray();
+    // Bound the admin call: when Atlas Search is unhealthy, listSearchIndexes() can
+    // hang ~9s before erroring. Fail fast so a cold instance's first request isn't 9s.
+    const indexes = await Promise.race([
+      Article.collection.listSearchIndexes({ name: VECTOR_INDEX }).toArray(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('listSearchIndexes timeout')), 2000)),
+    ]);
     const vectorIndex = indexes.find(idx => idx.name === VECTOR_INDEX);
     const ok = vectorIndex && (vectorIndex.status === 'READY' || vectorIndex.queryable);
     const dims = vectorIndex?.latestDefinition?.mappings?.fields?.embedding_pca?.dimensions || null;
@@ -2439,11 +2453,17 @@ async function quickVectorProbe(queryVector, cutoffDate, language, excludeIds) {
     return { ok: true };
   } catch (error) {
     console.error('🔍 Quick vector probe error:', error.message);
-    if (error.message.includes('index') || error.message.includes('cluster')) {
+    // A probe that times out or can't reach the search service means vector search is
+    // NOT usable right now — treat it as unavailable so we fall back fast instead of
+    // attempting the (also-timing-out) full vector search. Previously timeouts were
+    // treated as "non-critical" and let the request proceed into multi-second hangs.
+    const msg = error.message || '';
+    const unusable = /index|cluster|time limit|MaxTimeMSExpired|timed out|timeout|Search Index/i.test(msg);
+    if (unusable) {
       await redis.set('vector_search_status', 'unavailable', 'EX', 300); // Cache failure
       return { ok: false };
     }
-    return { ok: true }; // Non-critical errors don't disable vector search
+    return { ok: true }; // Truly non-critical errors don't disable vector search
   }
 }
 
@@ -2674,7 +2694,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       const fallbackArticles = await Article.find(fallbackMatch)
         .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
-        .sort({ publishedAt: -1, viewCount: -1 })
+        .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(limit * 3) // Reduced multiplier for faster fallback
         .lean();
 
@@ -2809,7 +2829,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       const fallbackArticles = await Article.find(fallbackMatch)
         .select('title summary content contentFormat language image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
-        .sort({ publishedAt: -1, viewCount: -1 })
+        .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(candidatePoolSize)
         .lean();
 
@@ -2863,7 +2883,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
 
       const fastFallbackArticles = await Article.find(fallbackMatch)
         .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
-        .sort({ publishedAt: -1, viewCount: -1 })
+        .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(limit * 3)
         .lean();
 

@@ -51,7 +51,8 @@ const DROP = {
         '_id_1_language_1_publishedAt_-1',                // _id prefix is pointless
         'language_1_publishedAt_-1_sourceId_1',           // dead; covered by used language_1_publishedAt*
         'language_1_sourceId_1_publishedAt_-1',           // dead
-        'language_1_publishedAt_-1_viewCount_-1',         // dead
+        // NOTE: language_1_publishedAt_-1_viewCount_-1 was here, but it's now KEPT —
+        // it backs the /personalized fast-fallback sort {publishedAt:-1, viewCount:-1}.
         'category_1_publishedAt_-1',                      // dead
         'category_1_language_1_publishedAt_-1',           // dead (used twin: language_1_category_1_publishedAt_-1)
         'sourceId_1_publishedAt_-1',                      // dead (sourceId_1 kept separately)
