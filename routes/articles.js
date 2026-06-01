@@ -697,7 +697,14 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     const alreadyViewed = idStr ? ctx.viewedIds.has(idStr) : false;
 
     let vectorScore = 0;
-    if (
+    if (typeof a._atlasSimilarity === 'number') {
+      // Hybrid retrieval path: the candidate came from Atlas $vectorSearch, so
+      // we already have a cosine score. Atlas normalizes cosine to [0,1] as
+      // (1 + cos)/2 — convert back to raw cosine and clamp so W.vector keeps
+      // the exact same meaning as the JS cosine path below.
+      vectorScore = Math.max(0, 2 * a._atlasSimilarity - 1);
+      withEmbeddingCount++;
+    } else if (
       hasEmbedding &&
       Array.isArray(a.embedding_pca) &&
       a.embedding_pca.length === ctx.embedding.length
@@ -1063,7 +1070,7 @@ function userStateHash(ctx) {
 /** Strip internal/heavy fields before sending to client. */
 function sanitizeForResponse(articles, extra = {}) {
   return articles.map((a) => {
-    const { _score, _dislikedCat, embedding_pca, sourceGroupName, ...rest } = a;
+    const { _score, _dislikedCat, _atlasSimilarity, embedding_pca, sourceGroupName, ...rest } = a;
     return { ...rest, ...extra };
   });
 }
@@ -1073,7 +1080,7 @@ function sanitizeForResponse(articles, extra = {}) {
  * synchronously on cold miss and from the SWR background regen path with the
  * same logic.
  *
- * @returns {Promise<{articles: object[], usedWindowMs: number, candidateCount: number, dbTime: number, includeEmbedding: boolean}>}
+ * @returns {Promise<{articles: object[], usedWindowMs: number, candidateCount: number, dbTime: number, includeEmbedding: boolean, retrieval: 'vector'|'recency'}>}
  */
 async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) {
   const buildMatch = (sinceMs) => {
@@ -1149,16 +1156,142 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
       },
     ]);
 
-  const queryStart = Date.now();
+  // Hybrid retrieval: same candidate shape as runCandidateQuery, but the pool
+  // is sourced from Atlas $vectorSearch (default index, embedding_pca) ranked
+  // by similarity to the user's embedding instead of pure recency. The blended
+  // scorer still runs on top — only the candidate *source* changes. We attach
+  // _atlasSimilarity (Atlas cosine score) so the scorer can skip recomputing
+  // cosine and we can drop embedding_pca from the projection (smaller payload).
+  const runVectorCandidateQuery = (sinceMs) => {
+    const numCandidates = Math.min(Math.round(candidateLimit * NUM_CANDIDATE_MULT), 2000);
+    const filter = {
+      language,
+      publishedAt: { $gte: new Date(Date.now() - sinceMs) },
+    };
+    // category is an indexed filter field on the default index — cheapest place to drop dislikes
+    if (ctx?.dislikedCategories?.size > 0) {
+      filter.category = { $nin: [...ctx.dislikedCategories] };
+    }
+    // _id is NOT an indexed filter field on `default`, so disliked articles are
+    // excluded in a post-search $match rather than inside the vector filter.
+    const dislikedObjectIds =
+      ctx?.dislikedIds?.size > 0
+        ? [...ctx.dislikedIds].slice(0, 500).map((id) => new mongoose.Types.ObjectId(id))
+        : [];
+
+    return Article.aggregate(
+      [
+        {
+          $vectorSearch: {
+            index: VECTOR_INDEX,
+            path: 'embedding_pca',
+            queryVector: ctx.embedding,
+            numCandidates,
+            limit: candidateLimit,
+            filter,
+          },
+        },
+        { $addFields: { _atlasSimilarity: { $meta: 'vectorSearchScore' } } },
+        ...(dislikedObjectIds.length > 0
+          ? [{ $match: { _id: { $nin: dislikedObjectIds } } }]
+          : []),
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'sourceId',
+            foreignField: '_id',
+            as: 'source',
+            pipeline: [
+              { $match: { status: { $ne: 'blocked' } } },
+              { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
+            ],
+          },
+        },
+        { $match: { 'source.0': { $exists: true } } },
+        {
+          $addFields: {
+            sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+            sourceName: { $arrayElemAt: ['$source.name', 0] },
+            sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+            sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            content: 1,
+            contentFormat: 1,
+            url: 1,
+            category: 1,
+            publishedAt: 1,
+            image: 1,
+            viewCount: 1,
+            likes: 1,
+            dislikes: 1,
+            likedBy: 1,
+            dislikedBy: 1,
+            sourceId: 1,
+            sourceName: 1,
+            sourceIcon: 1,
+            sourceGroupName: 1,
+            language: 1,
+            _atlasSimilarity: 1,
+          },
+        },
+      ],
+      { maxTimeMS: VECTOR_MAX_TIME_MS, allowDiskUse: false }
+    );
+  };
+
   const HOUR = 60 * 60 * 1000;
   const DAY = 24 * HOUR;
   const windows = [24 * HOUR, 48 * HOUR, 7 * DAY, 30 * DAY];
+
+  // Run the expanding-window loop against whichever retrieval fn is chosen,
+  // widening the publishedAt window until we have a workable pool.
+  const runWindowed = async (queryFn) => {
+    let cands = [];
+    let used = windows[0];
+    for (const sinceMs of windows) {
+      cands = await queryFn(sinceMs);
+      used = sinceMs;
+      if (cands.length >= limit * 2) break;
+    }
+    return { cands, used };
+  };
+
+  // Vector retrieval is opt-in (PERS_LIGHT_VECTOR=1) and only for users with a
+  // usable embedding + signal. Guests / no-signal users always use recency.
+  const vectorEligible =
+    process.env.PERS_LIGHT_VECTOR === '1' && includeEmbedding && !!ctx?.hasSignal;
+
+  const queryStart = Date.now();
   let candidates = [];
   let usedWindowMs = windows[0];
-  for (const sinceMs of windows) {
-    candidates = await runCandidateQuery(sinceMs);
-    usedWindowMs = sinceMs;
-    if (candidates.length >= limit * 2) break;
+  let retrieval = 'recency';
+
+  if (vectorEligible && (await isVectorSearchReady())) {
+    try {
+      const { cands, used } = await runWindowed(runVectorCandidateQuery);
+      // Require a minimally useful pool; otherwise fall back to recency so a
+      // niche embedding can't starve the feed.
+      if (cands.length >= Math.min(limit, 5)) {
+        candidates = cands;
+        usedWindowMs = used;
+        retrieval = 'vector';
+      }
+    } catch (err) {
+      console.error(
+        '⚠️ personalized-light vector retrieval failed, falling back to recency:',
+        err.message
+      );
+    }
+  }
+
+  if (retrieval !== 'vector') {
+    const { cands, used } = await runWindowed(runCandidateQuery);
+    candidates = cands;
+    usedWindowMs = used;
   }
   const dbTime = Date.now() - queryStart;
 
@@ -1227,6 +1360,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
     includeEmbedding,
     explorationInjected,
     rerankApplied,
+    retrieval,
   };
 }
 
@@ -1749,6 +1883,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       includeEmbedding,
       explorationInjected,
       rerankApplied,
+      retrieval,
     } = await computePersonalizedLight({ ctx, language, limit, forceRefresh });
 
     try {
@@ -1767,7 +1902,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
       `(db ${dbTime}ms, candidates ${candidateCount}, window ${usedWindowHours}h, ` +
       `lang=${language}, signal=${!!ctx?.hasSignal}, embed=${includeEmbedding}, ` +
       `explore=${explorationInjected ? 'yes' : 'no'}, ` +
-      `rerank=${rerankApplied ? 'yes' : 'no'})`
+      `rerank=${rerankApplied ? 'yes' : 'no'}, retrieval=${retrieval})`
     );
 
     res.setHeader('X-Cache', 'miss');
@@ -1778,6 +1913,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Window-Hours', usedWindowHours);
     res.setHeader('X-Explore', explorationInjected ? '1' : '0');
     res.setHeader('X-Rerank', rerankApplied ? '1' : '0');
+    res.setHeader('X-Retrieval', retrieval);
     res.setHeader('X-Treatment', ctx?.treatment || 'control');
     res.setHeader('X-Experiment', EXPERIMENT_ID);
 
