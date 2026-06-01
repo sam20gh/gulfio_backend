@@ -43,10 +43,7 @@ const ArticleSchema = new mongoose.Schema({
 ArticleSchema.index({ title: 1, sourceId: 1 }, { unique: true });
 
 // Add index for publishedAt for sorting recent articles.
-// Also a TTL index: articles are auto-deleted ~9 months (274 days) after publishedAt.
-// Atlas runs the deletion server-side in the background; documents with a missing or
-// non-Date publishedAt are never expired. Apply to an existing DB via scripts/addArticleTTLIndex.js.
-ArticleSchema.index({ publishedAt: -1 }, { expireAfterSeconds: 60 * 60 * 24 * 274 });
+ArticleSchema.index({ publishedAt: -1 });
 
 // Category filtering is always language-scoped in queries, so the bare { category: 1 }
 // index was dead (0 ops). Use the compound { language: 1, category: 1, publishedAt: -1 }
