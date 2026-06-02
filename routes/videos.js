@@ -4269,8 +4269,10 @@ const isUrlExpired = (url) => {
         const expiryTime = new Date(signTime.getTime() + parseInt(expires) * 1000);
         const now = new Date();
 
-        // Add 1 hour buffer before expiry to ensure URLs don't expire while in use
-        const bufferTime = new Date(expiryTime.getTime() - (60 * 60 * 1000)); // 1 hour before expiry
+        // Buffer MUST exceed the refresh cron interval (daily), otherwise a URL
+        // can cross its 7-day expiry before the next run re-signs it. With a 48h
+        // buffer the daily cron always re-signs at least ~24h before expiry.
+        const bufferTime = new Date(expiryTime.getTime() - (48 * 60 * 60 * 1000)); // 48h before expiry
 
         return now > bufferTime;
     } catch (error) {
@@ -4279,7 +4281,67 @@ const isUrlExpired = (url) => {
     }
 };
 
-// Refresh signed S3 URLs for all Reels — for Google Cloud Scheduler
+// Signed S3 URLs are valid for 7 days; refresh well before that.
+const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
+/**
+ * Re-sign a single reel's S3 video URL.
+ * Returns { status, signedUrl, key }.
+ *   status: 'refreshed' | 'r2' | 'invalid' | 'no-key' | 'missing-object' | 'error'
+ * Pass { force: true } to re-sign even if the current URL is not yet expired.
+ */
+async function refreshReelSignedUrl(reel, { force = false } = {}) {
+    // R2 URLs are public and never expire — nothing to do.
+    if (reel.videoUrl && reel.videoUrl.includes('.r2.dev')) {
+        return { status: 'r2' };
+    }
+    // Only signed S3 URLs need refreshing.
+    if (!reel.videoUrl || !reel.videoUrl.includes('amazonaws.com')) {
+        return { status: 'invalid' };
+    }
+
+    let key = reel.originalKey || extractKeyFromUrl(reel.videoUrl);
+    if (!key) {
+        return { status: 'no-key' };
+    }
+
+    if (!force && !isUrlExpired(reel.videoUrl)) {
+        return { status: 'fresh', key };
+    }
+
+    // Determine the correct bucket from the existing URL (handles legacy buckets).
+    let bucketToUse = storageConfig.bucket;
+    try {
+        const urlHost = new URL(reel.videoUrl).hostname.toLowerCase();
+        if (urlHost.includes('amazonaws.com') && urlHost.includes('.s3.')) {
+            const bucketFromUrl = urlHost.split('.s3.')[0];
+            if (bucketFromUrl) bucketToUse = bucketFromUrl;
+        }
+    } catch { /* fall back to configured bucket */ }
+
+    // Verify the object exists before signing.
+    try {
+        await s3.send(new HeadObjectCommand({ Bucket: bucketToUse, Key: key }));
+    } catch (storageError) {
+        console.warn(`⚠️ Object not found for key ${key} in bucket ${bucketToUse}, reel ${reel._id}: ${storageError.message}`);
+        return { status: 'missing-object', key };
+    }
+
+    const cmd = new GetObjectCommand({ Bucket: bucketToUse, Key: key });
+    const signed = await getSignedUrl(s3, cmd, { expiresIn: SIGNED_URL_TTL_SECONDS });
+
+    const update = { videoUrl: signed, updatedAt: new Date() };
+    if (!reel.originalKey) update.originalKey = key; // backfill for next time
+    await Reel.updateOne({ _id: reel._id }, { $set: update });
+
+    return { status: 'refreshed', signedUrl: signed, key, backfilledKey: !reel.originalKey };
+}
+
+// Refresh signed S3 URLs for ALL Reels — for Google Cloud Scheduler.
+// Previously this only processed the first `limit` (default 1000) reels in
+// insertion order with no pagination loop, so once the library grew past 1000
+// the newest reels' signatures expired → "video won't load". It now sweeps the
+// entire S3 set, newest-first, in internal batches.
 router.post('/reels/refresh-urls', async (req, res) => {
     try {
         const secret = req.headers['x-api-key'];
@@ -4288,142 +4350,104 @@ router.post('/reels/refresh-urls', async (req, res) => {
         }
 
         const force = String(req.query.force || '').toLowerCase() === 'true';
-        const limit = parseInt(req.query.limit) || 1000; // Process in batches
-        const skip = parseInt(req.query.skip) || 0;
+        // Optional caps for manual/partial runs. When omitted, process everything.
+        const maxToProcess = req.query.limit ? parseInt(req.query.limit) : Infinity;
+        const BATCH_SIZE = 500;
 
-        console.log(`🔄 Starting URL refresh - Force: ${force}, Limit: ${limit}, Skip: ${skip}`);
+        // Only S3-signed reels need refreshing — skip R2 entirely at the query level.
+        const s3Filter = { videoUrl: { $regex: 'amazonaws\\.com' } };
+        const totalS3 = await Reel.countDocuments(s3Filter);
+        console.log(`🔄 Starting full URL refresh — Force: ${force}, S3 reels: ${totalS3}, cap: ${maxToProcess}`);
 
-        const reels = await Reel.find({}, '_id originalKey videoUrl updatedAt')
-            .limit(limit)
-            .skip(skip)
-            .lean();
+        let refreshed = 0, backfilledOriginalKey = 0, skipped = 0, failed = 0, alreadyFresh = 0, processed = 0;
 
-        let refreshed = 0;
-        let backfilledOriginalKey = 0;
-        let skipped = 0;
-        let failed = 0;
-        let alreadyFresh = 0;
+        // Sweep newest-first so the reels the feed actually serves are guaranteed
+        // fresh first. Paginate by skip in bounded batches to cap memory.
+        for (let offset = 0; offset < totalS3 && processed < maxToProcess; offset += BATCH_SIZE) {
+            const batch = await Reel.find(s3Filter, '_id originalKey videoUrl updatedAt scrapedAt')
+                .sort({ scrapedAt: -1, _id: -1 })
+                .skip(offset)
+                .limit(BATCH_SIZE)
+                .lean();
+            if (batch.length === 0) break;
 
-        console.log(`📊 Processing ${reels.length} reels`);
-
-        for (const reel of reels) {
-            try {
-                // Skip R2 URLs as they are public and don't need refreshing
-                if (reel.videoUrl && reel.videoUrl.includes('.r2.dev')) {
-                    console.log(`🔄 Skipping R2 reel ${reel._id} - public URL doesn't need refresh`);
-                    skipped++;
-                    continue;
-                }
-
-                // Only process S3 URLs (signed URLs that expire)
-                if (!reel.videoUrl || !reel.videoUrl.includes('amazonaws.com')) {
-                    console.warn(`⚠️ Skipping reel ${reel._id} - not an S3 URL`);
-                    skipped++;
-                    continue;
-                }
-
-                let key = reel.originalKey;
-
-                // Try to extract key from URL if originalKey is missing
-                if (!key && reel.videoUrl) {
-                    key = extractKeyFromUrl(reel.videoUrl);
-                }
-
-                if (!key) {
-                    console.warn(`⚠️ No key found for S3 reel ${reel._id}`);
-                    skipped++;
-                    continue;
-                }
-
-                // Check if URL is expired or force refresh
-                const urlExpired = isUrlExpired(reel.videoUrl);
-
-                if (!force && !urlExpired) {
-                    alreadyFresh++;
-                    continue;
-                }
-
-                // Determine which bucket to use based on URL
-                let bucketToUse = storageConfig.bucket;
-
-                // If the URL is from a different storage system, extract the correct bucket
-                if (reel.videoUrl) {
-                    const urlHost = new URL(reel.videoUrl).hostname.toLowerCase();
-
-                    // Extract bucket from S3 URL if different from config
-                    if (urlHost.includes('amazonaws.com') && urlHost.includes('.s3.')) {
-                        const bucketFromUrl = urlHost.split('.s3.')[0];
-                        if (bucketFromUrl && bucketFromUrl !== bucketToUse) {
-                            bucketToUse = bucketFromUrl;
-                            console.log(`🔄 Using bucket from URL: ${bucketToUse} for reel ${reel._id}`);
-                        }
-                    }
-                }
-
-                // Verify the object exists in storage
+            for (const reel of batch) {
+                if (processed >= maxToProcess) break;
+                processed++;
                 try {
-                    await s3.send(new HeadObjectCommand({ Bucket: bucketToUse, Key: key }));
-                } catch (storageError) {
-                    console.warn(`⚠️ Object not found for key ${key} in bucket ${bucketToUse}, reel ${reel._id}: ${storageError.message}`);
+                    const result = await refreshReelSignedUrl(reel, { force });
+                    switch (result.status) {
+                        case 'refreshed':
+                            refreshed++;
+                            if (result.backfilledKey) backfilledOriginalKey++;
+                            if (refreshed % 100 === 0) console.log(`✅ Refreshed ${refreshed} URLs so far...`);
+                            break;
+                        case 'fresh': alreadyFresh++; break;
+                        case 'missing-object': failed++; break;
+                        default: skipped++; // r2 / invalid / no-key
+                    }
+                } catch (err) {
                     failed++;
-                    continue;
+                    console.error(`❌ Failed to refresh reel ${reel._id}: ${err.message}`);
                 }
-
-                // Generate new signed URL (valid for 7 days)
-                const cmd = new GetObjectCommand({ Bucket: bucketToUse, Key: key });
-                const signed = await getSignedUrl(s3, cmd, { expiresIn: 60 * 60 * 24 * 7 });
-
-                const update = { videoUrl: signed, updatedAt: new Date() };
-
-                // Backfill originalKey if missing
-                if (!reel.originalKey) {
-                    update.originalKey = key;
-                    backfilledOriginalKey++;
-                }
-
-                await Reel.updateOne({ _id: reel._id }, { $set: update });
-                refreshed++;
-
-                if (refreshed % 100 === 0) {
-                    console.log(`✅ Refreshed ${refreshed} URLs so far...`);
-                }
-
-            } catch (err) {
-                failed++;
-                console.error(`❌ Failed to refresh reel ${reel._id}: ${err.message}`);
             }
         }
 
-        const totalReels = await Reel.countDocuments();
-        const hasMore = skip + limit < totalReels;
-
-        console.log(`🎯 S3 URL refresh complete: ${refreshed} S3 URLs refreshed, ${skipped} skipped (R2 + invalid), ${failed} failed, ${alreadyFresh} already fresh`);
+        console.log(`🎯 S3 URL refresh complete: ${refreshed} refreshed, ${alreadyFresh} already fresh, ${skipped} skipped, ${failed} failed (processed ${processed}/${totalS3})`);
 
         res.json({
-            message: '✅ S3 reel video URLs processed (R2 URLs skipped - no refresh needed)',
+            message: '✅ All S3 reel video URLs processed (R2 URLs are public — not signed)',
             statistics: {
                 s3UrlsRefreshed: refreshed,
                 backfilledOriginalKey,
-                skipped: `${skipped} (includes R2 reels which don't need refresh)`,
+                skipped,
                 failed,
                 alreadyFresh,
-                processed: reels.length,
-                totalReels,
-                hasMore,
-                nextSkip: hasMore ? skip + limit : null
+                processed,
+                totalS3Reels: totalS3,
+                complete: processed >= totalS3 || processed >= maxToProcess
             },
             config: {
                 bucket: storageConfig.bucket,
                 region: storageConfig.region || AWS_S3_REGION,
                 type: storageConfig.type,
-                force,
-                limit,
-                skip
+                force
             }
         });
     } catch (err) {
         console.error('❌ Failed to refresh reel URLs:', err);
         res.status(500).json({ error: err.message, stack: err.stack });
+    }
+});
+
+// On-demand single-reel URL refresh — lets the mobile client self-heal a dead
+// video instantly (e.g. an S3 signature that expired between cron runs) instead
+// of showing "Failed to load". No admin key required: it only re-signs an
+// existing object, never mutates anything else.
+router.get('/reels/:reelId/refresh-url', async (req, res) => {
+    try {
+        const { reelId } = req.params;
+        const reel = await Reel.findById(reelId, '_id originalKey videoUrl').lean();
+        if (!reel) return res.status(404).json({ error: 'Reel not found' });
+
+        // R2 / non-S3 URLs are already permanent — hand back what we have.
+        if (!reel.videoUrl || !reel.videoUrl.includes('amazonaws.com')) {
+            return res.json({ videoUrl: reel.videoUrl, refreshed: false });
+        }
+
+        // Force a re-sign so the client always gets a guaranteed-fresh URL.
+        const result = await refreshReelSignedUrl(reel, { force: true });
+        if (result.status === 'refreshed') {
+            return res.json({ videoUrl: result.signedUrl, refreshed: true });
+        }
+        if (result.status === 'missing-object') {
+            return res.status(410).json({ error: 'Video object no longer exists' });
+        }
+        // Couldn't re-sign (no key etc.) — return existing URL as a last resort.
+        return res.json({ videoUrl: reel.videoUrl, refreshed: false, reason: result.status });
+    } catch (err) {
+        console.error('❌ Single-reel URL refresh failed:', err.message);
+        res.status(500).json({ error: 'Failed to refresh URL' });
     }
 });
 
