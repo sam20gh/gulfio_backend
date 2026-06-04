@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     ca-certificates \
     procps \
+    ffmpeg \
     libxss1 \
     libasound2 \
     libatk-bridge2.0-0 \

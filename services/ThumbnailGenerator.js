@@ -1,5 +1,6 @@
 const ffmpeg = require('fluent-ffmpeg');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
@@ -35,17 +36,55 @@ class ThumbnailGenerator {
         }
     }
 
-    async generateThumbnail(videoUrl, reelId) {
+    // Extract the S3/R2 object key from a stored video URL.
+    extractKeyFromUrl(u) {
+        try {
+            const url = new URL(u);
+            return decodeURIComponent(url.pathname || '').replace(/^\/+/, '') || null;
+        } catch {
+            return null;
+        }
+    }
+
+    // Produce a URL ffmpeg can actually read. R2 (.r2.dev) URLs are public and
+    // used as-is. S3 URLs are re-signed from the object key (originalKey if we
+    // have it, otherwise parsed from the URL) so an expired signature — or an
+    // unsigned `publicUrl` from the YouTube scraper on a private bucket — still
+    // works. Falls back to the original URL if no key can be determined.
+    async resolveInputUrl(videoUrl, originalKey) {
+        if (!videoUrl) return videoUrl;
+        if (videoUrl.includes('.r2.dev')) return videoUrl;
+        if (videoUrl.includes('amazonaws.com')) {
+            const key = originalKey || this.extractKeyFromUrl(videoUrl);
+            if (key) {
+                try {
+                    return await getSignedUrl(
+                        s3Client,
+                        new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
+                        { expiresIn: 60 * 60 } // 1h is plenty to grab one frame
+                    );
+                } catch (e) {
+                    console.warn(`⚠️ Could not re-sign ${key}: ${e.message}`);
+                }
+            }
+        }
+        return videoUrl;
+    }
+
+    async generateThumbnail(videoUrl, reelId, originalKey = null) {
         const thumbnailFileName = `${reelId}-thumbnail.jpg`;
         const thumbnailPath = path.join(this.tempDir, thumbnailFileName);
 
         try {
             console.log(`🎬 Generating thumbnail for reel: ${reelId}`);
-            console.log(`📹 Video URL: ${videoUrl}`);
+
+            // Always feed ffmpeg a freshly-signed/playable URL.
+            const inputUrl = await this.resolveInputUrl(videoUrl, originalKey);
+            console.log(`📹 Video input: ${inputUrl.substring(0, 90)}...`);
 
             // Generate thumbnail at 2 second mark using FFmpeg
             await new Promise((resolve, reject) => {
-                ffmpeg(videoUrl)
+                ffmpeg(inputUrl)
                     .screenshots({
                         timestamps: ['2'], // Extract frame at 2 seconds
                         filename: thumbnailFileName,
@@ -124,62 +163,81 @@ class ThumbnailGenerator {
         }
     }
 
-    // Batch process existing videos without thumbnails
-    async processExistingVideos(batchSize = 10) {
+    // Reels that need a thumbnail: missing/empty OR a non-URL value, and which
+    // do have a video to extract a frame from.
+    static get MISSING_THUMBNAIL_QUERY() {
+        return {
+            $and: [
+                {
+                    $or: [
+                        { thumbnailUrl: { $exists: false } },
+                        { thumbnailUrl: null },
+                        { thumbnailUrl: '' },
+                        { thumbnailUrl: { $not: /^https?:\/\/.+/ } }
+                    ]
+                },
+                { videoUrl: { $exists: true, $nin: [null, ''] } }
+            ]
+        };
+    }
+
+    // Batch process existing videos without thumbnails. By default it keeps
+    // going until every missing thumbnail is filled (capped by `maxTotal`),
+    // processing `batchSize` reels per DB page so memory stays bounded.
+    async processExistingVideos(batchSize = 10, maxTotal = Infinity) {
         const Reel = require('../models/Reel');
+        // Guard against NaN/invalid caps so `processed < maxTotal` doesn't
+        // short-circuit the whole loop to zero.
+        if (!Number.isFinite(maxTotal) || maxTotal <= 0) maxTotal = Infinity;
 
         try {
-            // Find videos without thumbnails
-            const videosWithoutThumbnails = await Reel.find({
-                $or: [
-                    { thumbnailUrl: { $exists: false } },
-                    { thumbnailUrl: null },
-                    { thumbnailUrl: '' }
-                ]
-            }).limit(batchSize);
+            const query = ThumbnailGenerator.MISSING_THUMBNAIL_QUERY;
+            const totalMissing = await Reel.countDocuments(query);
+            console.log(`📊 ${totalMissing} reels need thumbnails (cap: ${maxTotal})`);
 
-            console.log(`📊 Found ${videosWithoutThumbnails.length} videos without thumbnails to process`);
-
-            if (videosWithoutThumbnails.length === 0) {
+            if (totalMissing === 0) {
                 console.log('🎉 All videos already have thumbnails!');
                 return { processed: 0, successful: 0, failed: 0 };
             }
 
             let successful = 0;
             let failed = 0;
+            let processed = 0;
+            // IDs that failed this run — excluded from re-queries so a permanently
+            // broken video (e.g. deleted S3 object) can't loop forever. Kept in
+            // memory only; no data pollution.
+            const failedIds = [];
 
-            for (const video of videosWithoutThumbnails) {
-                try {
-                    console.log(`\n🔄 Processing video ${successful + failed + 1}/${videosWithoutThumbnails.length}: ${video._id}`);
+            // Re-query each loop (not skip/paginate): every success removes a doc
+            // from the result set, so always grabbing the next `batchSize` that
+            // still match — minus this run's failures — avoids re-processing.
+            while (processed < maxTotal) {
+                const pageQuery = failedIds.length
+                    ? { $and: [query, { _id: { $nin: failedIds } }] }
+                    : query;
+                const page = await Reel.find(pageQuery)
+                    .select('_id videoUrl originalKey')
+                    .limit(Math.min(batchSize, maxTotal - processed))
+                    .lean();
+                if (page.length === 0) break;
 
-                    const thumbnailUrl = await this.generateThumbnail(video.videoUrl, video._id);
-
-                    // Update the video record
-                    await Reel.findByIdAndUpdate(video._id, {
-                        thumbnailUrl: thumbnailUrl
-                    });
-
-                    successful++;
-                    console.log(`✅ Thumbnail generated and saved for ${video._id}`);
-
-                    // Add delay to avoid overwhelming the system
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
-
-                } catch (error) {
-                    failed++;
-                    console.error(`❌ Failed to generate thumbnail for ${video._id}:`, error.message);
-
-                    // Continue processing other videos even if one fails
-                    continue;
+                for (const video of page) {
+                    processed++;
+                    try {
+                        const thumbnailUrl = await this.generateThumbnail(video.videoUrl, video._id, video.originalKey);
+                        await Reel.findByIdAndUpdate(video._id, { thumbnailUrl });
+                        successful++;
+                        console.log(`✅ [${processed}/${totalMissing}] Thumbnail saved for ${video._id}`);
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // pace the encoder
+                    } catch (error) {
+                        failed++;
+                        failedIds.push(video._id);
+                        console.error(`❌ [${processed}/${totalMissing}] Failed for ${video._id}: ${error.message}`);
+                    }
                 }
             }
 
-            const results = {
-                processed: videosWithoutThumbnails.length,
-                successful,
-                failed
-            };
-
+            const results = { processed, successful, failed };
             console.log(`\n📈 Batch processing complete:`, results);
             return results;
 
@@ -217,7 +275,7 @@ class ThumbnailGenerator {
             }
 
             console.log(`✅ Found reel: ${reel.videoUrl}`);
-            const thumbnailUrl = await this.generateThumbnail(reel.videoUrl, reelId);
+            const thumbnailUrl = await this.generateThumbnail(reel.videoUrl, reelId, reel.originalKey);
             return thumbnailUrl;
         } catch (error) {
             console.error(`❌ Failed to generate thumbnail by ID ${reelId}:`, {

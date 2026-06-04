@@ -5,7 +5,8 @@ const { youtube } = require('btch-downloader');
 const xml2js = require('xml2js'); // You'll need to install this: npm install xml2js
 const Reel = require('../models/Reel');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const {
     AWS_S3_REGION,
@@ -121,8 +122,15 @@ async function uploadToS3(videoUrl, filename) {
                     const result = await s3.send(command);
                     console.log(`     ✅ S3 upload successful`);
 
-                    const url = `https://${AWS_S3_BUCKET}.s3.${AWS_S3_REGION}.amazonaws.com/${filename}`;
-                    console.log(`     🔗 Final S3 URL: ${url}`);
+                    // Bucket is private — return a 7-day SIGNED URL (a plain
+                    // virtual-hosted URL returns 403). Callers persist `filename`
+                    // as originalKey so the refresh cron can re-sign it.
+                    const url = await getSignedUrl(
+                        s3,
+                        new GetObjectCommand({ Bucket: AWS_S3_BUCKET, Key: filename }),
+                        { expiresIn: 60 * 60 * 24 * 7 }
+                    );
+                    console.log(`     🔗 Signed S3 URL generated`);
                     resolve(url);
                 } catch (uploadErr) {
                     console.error(`     ❌ S3 upload failed:`, uploadErr.message);
@@ -301,6 +309,7 @@ async function scrapeYouTubeShortsViaRSS(source) {
                         source: source._id,
                         reelId: videoId,
                         videoUrl: finalUrl,
+                        originalKey: filename,
                         caption: title,
                         publishedAt: publishedAt ? new Date(publishedAt) : new Date(),
                         scrapedAt: new Date(),
