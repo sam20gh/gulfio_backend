@@ -95,7 +95,7 @@ async function removeDuplicateReels() {
                 const dateB = b.scrapedAt || b.publishedAt || new Date(0);
                 return new Date(dateB) - new Date(dateA);
             });
-            
+
             const toRemove = sortedDocs.slice(1);
             const idsToRemove = toRemove.map(doc => doc.id);
 
@@ -141,7 +141,7 @@ async function removeDuplicateReels() {
                     const dateB = b.scrapedAt || b.publishedAt || new Date(0);
                     return new Date(dateB) - new Date(dateA);
                 });
-                
+
                 const toRemove = sortedReels.slice(1);
                 const idsToRemove = toRemove.map(reel => reel._id);
 
@@ -186,7 +186,7 @@ async function removeDuplicateReels() {
                 const dateB = b.scrapedAt || b.publishedAt || new Date(0);
                 return new Date(dateB) - new Date(dateA);
             });
-            
+
             const toRemove = sortedDocs.slice(1);
             const idsToRemove = toRemove.map(doc => doc.id);
 
