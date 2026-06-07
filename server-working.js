@@ -265,6 +265,7 @@ function loadRoutes() {
         app.use('/api/videos', videoRoutes);
         app.use('/api/youtube', youtubeRoutes);
         app.use('/api/lotto', lottoRoutes);
+        app.use('/api/metals', require('./routes/metals'));
         app.use('/api/thumbnails', thumbnailRoutes);
         app.use('/api/debug', debugRoutes);
         app.use('/api/puppeteer', puppeteerDebugRoutes);
@@ -329,6 +330,13 @@ async function initializeOptimizations() {
                 console.log('⏰ Breaking news expiry job started');
             } catch (error) {
                 console.error('⚠️ Breaking news expiry job failed:', error.message);
+            }
+
+            try {
+                const { startMetalPricesJob } = require('./jobs/refreshMetalPrices');
+                startMetalPricesJob();
+            } catch (error) {
+                console.error('⚠️ Metal prices job failed:', error.message);
             }
         }, 15000);
 
