@@ -244,17 +244,21 @@ router.get('/analytics', auth, ensureMongoUser, async (req, res) => {
             .select('title viewCount likes dislikes publishedAt category sourceId')
             .lean();
 
-        // Merge with view counts from UserActivity and sort
-        const topArticles = topArticleIds.map(item => {
-            const article = topArticlesRaw.find(a => a._id.toString() === item._id.toString());
-            if (article) {
-                return {
-                    ...article,
-                    viewCount: item.viewCount // Use actual views from time window
-                };
-            }
-            return null;
-        }).filter(Boolean);
+        // Merge with view counts from UserActivity and sort.
+        // Skip groups with a null _id — UserActivity records can have a null articleId,
+        // which produces a { _id: null } group and would throw on item._id.toString().
+        const topArticles = topArticleIds
+            .filter(item => item._id)
+            .map(item => {
+                const article = topArticlesRaw.find(a => a._id.toString() === item._id.toString());
+                if (article) {
+                    return {
+                        ...article,
+                        viewCount: item.viewCount // Use actual views from time window
+                    };
+                }
+                return null;
+            }).filter(Boolean);
 
         console.log('⏱️  Query 6: Category stats');
         // Category distribution (within time window)
