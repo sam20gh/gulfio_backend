@@ -82,7 +82,8 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars COHERE_API_KEY="${COHERE_API_KEY}" \
     --set-env-vars REDIS_URL="${REDIS_URL}" \
     --set-env-vars API_FOOTBALL_KEY="${API_FOOTBALL_KEY}" \
-    --set-env-vars API_FOOTBALL_BASE_URL="${API_FOOTBALL_BASE_URL}"
+    --set-env-vars API_FOOTBALL_BASE_URL="${API_FOOTBALL_BASE_URL}"\
+    --set-env-vars GOLDAPI_KEY="${GOLDAPI_KEY}"
 
 if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
