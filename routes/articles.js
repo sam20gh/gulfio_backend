@@ -305,6 +305,61 @@ function simpleHash(str) {
   return Math.abs(hash);
 }
 
+/** ---- Served-article cursor (P0-2 follow-up) ---- **/
+/**
+ * Exclude articles a user has been served recently from their personalized
+ * candidate pool, so deep pagination doesn't repeat the same content as
+ * the underlying pool shrinks (the page-based slice problem: pages 1, 2,
+ * 3 used to be [0:20], [20:40], [40:60] of the same scored list — pool
+ * size 25 meant page 2 returned 5, page 3 returned 0).
+ *
+ * Implementation: per-user Redis SET keyed by supabase_id. SADD every
+ * article ID we surface. EXPIRE sliding 6h on every write — active users
+ * never see repeats; idle users returning the next morning see
+ * everything again.
+ *
+ * Applied to: /personalized-light, /personalized-fast, /personalized-category.
+ * NOT applied to: /following (users explicitly subscribed; they want
+ * everything those sources publish even if they've already seen it).
+ */
+const SERVED_EXCLUSION_TTL_SEC = 6 * 60 * 60; // 6h sliding
+const SERVED_MAX_EXCLUDE = 1000; // ceiling on how many IDs we send to $nin
+
+function servedKey(userId) {
+  return `served_pers_v1:${userId}`;
+}
+
+async function getServedIds(userId) {
+  if (!userId) return new Set();
+  try {
+    const members = await redis.smembers(servedKey(userId));
+    return new Set(members || []);
+  } catch (err) {
+    // Non-fatal: just means no exclusion this request.
+    console.warn('⚠️ getServedIds error:', err.message);
+    return new Set();
+  }
+}
+
+async function recordServedIds(userId, articleIds) {
+  if (!userId || !articleIds?.length) return;
+  try {
+    const ids = articleIds
+      .map((a) => (a && a._id ? a._id.toString() : a?.toString()))
+      .filter(Boolean);
+    if (ids.length === 0) return;
+    await redis.sadd(servedKey(userId), ...ids);
+    // Sliding TTL: each write resets the expiry. Active users keep
+    // their served set "warm" for as long as they're scrolling; idle
+    // users let it expire after 6h of no activity.
+    await redis.expire(servedKey(userId), SERVED_EXCLUSION_TTL_SEC);
+  } catch (err) {
+    // Non-fatal: a missed record just means the next page may overlap
+    // slightly. Client-side dedup catches it.
+    console.warn('⚠️ recordServedIds error:', err.message);
+  }
+}
+
 /** ---- Personalization v2 helpers ---- **/
 
 // Scoring weights — tuned for Gulf news feed (bold/fast hero accent feed)
@@ -1089,11 +1144,19 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
       publishedAt: { $gte: new Date(Date.now() - sinceMs) },
     };
     if (ctx) {
+      // Combined exclusion: hard-disliked articles + recently-served
+      // articles (P0-2 follow-up). The latter rotates back in after the
+      // 6h sliding TTL.
+      const excluded = [];
       if (ctx.dislikedIds.size > 0) {
+        excluded.push(...[...ctx.dislikedIds].slice(0, 500));
+      }
+      if (ctx.servedIds?.size > 0) {
+        excluded.push(...[...ctx.servedIds].slice(0, SERVED_MAX_EXCLUDE));
+      }
+      if (excluded.length > 0) {
         match._id = {
-          $nin: [...ctx.dislikedIds]
-            .slice(0, 500)
-            .map((id) => new mongoose.Types.ObjectId(id)),
+          $nin: excluded.map((id) => new mongoose.Types.ObjectId(id)),
         };
       }
       if (ctx.dislikedCategories.size > 0) {
@@ -1827,6 +1890,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     if (ctx) {
       ctx.language = language;
       ctx.categoryStats = await getCategoryEngagementStats(language);
+      ctx.servedIds = await getServedIds(userId);
     }
 
     // Fresh tier: rotates on user activity (stateHash) and every 10 min.
@@ -1844,8 +1908,12 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
         const cached = await redis.get(freshKey);
         if (cached) {
           console.log(`⚡ pers-v2 light fresh cache hit in ${Date.now() - startTime}ms`);
+          const parsed = JSON.parse(cached);
           res.setHeader('X-Cache', 'fresh');
-          return res.json(JSON.parse(cached));
+          // Fire-and-forget: record served IDs so the next page excludes
+          // them (P0-2 follow-up). Won't block the response.
+          recordServedIds(userId, parsed).catch(() => {});
+          return res.json(parsed);
         }
       } catch (err) {
         console.error('⚠️ Redis get error (fresh):', err.message);
@@ -1866,8 +1934,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
             `📦 pers-v2 light SWR stale-hit in ${Date.now() - startTime}ms ` +
             `(regen scheduled)`
           );
+          const parsed = JSON.parse(stale);
           res.setHeader('X-Cache', 'stale');
-          return res.json(JSON.parse(stale));
+          recordServedIds(userId, parsed).catch(() => {});
+          return res.json(parsed);
         }
       } catch (err) {
         console.error('⚠️ Redis get error (stale):', err.message);
@@ -1916,6 +1986,10 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
     res.setHeader('X-Retrieval', retrieval);
     res.setHeader('X-Treatment', ctx?.treatment || 'control');
     res.setHeader('X-Experiment', EXPERIMENT_ID);
+
+    // P0-2 follow-up: record served IDs so pages 2+ exclude them.
+    // Fire-and-forget — won't block the response.
+    recordServedIds(userId, finalArticles).catch(() => {});
 
     res.json(finalArticles);
   } catch (error) {
@@ -2310,6 +2384,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     if (ctx) {
       ctx.language = language;
       ctx.categoryStats = await getCategoryEngagementStats(language);
+      ctx.servedIds = await getServedIds(userId);
     }
 
     const stateHash = userStateHash(ctx);
@@ -2321,27 +2396,35 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
         const cached = await redis.get(cacheKey);
         if (cached) {
           console.log(`⚡ pers-v2 fast cache hit in ${Date.now() - startTime}ms (page ${page})`);
-          return res.json(JSON.parse(cached));
+          const parsed = JSON.parse(cached);
+          recordServedIds(userId, parsed).catch(() => {});
+          return res.json(parsed);
         }
       } catch (err) {
         console.error('⚠️ Redis get error:', err.message);
       }
     }
 
-    // Build candidate filter — only hard-exclude explicit dislikes.
-    // Viewed articles are demoted in scoring, not excluded, so the feed
-    // doesn't collapse for users with long view histories.
+    // Build candidate filter: hard-exclude explicit dislikes + the
+    // recently-served set (P0-2 follow-up). Viewed articles are still
+    // only demoted in scoring, not excluded, so the feed doesn't
+    // collapse for users with long view histories.
     const buildMatch = (sinceMs) => {
       const match = {
         language,
         publishedAt: { $gte: new Date(Date.now() - sinceMs) },
       };
       if (ctx) {
+        const excluded = [];
         if (ctx.dislikedIds.size > 0) {
+          excluded.push(...[...ctx.dislikedIds].slice(0, 500));
+        }
+        if (ctx.servedIds?.size > 0) {
+          excluded.push(...[...ctx.servedIds].slice(0, SERVED_MAX_EXCLUDE));
+        }
+        if (excluded.length > 0) {
           match._id = {
-            $nin: [...ctx.dislikedIds]
-              .slice(0, 500)
-              .map((id) => new mongoose.Types.ObjectId(id)),
+            $nin: excluded.map((id) => new mongoose.Types.ObjectId(id)),
           };
         }
         if (ctx.dislikedCategories.size > 0) {
@@ -2441,12 +2524,19 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       scored = candidates.sort((x, y) => y._score - x._score);
     }
 
-    // Interleave the full sorted list, then page-slice. The interleaved list
-    // retains essentially all scored articles (just reordered), so pagination
-    // has plenty of headroom — no more empty page 2 from a too-tight cap.
+    // P0-2 follow-up: candidates already EXCLUDE everything in the
+    // user's served set (last 6h). So every personalized-fast call
+    // returns slice(0, limit) of the fresh pool — there is no
+    // page-based offset anymore. The `page` query param still steers
+    // scoring biases (page-aware recency/relevance multipliers and the
+    // starting time window) and the cache key, but the slice itself is
+    // always from the top of the fresh pool.
+    //
+    // This is what makes deep pagination work for active scrollers:
+    // every page is "give me 20 more I haven't seen", not "give me
+    // items 60-80 of a fixed list that may have only 25 entries".
     const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
-    const skip = (page - 1) * limit;
-    const pageSlice = interleaved.slice(skip, skip + limit);
+    const pageSlice = interleaved.slice(0, limit);
 
     const finalArticles = sanitizeForResponse(pageSlice, {
       isFast: true,
@@ -2476,6 +2566,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     res.setHeader('X-Candidates', candidates.length);
     res.setHeader('X-Window-Hours', usedWindowHours);
 
+    recordServedIds(userId, finalArticles).catch(() => {});
     res.json(finalArticles);
   } catch (error) {
     const errorTime = Date.now() - startTime;
@@ -3424,6 +3515,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     if (ctx) {
       ctx.language = language;
       ctx.categoryStats = await getCategoryEngagementStats(language);
+      ctx.servedIds = await getServedIds(supabaseId);
     }
 
     // Refuse to serve a category the user has explicitly disliked — they
@@ -3444,7 +3536,9 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
         const cached = await redis.get(cacheKey);
         if (cached) {
           console.log(`⚡ pers-cat-v2 cache hit in ${Date.now() - startTime}ms (page ${page})`);
-          return res.json(JSON.parse(cached));
+          const parsed = JSON.parse(cached);
+          recordServedIds(supabaseId, parsed).catch(() => {});
+          return res.json(parsed);
         }
       } catch (err) {
         console.error('⚠️ Redis get error:', err.message);
@@ -3461,12 +3555,20 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
         category,
         publishedAt: { $gte: new Date(Date.now() - sinceMs) },
       };
-      if (ctx && ctx.dislikedIds.size > 0) {
-        match._id = {
-          $nin: [...ctx.dislikedIds]
-            .slice(0, 500)
-            .map((id) => new mongoose.Types.ObjectId(id)),
-        };
+      if (ctx) {
+        // Disliked + recently-served (P0-2 follow-up).
+        const excluded = [];
+        if (ctx.dislikedIds.size > 0) {
+          excluded.push(...[...ctx.dislikedIds].slice(0, 500));
+        }
+        if (ctx.servedIds?.size > 0) {
+          excluded.push(...[...ctx.servedIds].slice(0, SERVED_MAX_EXCLUDE));
+        }
+        if (excluded.length > 0) {
+          match._id = {
+            $nin: excluded.map((id) => new mongoose.Types.ObjectId(id)),
+          };
+        }
       }
       return match;
     };
@@ -3560,9 +3662,11 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       scored = candidates.sort((x, y) => y._score - x._score);
     }
 
+    // P0-2 follow-up: candidates already exclude the served set, so we
+    // slice from the top of the fresh pool rather than offsetting by
+    // page. See the same comment in personalized-fast above.
     const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
-    const skip = (page - 1) * limit;
-    const pageSlice = interleaved.slice(skip, skip + limit);
+    const pageSlice = interleaved.slice(0, limit);
 
     const finalArticles = sanitizeForResponse(pageSlice, {
       isCategory: true,
@@ -3601,6 +3705,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     res.setHeader('X-Candidates', candidates.length);
     res.setHeader('X-Window-Hours', usedWindowHours);
 
+    recordServedIds(supabaseId, finalArticles).catch(() => {});
     return res.json(finalArticles);
   } catch (error) {
     const errorTime = Date.now() - startTime;

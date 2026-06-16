@@ -24,6 +24,15 @@ Frontend in `menaApp/components/ArticleList.tsx` (React Query infinite list, pag
 
 **All 20 audit items resolved.** P0-P2 added ranking, performance, and correctness wins. P3 established the telemetry + persistence foundation: A/B framework, deterministic PCA, source quality multiplier, dislike-aware related carousel.
 
+### Post-audit follow-ups
+
+These weren't in the original audit but emerged from real-world feedback after shipping P0–P3:
+
+| Commit | What | Why |
+|---|---|---|
+| `5c215c9` (menaApp) | Drop the `lastPage.length >= 10` threshold in `ArticleList.getNextPageParam`. | The 50% threshold mistook thin pages (sparse language windows, heavy dislike filtering, page-2+ partial slices) for "no more content" and dead-ended the feed at 2-3 articles. Now any non-empty page triggers the next fetch up to the 10-page cap. |
+| _next commit_ (backend) | Per-user **served-article cursor** with 6h sliding TTL. Excluded from candidate match in `/personalized-light`, `/personalized-fast`, `/personalized-category`. Both pages and category endpoints now slice `[0, limit]` from the *fresh* pool. | Page-based slicing meant a user with a 25-article pool got `[0:20]`, `[20:40]`=5, `[40:60]`=0. A pool that shrinks with each request (after dislike growth, after disliked-category expansion) hits this fast. Served-cursor model: each request gets the next `limit` items it hasn't seen; pagination stops naturally only when the user has actually exhausted the corpus. |
+
 ---
 
 ## P0 — DONE
