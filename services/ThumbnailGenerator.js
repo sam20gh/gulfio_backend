@@ -5,13 +5,23 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 
-// Configure AWS S3 using the same environment variables as the upload route
+// Configure AWS S3 using the same environment variables as the upload route.
+//
+// `*ChecksumValidation/Calculation: WHEN_REQUIRED` is critical here: AWS SDK v3
+// >= 3.729 defaults to WHEN_SUPPORTED, which injects `x-amz-checksum-mode=ENABLED`
+// into presigned GET URLs. S3 then streams the object with a checksum trailer the
+// container's (older) ffmpeg can't parse, failing with "Invalid data found when
+// processing input". Newer local ffmpeg tolerates it — which is why thumbnails
+// generate locally but not on Cloud Run. Forcing WHEN_REQUIRED yields a clean
+// classic presigned URL any ffmpeg can read.
 const s3Client = new S3Client({
     region: process.env.AWS_S3_REGION || 'me-central-1',
     credentials: {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     },
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
 });
 
 class ThumbnailGenerator {
