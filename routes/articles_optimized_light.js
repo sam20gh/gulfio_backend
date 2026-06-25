@@ -95,6 +95,7 @@ articleRouter.get('/personalized-light-optimized', auth, ensureMongoUser, async 
                     viewCount: 1,
                     likes: 1,
                     dislikes: 1,
+                    commentCount: 1,
                     likedBy: 1,
                     dislikedBy: 1,
                     sourceId: 1,
