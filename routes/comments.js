@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Comment = require('../models/Comment'); // You'll need to create this model
+const Article = require('../models/Article');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const NotificationService = require('../utils/notificationService');
@@ -156,6 +157,13 @@ router.post('/', auth, async (req, res) => {
 
         await newComment.save();
 
+        // Keep the denormalized commentCount on the article in sync (non-blocking).
+        // Top-level article comments only; reel comments don't touch articles.
+        if (articleId) {
+            Article.updateOne({ _id: articleId }, { $inc: { commentCount: 1 } })
+                .catch(err => console.error('⚠️ Failed to increment article commentCount:', err.message));
+        }
+
         // 🎮 Award points for posting a comment (non-blocking)
         PointsService.awardPoints(userId, 'COMMENT_POST', {
             commentId: newComment._id,
@@ -287,6 +295,15 @@ router.delete('/:id', auth, async (req, res) => {
 
         // Delete the comment
         await Comment.findByIdAndDelete(req.params.id);
+
+        // Keep the denormalized commentCount in sync. Guard against going negative
+        // (e.g. comments created before the counter existed / double deletes).
+        if (comment.articleId) {
+            Article.updateOne(
+                { _id: comment.articleId, commentCount: { $gt: 0 } },
+                { $inc: { commentCount: -1 } }
+            ).catch(err => console.error('⚠️ Failed to decrement article commentCount:', err.message));
+        }
 
         res.json({ message: 'Comment deleted' });
     } catch (error) {

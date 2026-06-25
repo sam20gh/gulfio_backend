@@ -159,7 +159,7 @@ articleRouter.get('/personalized-light-optimized', auth, ensureMongoUser, async 
                 language: req.query.language || 'english',
                 publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
             })
-                .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+                .select('title content url category publishedAt image sourceId viewCount likes dislikes commentCount')
                 .sort({ publishedAt: -1 })
                 .limit(limit)
                 .lean();

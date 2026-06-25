@@ -1863,7 +1863,7 @@ articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {
 //         language: req.query.language || 'english',
 //         publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
 //       })
-//         .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+//         .select('title content url category publishedAt image sourceId viewCount likes dislikes commentCount')
 //         .sort({ publishedAt: -1 })
 //         .limit(limit)
 //         .lean();
@@ -2010,7 +2010,7 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
           publishedAt: { $gte: new Date(Date.now() - sinceMs) },
         })
           .select(
-            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes commentCount language'
           )
           .sort({ publishedAt: -1 })
           .limit(limit)
@@ -2353,7 +2353,7 @@ articleRouter.get('/following', auth, ensureMongoUser, async (req, res) => {
 //         language: language,
 //         publishedAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } // 6 hours
 //       })
-//         .select('title content url category publishedAt image sourceId viewCount likes dislikes')
+//         .select('title content url category publishedAt image sourceId viewCount likes dislikes commentCount')
 //         .sort({ publishedAt: -1 })
 //         .skip(skip)
 //         .limit(limit)
@@ -2586,7 +2586,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           publishedAt: { $gte: new Date(Date.now() - sinceMs) },
         })
           .select(
-            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+            'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes commentCount language'
           )
           .sort({ publishedAt: -1 })
           .skip(skip)
@@ -2920,7 +2920,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       }
 
       const fallbackArticles = await Article.find(fallbackMatch)
-        .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
+        .select('title summary image sourceId source publishedAt viewCount category likes dislikes commentCount likedBy dislikedBy')
         .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(limit * 3) // Reduced multiplier for faster fallback
         .lean();
@@ -3055,7 +3055,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       };
 
       const fallbackArticles = await Article.find(fallbackMatch)
-        .select('title summary content contentFormat language image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
+        .select('title summary content contentFormat language image sourceId source publishedAt viewCount category likes dislikes commentCount likedBy dislikedBy')
         .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(candidatePoolSize)
         .lean();
@@ -3109,7 +3109,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
       };
 
       const fastFallbackArticles = await Article.find(fallbackMatch)
-        .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
+        .select('title summary image sourceId source publishedAt viewCount category likes dislikes commentCount likedBy dislikedBy')
         .sort({ publishedAt: -1 }) // single-field sort uses language_1_publishedAt_1 (no blocking sort); viewCount factored into in-memory engagement re-ranking
         .limit(limit * 3)
         .lean();
@@ -3251,7 +3251,7 @@ articleRouter.get('/personalized', auth, ensureMongoUser, async (req, res) => {
         ...(preferredCategories.length > 0 ? { category: { $in: preferredCategories.slice(0, 5) } } : {}),
         ...(preferredSources.length > 0 ? { sourceId: { $in: preferredSources.map(id => new mongoose.Types.ObjectId(id)) } } : {})
       })
-        .select('title summary image sourceId source publishedAt viewCount category likes dislikes likedBy dislikedBy')
+        .select('title summary image sourceId source publishedAt viewCount category likes dislikes commentCount likedBy dislikedBy')
         .sort({ publishedAt: -1 }) // Fetch newest first; we rerank by velocity below
         .limit(trendingPoolSize * 5) // Extra headroom so velocity reranking is meaningful
         .lean();
@@ -3725,7 +3725,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
       })
         .select(
-          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes language'
+          'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes commentCount language'
         )
         .sort({ publishedAt: -1 })
         .skip(skip)
@@ -3944,7 +3944,7 @@ articleRouter.get('/', async (req, res) => {
     const sourceMap = await getSourceMap();
 
     const raw = await Article.find(filter)
-      .select('title content contentFormat url category publishedAt image viewCount likes dislikes likedBy dislikedBy sourceId language')
+      .select('title content contentFormat url category publishedAt image viewCount likes dislikes commentCount likedBy dislikedBy sourceId language')
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(fetchLimit)
@@ -4129,7 +4129,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     const articleUpdate = await Article.findByIdAndUpdate(
       articleId,
       { $addToSet: { [updateField]: userId } },
-      { new: true, select: 'likedBy dislikedBy likes dislikes' }
+      { new: true, select: 'likedBy dislikedBy likes dislikes commentCount' }
     ).lean();
 
     if (!articleUpdate) {
@@ -4748,7 +4748,7 @@ articleRouter.get('/related/:id', async (req, res) => {
           language: articleLanguage,
           sourceId: { $ne: baseArticle.sourceId }
         })
-          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes commentCount')
           .sort({ publishedAt: -1 })
           .limit(remaining)
           .lean();
@@ -4767,7 +4767,7 @@ articleRouter.get('/related/:id', async (req, res) => {
           sourceId: baseArticle.sourceId,
           language: articleLanguage
         })
-          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes commentCount')
           .sort({ publishedAt: -1 })
           .limit(stillRemaining)
           .lean();
@@ -4785,7 +4785,7 @@ articleRouter.get('/related/:id', async (req, res) => {
           ...dislikedCategoryFilter,
           language: articleLanguage
         })
-          .select('title content category language sourceId publishedAt image url viewCount likes dislikes')
+          .select('title content category language sourceId publishedAt image url viewCount likes dislikes commentCount')
           .sort({ publishedAt: -1 })
           .limit(stillRemaining)
           .lean();

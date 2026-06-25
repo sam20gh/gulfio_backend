@@ -20,6 +20,9 @@ const ArticleSchema = new mongoose.Schema({
     viewCount: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
     dislikes: { type: Number, default: 0 },
+    // Denormalized count of top-level comments. Maintained via $inc in the comment
+    // create/delete routes so the feed can render it without an N+1 countDocuments.
+    commentCount: { type: Number, default: 0 },
     likedBy: [{ type: String }],      // Supabase user ID or email
     dislikedBy: [{ type: String }],
     language: { type: String, default: 'english' },
