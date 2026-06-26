@@ -4965,6 +4965,118 @@ articleRouter.post('/:id/unmark-breaking', auth, async (req, res) => {
   }
 });
 
+// GET: Trending articles — ranked by view VELOCITY (views/hour) within a recent
+// window, so a fast-rising fresh article beats a stale high-count one. Falls back
+// to newest articles when no view data exists yet. Mirrors /recent's source
+// enrichment so the client gets sourceName/sourceIcon/sourceGroupName.
+// NOTE: must be declared before the `/:id` catch-all or it gets swallowed.
+const TRENDING_CACHE_TTL = 300; // 5 min
+const TRENDING_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 72h
+const TRENDING_MAX = 20;
+const trendingCacheKey = (language) => `articles:trending:${language}`;
+
+const TRENDING_SOURCE_LOOKUP = [
+  {
+    $lookup: {
+      from: 'sources',
+      localField: 'sourceId',
+      foreignField: '_id',
+      as: 'source',
+      pipeline: [
+        { $match: { status: { $ne: 'blocked' } } },
+        { $project: { groupName: 1, name: 1, icon: 1, quality_score: 1 } },
+      ],
+    },
+  },
+  { $match: { 'source.0': { $exists: true } } },
+  {
+    $addFields: {
+      sourceGroupName: { $arrayElemAt: ['$source.groupName', 0] },
+      sourceName: { $arrayElemAt: ['$source.name', 0] },
+      sourceIcon: { $arrayElemAt: ['$source.icon', 0] },
+      sourceQualityScore: { $arrayElemAt: ['$source.quality_score', 0] },
+    },
+  },
+  {
+    $project: {
+      title: 1,
+      content: 1,
+      contentFormat: 1,
+      url: 1,
+      category: 1,
+      publishedAt: 1,
+      image: 1,
+      viewCount: 1,
+      likes: 1,
+      dislikes: 1,
+      commentCount: 1,
+      sourceId: 1,
+      sourceName: 1,
+      sourceIcon: 1,
+      sourceGroupName: 1,
+      language: 1,
+    },
+  },
+];
+
+articleRouter.get('/trending', async (req, res) => {
+  try {
+    const language = (req.query.language || 'english').toLowerCase();
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 6), TRENDING_MAX);
+
+    try {
+      const cached = await redis.get(trendingCacheKey(language));
+      if (cached) {
+        res.setHeader('X-Cache', 'hit');
+        return res.json(JSON.parse(cached).slice(0, limit));
+      }
+    } catch (err) {
+      // Fall through to direct query
+    }
+
+    const since = new Date(Date.now() - TRENDING_WINDOW_MS);
+
+    // Primary: recent articles that have views, reranked by velocity in JS.
+    let pool = await Article.aggregate([
+      { $match: { language, publishedAt: { $gte: since }, viewCount: { $gt: 0 } } },
+      { $sort: { viewCount: -1 } },
+      { $limit: 100 },
+      ...TRENDING_SOURCE_LOOKUP,
+    ]);
+
+    if (pool.length > 0) {
+      pool = pool
+        .map((a) => {
+          const ageHours = Math.max(0.5, (Date.now() - new Date(a.publishedAt).getTime()) / 3.6e6);
+          return { ...a, velocity: (a.viewCount || 0) / ageHours };
+        })
+        .sort((a, b) => b.velocity - a.velocity);
+    } else {
+      // Fallback: brand-new content with no views yet → newest first.
+      pool = await Article.aggregate([
+        { $match: { language, publishedAt: { $gte: since } } },
+        { $sort: { publishedAt: -1 } },
+        { $limit: TRENDING_MAX },
+        ...TRENDING_SOURCE_LOOKUP,
+      ]);
+    }
+
+    const trending = pool.slice(0, TRENDING_MAX);
+
+    try {
+      await redis.set(trendingCacheKey(language), JSON.stringify(trending), 'EX', TRENDING_CACHE_TTL);
+    } catch (err) {
+      // Non-fatal
+    }
+
+    res.setHeader('X-Cache', 'miss');
+    return res.json(trending.slice(0, limit));
+  } catch (error) {
+    console.error('❌ /articles/trending error:', error);
+    return res.status(500).json({ error: 'trending error', message: error.message });
+  }
+});
+
 // GET one - Must be last to avoid conflicts with specific routes
 articleRouter.get('/:id', async (req, res) => {
   try {
