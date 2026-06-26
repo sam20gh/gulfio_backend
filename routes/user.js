@@ -249,6 +249,87 @@ router.get('/:id/followers', async (req, res) => {
     }
 });
 
+// GET suggested users to follow (people you don't already follow / block).
+// Returns the most-followed candidates first so the discover screen leads
+// with active "voices", then falls back to most recently joined.
+router.get('/:id/suggestions', async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 50);
+
+        const me = await User.findOne({ supabase_id: req.params.id })
+            .select('_id following_users blocked_users')
+            .lean();
+        if (!me) return res.status(404).json({ message: 'User not found' });
+
+        const excludeIds = new Set([
+            me._id.toString(),
+            ...(me.following_users || []),
+            ...(me.blocked_users || []),
+        ]);
+        const excludeObjectIds = Array.from(excludeIds)
+            .map((id) => {
+                try { return new mongoose.Types.ObjectId(id); } catch { return null; }
+            })
+            .filter(Boolean);
+
+        // Bound the candidate pool to the 200 most recent users, then rank by
+        // popularity within that pool so the query stays cheap.
+        const candidates = await User.find({
+            _id: { $nin: excludeObjectIds },
+            email: { $exists: true, $ne: '' },
+        })
+            .select('_id supabase_id name email avatar_url profile_image city type')
+            .sort({ createdAt: -1 })
+            .limit(200)
+            .lean();
+
+        if (candidates.length === 0) return res.json({ count: 0, suggestions: [], followingIds: [] });
+
+        const candidateIdStrings = candidates.map((c) => c._id.toString());
+
+        // Follower counts for the candidate pool in a single aggregation.
+        const followerCounts = await User.aggregate([
+            { $match: { following_users: { $in: candidateIdStrings } } },
+            { $unwind: '$following_users' },
+            { $match: { following_users: { $in: candidateIdStrings } } },
+            { $group: { _id: '$following_users', count: { $sum: 1 } } },
+        ]);
+        const countMap = {};
+        followerCounts.forEach((f) => { countMap[f._id] = f.count; });
+
+        const suggestions = candidates
+            .map((c) => ({
+                _id: c._id,
+                supabase_id: c.supabase_id,
+                name: c.name,
+                email: c.email,
+                avatar_url: c.avatar_url,
+                profile_image: c.profile_image,
+                city: c.city,
+                type: c.type,
+                followersCount: countMap[c._id.toString()] || 0,
+            }))
+            .sort((a, b) => b.followersCount - a.followersCount)
+            .slice(0, limit);
+
+        // supabase_ids of people I already follow — lets the client mark
+        // follow state on search results too.
+        const followingMongoIds = (me.following_users || []).filter(Boolean);
+        const followingObjectIds = followingMongoIds
+            .map((id) => { try { return new mongoose.Types.ObjectId(id); } catch { return null; } })
+            .filter(Boolean);
+        const followingUsers = await User.find({ _id: { $in: followingObjectIds } })
+            .select('supabase_id')
+            .lean();
+        const followingIds = followingUsers.map((u) => u.supabase_id);
+
+        res.json({ count: suggestions.length, suggestions, followingIds });
+    } catch (err) {
+        console.error('Error in /:id/suggestions:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // GET the source groups this user is following, with populated metadata
 router.get('/:id/followed-sources', async (req, res) => {
     try {
