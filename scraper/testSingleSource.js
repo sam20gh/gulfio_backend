@@ -98,6 +98,82 @@ function normalizeImages(imgs, baseUrl) {
     ));
 }
 
+// ───────────────────────────── Khaleej Times adapter ─────────────────────────────
+// Mirrors the adapter in scrape.js so test results match production. KT's generic
+// h2/h3 + "p" + "img" selectors over-match (section links, lazy SVG placeholders,
+// every paragraph on the page); this pins the real card / body / image structure.
+function isKhaleejTimes(source) {
+    const hay = `${source.name || ''} ${source.url || ''} ${source.baseUrl || ''}`.toLowerCase();
+    return hay.includes('khaleejtimes') || hay.includes('khaleej times');
+}
+
+// KT story URLs end in a long hyphenated slug; section index pages (/business,
+// /business/markets) have a short single-word final segment and are skipped.
+function isKhaleejArticleUrl(url) {
+    try {
+        const { pathname } = new URL(url);
+        const segs = pathname.split('/').filter(Boolean);
+        if (segs.length < 2) return false;
+        const slug = segs[segs.length - 1];
+        return slug.includes('-') && slug.length > 15;
+    } catch {
+        return false;
+    }
+}
+
+// Top-level section of a path, e.g. "/business/markets" → "business".
+function topLevelSection(urlOrPath) {
+    try {
+        const pathname = urlOrPath.startsWith('http') ? new URL(urlOrPath).pathname : urlOrPath;
+        return pathname.split('/').filter(Boolean)[0] || null;
+    } catch {
+        return null;
+    }
+}
+
+function resolveHref(href, source) {
+    if (!href || href === ':' || href === '') return null;
+    if (href.startsWith('//')) return 'https:' + href;
+    if (href.startsWith('http')) return href;
+    let baseUrl = source.baseUrl;
+    if (!baseUrl) {
+        try {
+            const urlObj = new URL(source.url);
+            baseUrl = `${urlObj.protocol}//${urlObj.hostname}`;
+        } catch {
+            baseUrl = source.url.replace(/\/$/, '');
+        }
+    } else {
+        baseUrl = baseUrl.replace(/\/$/, '');
+    }
+    return href.startsWith('/') ? `${baseUrl}${href}` : `${baseUrl}/${href}`;
+}
+
+// Collect KT story links from the listing card containers, keep only real story URLs,
+// and pin them to the source's own section. Falls back to all anchors if markup changes.
+function parseKhaleejLinks($, source) {
+    const section = topLevelSection(source.url);
+    const collect = (selector) => {
+        const out = [];
+        $(selector).each((_, el) => {
+            const url = resolveHref($(el).attr('href'), source);
+            if (!url || !isKhaleejArticleUrl(url)) return;
+            if (section && topLevelSection(url) !== section) return;
+            if (!out.includes(url)) out.push(url);
+        });
+        return out;
+    };
+
+    const CARD_SELECTOR =
+        '.card-article-list-item a[href], .subsection-listing-article-box a[href], .post-title-rows a[href]';
+    let links = collect(CARD_SELECTOR);
+    if (links.length === 0) {
+        console.log(`🔎 KT: no links via card containers for ${source.name}, falling back to all anchors`);
+        links = collect('a[href]');
+    }
+    return links;
+}
+
 /**
  * Test RSS feed parsing for a single RSS source
  * @param {Object} source - Source document from MongoDB
@@ -396,31 +472,37 @@ async function testSingleSource(sourceId) {
         testResults.steps.push('Extracting article links...');
         console.log(`🔍 Extracting links with selector: "${source.listSelector}"`);
 
-        const links = [];
-        $(source.listSelector).each((_, element) => {
-            const $elem = $(element);
-            const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
-            if (linkHref) {
-                let fullLink;
-                if (linkHref.startsWith('http')) {
-                    fullLink = linkHref;
-                } else {
-                    // Extract domain from source URL for proper base URL
-                    const baseUrl = source.baseUrl || (() => {
-                        try {
-                            const urlObj = new URL(source.url);
-                            return `${urlObj.protocol}//${urlObj.hostname}`;
-                        } catch {
-                            return source.url.replace(/\/$/, '');
-                        }
-                    })();
-                    fullLink = linkHref.startsWith('/') ? `${baseUrl}${linkHref}` : `${baseUrl}/${linkHref}`;
+        const isKT = isKhaleejTimes(source);
+        let links = [];
+        if (isKT) {
+            console.log('📰 Khaleej Times detected — using KT link adapter (card containers + section scope)');
+            links = parseKhaleejLinks($, source);
+        } else {
+            $(source.listSelector).each((_, element) => {
+                const $elem = $(element);
+                const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
+                if (linkHref) {
+                    let fullLink;
+                    if (linkHref.startsWith('http')) {
+                        fullLink = linkHref;
+                    } else {
+                        // Extract domain from source URL for proper base URL
+                        const baseUrl = source.baseUrl || (() => {
+                            try {
+                                const urlObj = new URL(source.url);
+                                return `${urlObj.protocol}//${urlObj.hostname}`;
+                            } catch {
+                                return source.url.replace(/\/$/, '');
+                            }
+                        })();
+                        fullLink = linkHref.startsWith('/') ? `${baseUrl}${linkHref}` : `${baseUrl}/${linkHref}`;
+                    }
+                    if (fullLink && !links.includes(fullLink)) {
+                        links.push(fullLink);
+                    }
                 }
-                if (fullLink && !links.includes(fullLink)) {
-                    links.push(fullLink);
-                }
-            }
-        });
+            });
+        }
 
         testResults.steps.push(`✅ Found ${links.length} article links`);
         console.log(`✅ Found ${links.length} article links`);
@@ -453,16 +535,22 @@ async function testSingleSource(sourceId) {
                     console.log('✅ Puppeteer successfully rendered SPA content');
 
                     // Re-extract links with Puppeteer-rendered content
-                    $(source.listSelector).each((_, element) => {
-                        const $elem = $(element);
-                        const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
-                        if (linkHref) {
-                            const fullLink = linkHref.startsWith('http') ? linkHref : `${source.baseUrl || source.url}${linkHref}`;
-                            if (fullLink && !links.includes(fullLink)) {
-                                links.push(fullLink);
+                    if (isKT) {
+                        parseKhaleejLinks($, source).forEach(l => {
+                            if (!links.includes(l)) links.push(l);
+                        });
+                    } else {
+                        $(source.listSelector).each((_, element) => {
+                            const $elem = $(element);
+                            const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
+                            if (linkHref) {
+                                const fullLink = linkHref.startsWith('http') ? linkHref : `${source.baseUrl || source.url}${linkHref}`;
+                                if (fullLink && !links.includes(fullLink)) {
+                                    links.push(fullLink);
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
 
                     testResults.steps.push(`✅ Re-extraction found ${links.length} article links with Puppeteer`);
                     console.log(`✅ Re-extraction found ${links.length} article links`);
@@ -557,9 +645,13 @@ async function testSingleSource(sourceId) {
                     .first()
                     .text());
 
-                // Extract content
+                // Extract content (KT body lives in .article-center-wrap-nf .inner.innermixmatch;
+                // the related list and preloaded next-article sit outside that container)
+                const contentSelector = isKT
+                    ? '.article-center-wrap-nf .inner.innermixmatch p'
+                    : (source.contentSelector || '.story-element.story-element-text p');
                 const content = cleanText(
-                    $$(source.contentSelector || '.story-element.story-element-text p')
+                    $$(contentSelector)
                         .filter((_, p) => isElementVisible($$, p))
                         .map((_, p) => $$(p).text().trim())
                         .get()
@@ -567,14 +659,20 @@ async function testSingleSource(sourceId) {
                         .join('\n\n')
                 );
 
-                // Extract images
+                // Extract images. KT inline <img> are lazy SVG placeholders (data: URIs);
+                // the real lead image is in .img-wrap, with og:image as fallback.
                 let images = [];
-                if (source.imageSelector) {
-                    images = $$(source.imageSelector)
+                const imageSelector = isKT ? '.article-center-wrap-nf .img-wrap img' : source.imageSelector;
+                if (imageSelector) {
+                    images = $$(imageSelector)
                         .map((_, img) => $$(img).attr('src') || $$(img).attr('data-src'))
                         .get()
                         .filter(Boolean);
                     images = normalizeImages(images, source.baseUrl || source.url);
+                }
+                if (isKT && images.length === 0) {
+                    const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
+                    if (og) images = normalizeImages([og], source.baseUrl || source.url);
                 }
 
                 const articleData = {
