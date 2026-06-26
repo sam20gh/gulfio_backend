@@ -16,6 +16,17 @@ const FormData = require('form-data')
 const form = new FormData()
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
 
+// Privacy helper: never expose a full email in public-facing lists (e.g. the
+// "people to follow" discover feed). Keeps the first 2 chars + domain so a
+// user is still loosely recognizable, e.g. "fa•••@gmail.com".
+function maskEmail(email) {
+    if (!email || typeof email !== 'string' || !email.includes('@')) return '';
+    const [local, domain] = email.split('@');
+    const visible = local.slice(0, 2);
+    const dots = '•'.repeat(Math.max(3, Math.min(local.length - visible.length, 6)));
+    return `${visible}${dots}@${domain}`;
+}
+
 
 router.post('/check-or-create', auth, async (req, res) => {
     try {
@@ -302,7 +313,9 @@ router.get('/:id/suggestions', async (req, res) => {
                 _id: c._id,
                 supabase_id: c.supabase_id,
                 name: c.name,
-                email: c.email,
+                // Raw email is intentionally NOT returned. Only a masked form,
+                // used as a display fallback when the user has no name set.
+                maskedEmail: maskEmail(c.email),
                 avatar_url: c.avatar_url,
                 profile_image: c.profile_image,
                 city: c.city,
