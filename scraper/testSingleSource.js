@@ -149,6 +149,65 @@ function resolveHref(href, source) {
     return href.startsWith('/') ? `${baseUrl}${href}` : `${baseUrl}/${href}`;
 }
 
+// ───────────────────────────── Sharjah24 adapter ─────────────────────────────
+// sharjah24.ae renders its news listing client-side (#newsListDiv is empty in server
+// HTML, filled via /api/feature/ArticlesList/GetArticles). Hit that API directly instead
+// of a browser; detail pages are server-rendered so existing selectors work on them.
+function isSharjah24(source) {
+    const hay = `${source.name || ''} ${source.url || ''} ${source.baseUrl || ''}`.toLowerCase();
+    return hay.includes('sharjah24');
+}
+
+function readHiddenInput($, id) {
+    const $el = $(`#${id}`);
+    return ($el.val() || $el.attr('value') || '').trim();
+}
+
+async function fetchSharjah24Links($, source) {
+    const typeID = readHiddenInput($, 'txtTypeID');
+    const pageSize = readHiddenInput($, 'txtNOOfItemPerPage') || '20';
+    const culture = (readHiddenInput($, 'txtCulture') || 'en').toLowerCase();
+    if (!typeID) {
+        console.warn(`⚠️ Sharjah24: #txtTypeID not found on ${source.url}`);
+        return [];
+    }
+
+    const origin = new URL(source.url).origin;
+    const apiUrl = `${origin}/api/feature/ArticlesList/GetArticles?typeID=${encodeURIComponent(typeID)}` +
+        `&pageNo=1&pageSize=${encodeURIComponent(pageSize)}&culture=${encodeURIComponent(culture)}`;
+
+    let payload;
+    try {
+        const res = await axios.get(apiUrl, {
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': source.url,
+                'Accept': '*/*'
+            }
+        });
+        payload = res.data;
+        for (let i = 0; i < 2 && typeof payload === 'string'; i++) {
+            try { payload = JSON.parse(payload); } catch { break; }
+        }
+    } catch (err) {
+        console.warn(`⚠️ Sharjah24 API failed: ${err.message}`);
+        return [];
+    }
+
+    const articles = (payload && payload.Articles) || [];
+    const links = [];
+    for (const a of articles) {
+        if (!a.DetailPageUrl) continue;
+        const path = a.DetailPageUrl.replace(/^\/(ar|en)\//i, `/${culture}/`);
+        const abs = resolveHref(path, source);
+        if (abs && !links.includes(abs)) links.push(abs);
+    }
+    console.log(`📰 Sharjah24 API returned ${links.length} links (typeID=${typeID}, pageSize=${pageSize}, culture=${culture})`);
+    return links;
+}
+
 // Collect KT story links from the listing card containers, keep only real story URLs,
 // and pin them to the source's own section. Falls back to all anchors if markup changes.
 function parseKhaleejLinks($, source) {
@@ -473,8 +532,12 @@ async function testSingleSource(sourceId) {
         console.log(`🔍 Extracting links with selector: "${source.listSelector}"`);
 
         const isKT = isKhaleejTimes(source);
+        const isSJ24 = isSharjah24(source);
         let links = [];
-        if (isKT) {
+        if (isSJ24) {
+            console.log('📰 Sharjah24 detected — discovering links via GetArticles API');
+            links = await fetchSharjah24Links($, source);
+        } else if (isKT) {
             console.log('📰 Khaleej Times detected — using KT link adapter (card containers + section scope)');
             links = parseKhaleejLinks($, source);
         } else {
@@ -645,11 +708,14 @@ async function testSingleSource(sourceId) {
                     .first()
                     .text());
 
-                // Extract content (KT body lives in .article-center-wrap-nf .inner.innermixmatch;
-                // the related list and preloaded next-article sit outside that container)
+                // Extract content. KT body lives in .article-center-wrap-nf .inner.innermixmatch;
+                // Sharjah24 mixes <p> and <div class="text-contain"> bodies, so target its whole
+                // container. Others use the configured selector.
                 const contentSelector = isKT
                     ? '.article-center-wrap-nf .inner.innermixmatch p'
-                    : (source.contentSelector || '.story-element.story-element-text p');
+                    : isSJ24
+                        ? '.news-detail-heading.default-text-editor'
+                        : (source.contentSelector || '.story-element.story-element-text p');
                 const content = cleanText(
                     $$(contentSelector)
                         .filter((_, p) => isElementVisible($$, p))
@@ -670,7 +736,7 @@ async function testSingleSource(sourceId) {
                         .filter(Boolean);
                     images = normalizeImages(images, source.baseUrl || source.url);
                 }
-                if (isKT && images.length === 0) {
+                if ((isKT || isSJ24) && images.length === 0) {
                     const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
                     if (og) images = normalizeImages([og], source.baseUrl || source.url);
                 }
