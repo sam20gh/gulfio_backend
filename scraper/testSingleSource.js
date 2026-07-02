@@ -149,13 +149,34 @@ function resolveHref(href, source) {
     return href.startsWith('/') ? `${baseUrl}${href}` : `${baseUrl}/${href}`;
 }
 
-// ───────────────────────────── Sharjah24 adapter ─────────────────────────────
-// sharjah24.ae renders its news listing client-side (#newsListDiv is empty in server
-// HTML, filled via /api/feature/ArticlesList/GetArticles). Hit that API directly instead
-// of a browser; detail pages are server-rendered so existing selectors work on them.
-function isSharjah24(source) {
+// ───────────────────────────── API-listing adapter (data-driven) ─────────────────────────────
+// Mirrors scrape.js so the test harness matches production. Sites with an AJAX/JSON-rendered
+// listing (e.g. sharjah24.ae) are described by a `source.listApi` config (or a built-in below)
+// and discovered via their endpoint instead of DOM selectors. See scrape.js for the full
+// config shape. Built-ins let known sites work with zero DB config; source.listApi overrides.
+const BUILTIN_LIST_APIS = [
+    {
+        match: 'sharjah24',
+        config: {
+            urlTemplate: '/api/feature/ArticlesList/GetArticles?typeID={typeID}&pageNo=1&pageSize={pageSize}&culture={culture}',
+            inputs: { typeID: 'txtTypeID', pageSize: 'txtNOOfItemPerPage', culture: 'txtCulture' },
+            defaults: { pageSize: '20', culture: 'en' },
+            lowercase: ['culture'],
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            doubleDecode: true,
+            articlesPath: 'Articles',
+            urlField: 'DetailPageUrl',
+            urlRewrite: { from: '^/(ar|en)/', to: '/{culture}/' },
+            contentSelector: '.news-detail-heading.default-text-editor'
+        }
+    }
+];
+
+function getListApiConfig(source) {
+    if (source.listApi && source.listApi.urlTemplate) return source.listApi;
     const hay = `${source.name || ''} ${source.url || ''} ${source.baseUrl || ''}`.toLowerCase();
-    return hay.includes('sharjah24');
+    const builtin = BUILTIN_LIST_APIS.find(b => hay.includes(b.match));
+    return builtin ? builtin.config : null;
 }
 
 function readHiddenInput($, id) {
@@ -163,18 +184,32 @@ function readHiddenInput($, id) {
     return ($el.val() || $el.attr('value') || '').trim();
 }
 
-async function fetchSharjah24Links($, source) {
-    const typeID = readHiddenInput($, 'txtTypeID');
-    const pageSize = readHiddenInput($, 'txtNOOfItemPerPage') || '20';
-    const culture = (readHiddenInput($, 'txtCulture') || 'en').toLowerCase();
-    if (!typeID) {
-        console.warn(`⚠️ Sharjah24: #txtTypeID not found on ${source.url}`);
+function getByPath(obj, path) {
+    if (!path) return obj;
+    return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+async function fetchApiListingLinks($, source, cfg) {
+    const values = {};
+    for (const [key, inputId] of Object.entries(cfg.inputs || {})) {
+        values[key] = readHiddenInput($, inputId);
+    }
+    for (const [key, val] of Object.entries(cfg.defaults || {})) {
+        if (!values[key]) values[key] = val;
+    }
+    for (const key of cfg.lowercase || []) {
+        if (values[key]) values[key] = values[key].toLowerCase();
+    }
+
+    const templatePlaceholders = [...cfg.urlTemplate.matchAll(/\{(\w+)\}/g)].map(m => m[1]);
+    const missing = templatePlaceholders.filter(p => !values[p]);
+    if (missing.length) {
+        console.warn(`⚠️ ${source.name}: listApi placeholders unresolved [${missing.join(', ')}]`);
         return [];
     }
 
-    const origin = new URL(source.url).origin;
-    const apiUrl = `${origin}/api/feature/ArticlesList/GetArticles?typeID=${encodeURIComponent(typeID)}` +
-        `&pageNo=1&pageSize=${encodeURIComponent(pageSize)}&culture=${encodeURIComponent(culture)}`;
+    const path = cfg.urlTemplate.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(values[k] ?? ''));
+    const apiUrl = /^https?:\/\//i.test(path) ? path : `${new URL(source.url).origin}${path}`;
 
     let payload;
     try {
@@ -182,29 +217,41 @@ async function fetchSharjah24Links($, source) {
             timeout: 10000,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-                'X-Requested-With': 'XMLHttpRequest',
                 'Referer': source.url,
-                'Accept': '*/*'
+                'Accept': '*/*',
+                ...(cfg.headers || {})
             }
         });
         payload = res.data;
-        for (let i = 0; i < 2 && typeof payload === 'string'; i++) {
+        const maxDecode = cfg.doubleDecode ? 2 : 1;
+        for (let i = 0; i < maxDecode && typeof payload === 'string'; i++) {
             try { payload = JSON.parse(payload); } catch { break; }
         }
     } catch (err) {
-        console.warn(`⚠️ Sharjah24 API failed: ${err.message}`);
+        console.warn(`⚠️ ${source.name}: listApi request failed: ${err.message}`);
         return [];
     }
 
-    const articles = (payload && payload.Articles) || [];
+    const articles = getByPath(payload, cfg.articlesPath || 'Articles') || [];
+    const urlField = cfg.urlField || 'url';
+    // API url fields are root-absolute paths — resolve against the site ORIGIN, not
+    // source.baseUrl (which may carry a locale prefix like "/en", yielding /en/en/…).
+    const origin = new URL(source.url).origin;
     const links = [];
     for (const a of articles) {
-        if (!a.DetailPageUrl) continue;
-        const path = a.DetailPageUrl.replace(/^\/(ar|en)\//i, `/${culture}/`);
-        const abs = resolveHref(path, source);
+        let u = a && a[urlField];
+        if (!u) continue;
+        if (cfg.urlRewrite && cfg.urlRewrite.from) {
+            const to = String(cfg.urlRewrite.to || '').replace(/\{(\w+)\}/g, (_, k) => values[k] ?? '');
+            u = u.replace(new RegExp(cfg.urlRewrite.from, 'i'), to);
+        }
+        let abs;
+        if (/^https?:\/\//i.test(u)) abs = u;
+        else if (u.startsWith('//')) abs = 'https:' + u;
+        else abs = origin + (u.startsWith('/') ? u : '/' + u);
         if (abs && !links.includes(abs)) links.push(abs);
     }
-    console.log(`📰 Sharjah24 API returned ${links.length} links (typeID=${typeID}, pageSize=${pageSize}, culture=${culture})`);
+    console.log(`📰 ${source.name}: listApi returned ${links.length} links (${JSON.stringify(values)})`);
     return links;
 }
 
@@ -532,11 +579,11 @@ async function testSingleSource(sourceId) {
         console.log(`🔍 Extracting links with selector: "${source.listSelector}"`);
 
         const isKT = isKhaleejTimes(source);
-        const isSJ24 = isSharjah24(source);
+        const apiCfg = getListApiConfig(source);
         let links = [];
-        if (isSJ24) {
-            console.log('📰 Sharjah24 detected — discovering links via GetArticles API');
-            links = await fetchSharjah24Links($, source);
+        if (apiCfg) {
+            console.log('📰 listApi config detected — discovering links via JSON endpoint');
+            links = await fetchApiListingLinks($, source, apiCfg);
         } else if (isKT) {
             console.log('📰 Khaleej Times detected — using KT link adapter (card containers + section scope)');
             links = parseKhaleejLinks($, source);
@@ -713,8 +760,8 @@ async function testSingleSource(sourceId) {
                 // container. Others use the configured selector.
                 const contentSelector = isKT
                     ? '.article-center-wrap-nf .inner.innermixmatch p'
-                    : isSJ24
-                        ? '.news-detail-heading.default-text-editor'
+                    : (apiCfg && apiCfg.contentSelector)
+                        ? apiCfg.contentSelector
                         : (source.contentSelector || '.story-element.story-element-text p');
                 const content = cleanText(
                     $$(contentSelector)
@@ -736,7 +783,7 @@ async function testSingleSource(sourceId) {
                         .filter(Boolean);
                     images = normalizeImages(images, source.baseUrl || source.url);
                 }
-                if ((isKT || isSJ24) && images.length === 0) {
+                if ((isKT || apiCfg) && images.length === 0) {
                     const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
                     if (og) images = normalizeImages([og], source.baseUrl || source.url);
                 }

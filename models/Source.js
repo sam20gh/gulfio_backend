@@ -13,6 +13,10 @@ const SourceSchema = new mongoose.Schema({
     titleSelector: String,
     imageSelector: String,
     contentSelector: String,
+    // Optional data-driven config for AJAX/JSON-rendered listings (see scraper
+    // "API-listing adapter"). When set, links are discovered via this endpoint instead
+    // of DOM selectors. Mixed so the shape can evolve without schema churn.
+    listApi: { type: mongoose.Schema.Types.Mixed, default: null },
     icon: String,
     lastScraped: Date,
     followers: { type: Number, default: 0 },
