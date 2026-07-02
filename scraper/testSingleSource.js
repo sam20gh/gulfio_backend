@@ -167,7 +167,8 @@ const BUILTIN_LIST_APIS = [
             articlesPath: 'Articles',
             urlField: 'DetailPageUrl',
             urlRewrite: { from: '^/(ar|en)/', to: '/{culture}/' },
-            contentSelector: '.news-detail-heading.default-text-editor'
+            contentSelector: '.news-detail-heading.default-text-editor',
+            preferOgImage: true
         }
     }
 ];
@@ -773,10 +774,13 @@ async function testSingleSource(sourceId) {
                 );
 
                 // Extract images. KT inline <img> are lazy SVG placeholders (data: URIs);
-                // the real lead image is in .img-wrap, with og:image as fallback.
+                // the real lead image is in .img-wrap, with og:image as fallback. Sites whose
+                // listApi sets preferOgImage skip the DOM scan (detail pages have dozens of
+                // logos/related thumbs) and use the canonical og:image directly.
                 let images = [];
+                const preferOgImage = !!(apiCfg && apiCfg.preferOgImage);
                 const imageSelector = isKT ? '.article-center-wrap-nf .img-wrap img' : source.imageSelector;
-                if (imageSelector) {
+                if (!preferOgImage && imageSelector) {
                     images = $$(imageSelector)
                         .map((_, img) => $$(img).attr('src') || $$(img).attr('data-src'))
                         .get()
