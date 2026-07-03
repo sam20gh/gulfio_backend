@@ -226,7 +226,9 @@ async function applyIncrementalEmbeddingUpdate(supabaseId, articleId, action) {
 
     const [article, user] = await Promise.all([
       Article.findById(articleId).select('embedding_pca category').lean(),
-      User.findOne({ supabase_id: supabaseId }).select('embedding_pca').lean(),
+      User.findOne({ supabase_id: supabaseId })
+        .select('embedding_pca disliked_articles')
+        .lean(),
     ]);
 
     if (!article?.embedding_pca || article.embedding_pca.length !== 128) {
@@ -274,13 +276,35 @@ async function applyIncrementalEmbeddingUpdate(supabaseId, articleId, action) {
     }
     // else: dislike on user with no embedding — daily cron will bootstrap.
 
-    // Dislike also marks the category as disliked. Hard $nin filter in
-    // personalized-light excludes this category from future feeds.
+    // Dislike marks the whole category as disliked — but only after the
+    // user has disliked several articles in it. The old single-tap version
+    // was a feed death spiral: one thumbs-down on one sports article added
+    // 'sports' to disliked_categories forever (hard $nin in every candidate
+    // query, nothing ever removes entries). One real account accumulated
+    // 19 of 20 categories this way and its feed collapsed to two sources.
     if (action === 'dislike' && article?.category) {
-      await User.updateOne(
-        { supabase_id: supabaseId },
-        { $addToSet: { disliked_categories: article.category } }
-      );
+      const CATEGORY_DISLIKE_THRESHOLD = 3;
+      const dislikedIds = (user?.disliked_articles || []).slice(-500);
+      // Deleted articles drop out of the count — conservative by design.
+      let inCategory = await Article.countDocuments({
+        _id: { $in: dislikedIds },
+        category: article.category,
+      });
+      // The current dislike may not be in disliked_articles yet (the /react
+      // array update and this incremental hook race); count it if missing.
+      if (!dislikedIds.some((id) => id.toString() === articleId.toString())) {
+        inCategory += 1;
+      }
+      if (inCategory >= CATEGORY_DISLIKE_THRESHOLD) {
+        await User.updateOne(
+          { supabase_id: supabaseId },
+          { $addToSet: { disliked_categories: article.category } }
+        );
+        console.log(
+          `🚫 Category '${article.category}' banned for ` +
+          `${supabaseId.substring(0, 8)} after ${inCategory} dislikes`
+        );
+      }
     }
   } catch (err) {
     // Non-fatal: a missed EMA just means the daily cron handles it.
@@ -1066,13 +1090,14 @@ function maybeInjectExploration(page, fullPool, ctx) {
  * O(log k) > O(1), and the heap doesn't reduce candidate count — it
  * would be slower at every realistic n.
  */
-function interleaveBySourceGroup(scored, { minGap = 2, perGroupCap = 8 } = {}) {
+function interleaveBySourceGroup(scored, { minGap = 2, perGroupCap = 8, fill = false } = {}) {
   if (!scored?.length) return scored;
 
   const groupCount = new Map();
   const lastIdx = new Map();
   const out = [];
   const deferred = [];
+  const overflow = [];
 
   const groupOf = (a) =>
     a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown');
@@ -1080,7 +1105,10 @@ function interleaveBySourceGroup(scored, { minGap = 2, perGroupCap = 8 } = {}) {
   // Pass 1: greedy placement with gap enforcement
   for (const a of scored) {
     const g = groupOf(a);
-    if ((groupCount.get(g) || 0) >= perGroupCap) continue;
+    if ((groupCount.get(g) || 0) >= perGroupCap) {
+      if (fill) overflow.push(a);
+      continue;
+    }
 
     const last = lastIdx.get(g);
     if (last !== undefined && out.length - 1 - last < minGap) {
@@ -1096,17 +1124,96 @@ function interleaveBySourceGroup(scored, { minGap = 2, perGroupCap = 8 } = {}) {
   // Pass 2: append deferred articles where the gap now allows
   for (const a of deferred) {
     const g = groupOf(a);
-    if ((groupCount.get(g) || 0) >= perGroupCap) continue;
+    if ((groupCount.get(g) || 0) >= perGroupCap) {
+      if (fill) overflow.push(a);
+      continue;
+    }
 
     const last = lastIdx.get(g);
     if (last === undefined || out.length - 1 - last >= minGap) {
       out.push(a);
       groupCount.set(g, (groupCount.get(g) || 0) + 1);
       lastIdx.set(g, out.length - 1);
+    } else if (fill) {
+      overflow.push(a);
     }
   }
 
+  // fill mode: keep total count intact by appending cap/gap rejects at the
+  // tail. Sparse pools (low-volume languages, small fallback queries) would
+  // otherwise return a visibly short page; clustered items at the bottom
+  // beat missing items.
+  if (fill && overflow.length > 0) {
+    out.push(...overflow);
+  }
+
   return out;
+}
+
+/**
+ * Greedy Maximal Marginal Relevance over the top of the scored pool.
+ *
+ * Source interleaving can't see *topical* redundancy: five sources covering
+ * the same story pass the source-gap check, and a same-source scraper burst
+ * has near-identical scores (recency dominates for brand-new articles, and
+ * same-source style means similar embedding_pca vectors). MMR penalizes each
+ * candidate by its max cosine similarity to anything already picked, so both
+ * failure modes lose top slots to genuinely different content.
+ *
+ * Incremental form: each remaining candidate caches its max similarity to
+ * the picked set and only updates against the last pick — O(topN² · dims)
+ * ≈ 60·60·128 ≈ 460k mults, well under a millisecond in-process. Runs before
+ * interleaveBySourceGroup (MMR shapes the order, interleave enforces hard
+ * source gaps) and mostly inside SWR background regen, so the user-facing
+ * path is unaffected.
+ *
+ * Candidates without embedding_pca are never penalized (maxSim stays 0) —
+ * they rank purely by _score, same as before.
+ */
+const MMR_TOP_N = 60;
+const MMR_LAMBDA = 1.75;
+
+function applyMMRDiversity(scored, { topN = MMR_TOP_N, lambda = MMR_LAMBDA } = {}) {
+  if (!scored || scored.length < 3) return scored;
+  const n = Math.min(topN, scored.length);
+  const head = scored.slice(0, n);
+
+  let vecCount = 0;
+  for (const a of head) {
+    if (Array.isArray(a.embedding_pca) && a.embedding_pca.length > 0) vecCount++;
+  }
+  // Too few vectors to measure redundancy — keep the score order.
+  if (vecCount < 3) return scored;
+
+  const remaining = head.map((a) => ({ a, maxSim: 0 }));
+  const picked = [];
+
+  while (remaining.length > 0) {
+    let bestIdx = 0;
+    let bestVal = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const val = remaining[i].a._score - lambda * remaining[i].maxSim;
+      if (val > bestVal) {
+        bestVal = val;
+        bestIdx = i;
+      }
+    }
+    const [chosen] = remaining.splice(bestIdx, 1);
+    picked.push(chosen.a);
+
+    const cv = chosen.a.embedding_pca;
+    if (Array.isArray(cv) && cv.length > 0) {
+      for (const r of remaining) {
+        const rv = r.a.embedding_pca;
+        if (Array.isArray(rv) && rv.length === cv.length) {
+          const s = cosineSimilarity(rv, cv);
+          if (s > r.maxSim) r.maxSim = s;
+        }
+      }
+    }
+  }
+
+  return picked.concat(scored.slice(n));
 }
 
 /**
@@ -1135,10 +1242,10 @@ function sanitizeForResponse(articles, extra = {}) {
  * synchronously on cold miss and from the SWR background regen path with the
  * same logic.
  *
- * @returns {Promise<{articles: object[], usedWindowMs: number, candidateCount: number, dbTime: number, includeEmbedding: boolean, retrieval: 'vector'|'recency'}>}
+ * @returns {Promise<{articles: object[], usedWindowMs: number, candidateCount: number, dbTime: number, includeEmbedding: boolean, retrieval: 'hybrid'|'recency'}>}
  */
 async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) {
-  const buildMatch = (sinceMs) => {
+  const buildMatch = (sinceMs, { skipCategoryExclusion = false } = {}) => {
     const match = {
       language,
       publishedAt: { $gte: new Date(Date.now() - sinceMs) },
@@ -1159,7 +1266,7 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
           $nin: excluded.map((id) => new mongoose.Types.ObjectId(id)),
         };
       }
-      if (ctx.dislikedCategories.size > 0) {
+      if (!skipCategoryExclusion && ctx.dislikedCategories.size > 0) {
         match.category = { $nin: [...ctx.dislikedCategories] };
       }
     }
@@ -1169,9 +1276,9 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
   const candidateLimit = Math.min(limit * 12, 400);
   const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
-  const runCandidateQuery = (sinceMs) =>
+  const runCandidateQuery = (sinceMs, opts) =>
     Article.aggregate([
-      { $match: buildMatch(sinceMs) },
+      { $match: buildMatch(sinceMs, opts) },
       { $sort: { publishedAt: -1 } },
       { $limit: candidateLimit },
       {
@@ -1215,7 +1322,11 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
           sourceIcon: 1,
           sourceGroupName: 1,
           language: 1,
-          ...(includeEmbedding ? { embedding_pca: 1 } : {}),
+          // Always projected (not just when includeEmbedding): the MMR
+          // diversity pass needs candidate-to-candidate similarity even for
+          // users whose own embedding is skipped. 400 × 128 floats is a
+          // trivial intra-cluster payload; sanitizeForResponse strips it.
+          embedding_pca: 1,
         },
       },
     ]);
@@ -1301,6 +1412,9 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
             sourceGroupName: 1,
             language: 1,
             _atlasSimilarity: 1,
+            // For the MMR diversity pass (candidate-to-candidate cosine);
+            // _atlasSimilarity only covers candidate-to-user.
+            embedding_pca: 1,
           },
         },
       ],
@@ -1336,27 +1450,72 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
   let retrieval = 'recency';
 
   if (vectorEligible && (await isVectorSearchReady())) {
-    try {
-      const { cands, used } = await runWindowed(runVectorCandidateQuery);
-      // Require a minimally useful pool; otherwise fall back to recency so a
-      // niche embedding can't starve the feed.
-      if (cands.length >= Math.min(limit, 5)) {
-        candidates = cands;
-        usedWindowMs = used;
-        retrieval = 'vector';
-      }
-    } catch (err) {
-      console.error(
-        '⚠️ personalized-light vector retrieval failed, falling back to recency:',
-        err.message
-      );
-    }
-  }
+    // Union retrieval: run recency and vector candidates in parallel and
+    // merge. The old either/or made the pool source pre-decide the feed's
+    // character — vector-only starved breaking news the user's embedding
+    // didn't predict; recency-only let scraper bursts from irrelevant
+    // sources crowd out slightly-older articles the user would actually
+    // read. With the union, both compete in one blended scoring pass.
+    // Vector failure degrades to plain recency, never to an error.
+    const [recencyRes, vectorRes] = await Promise.all([
+      runWindowed(runCandidateQuery),
+      runWindowed(runVectorCandidateQuery).catch((err) => {
+        console.error(
+          '⚠️ personalized-light vector retrieval failed, using recency only:',
+          err.message
+        );
+        return null;
+      }),
+    ]);
 
-  if (retrieval !== 'vector') {
+    candidates = recencyRes.cands;
+    usedWindowMs = recencyRes.used;
+    if (vectorRes && vectorRes.cands.length > 0) {
+      const byId = new Map();
+      for (const a of recencyRes.cands) byId.set(a._id.toString(), a);
+      // Vector copy wins on overlap: it carries _atlasSimilarity, which the
+      // scorer prefers over recomputing cosine in JS.
+      for (const a of vectorRes.cands) byId.set(a._id.toString(), a);
+      candidates = [...byId.values()];
+      usedWindowMs = Math.max(recencyRes.used, vectorRes.used);
+      retrieval = 'hybrid';
+    }
+  } else {
     const { cands, used } = await runWindowed(runCandidateQuery);
     candidates = cands;
     usedWindowMs = used;
+  }
+
+  // Starvation guard: when the disliked-category $nin has gutted the pool
+  // (too few articles OR everything from a couple of sources), re-run the
+  // widest window WITHOUT the category exclusion and merge. The scorer's
+  // dislikedCategoryPenalty (-8) still sinks those articles below every
+  // eligible one — the feed degrades gracefully instead of collapsing.
+  // Real incident: an account with 19/20 categories banned saw a feed of
+  // exactly two sources that dead-ended after ~26 items.
+  if (ctx?.dislikedCategories?.size > 0) {
+    const groups = new Set(
+      candidates.map((a) => a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown'))
+    );
+    if (candidates.length < limit * 2 || groups.size < 4) {
+      try {
+        const rescue = await runCandidateQuery(windows[windows.length - 1], {
+          skipCategoryExclusion: true,
+        });
+        const byId = new Map();
+        for (const a of rescue) byId.set(a._id.toString(), a);
+        // Keep the original copies on overlap — they may carry _atlasSimilarity.
+        for (const a of candidates) byId.set(a._id.toString(), a);
+        candidates = [...byId.values()];
+        console.log(
+          `🛟 pers-light starvation guard: pool had ${groups.size} source groups, ` +
+          `now ${candidates.length} candidates after rescue (user has ` +
+          `${ctx.dislikedCategories.size} disliked categories)`
+        );
+      } catch (err) {
+        console.warn('⚠️ starvation guard query failed:', err.message);
+      }
+    }
   }
   const dbTime = Date.now() - queryStart;
 
@@ -1374,11 +1533,30 @@ async function computePersonalizedLight({ ctx, language, limit, forceRefresh }) 
               (a.dislikes || 0) * dislikesWeight) /
               80
           );
+      // A user can have disliked categories without hasSignal (dislikes
+      // don't count toward it) — the starvation-guard rescue articles
+      // must still sink below eligible ones.
+      if (a.category && ctx?.dislikedCategories?.has(a.category)) {
+        a._score += PERS_W.dislikedCategoryPenalty;
+      }
     }
     scored = candidates.sort((x, y) => y._score - x._score);
   }
 
-  let interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
+  // Topical diversity (MMR) on the head of the pool — demotes same-story
+  // and same-source-burst redundancy that source interleaving can't see.
+  scored = applyMMRDiversity(scored);
+
+  // First-impression page: much tighter than the pages-2+ interleave.
+  // The old { minGap: 2, perGroupCap: 8 } let one source legally take 8 of
+  // 20 visible slots (positions 0,3,6,...) whenever a scraper cron dumped a
+  // batch — recency dominates scoring for brand-new articles, so a burst
+  // packs the top of the scored list. Cap scales with limit (3 at the
+  // default 20). fill:true keeps sparse pools (low-volume languages) from
+  // returning a short page: rejects go to the tail, past the slice cut
+  // whenever the pool is rich.
+  const perGroupCap = Math.max(2, Math.ceil(limit * 0.15));
+  let interleaved = interleaveBySourceGroup(scored, { minGap: 3, perGroupCap, fill: true });
 
   // P1-5: optional Cohere rerank on the top-N pool. Reorders the top
   // candidates based on semantic similarity to the user's pseudo-query
@@ -1521,6 +1699,13 @@ async function warmArticleCountCache() {
  */
 const RECENT_CACHE_TTL = 300; // 5 min
 const RECENT_LIMIT = 30;
+// Fetch a wider pool than we serve so interleaveBySourceGroup has material
+// to diversify with. A scraper cron that just dumped 25 articles from one
+// source would otherwise fill the entire recent list with that source,
+// back-to-back — and /recent is what the app's soft-race serves as page 1
+// on cold starts, so it must not cluster.
+const RECENT_CANDIDATES = 90;
+const RECENT_INTERLEAVE_OPTS = { minGap: 3, perGroupCap: 3, fill: true };
 
 function recentCacheKey(language) {
   return `articles_recent_v1_${language}`;
@@ -1537,7 +1722,7 @@ async function warmRecentArticlesCache() {
           },
         },
         { $sort: { publishedAt: -1 } },
-        { $limit: RECENT_LIMIT },
+        { $limit: RECENT_CANDIDATES },
         {
           $lookup: {
             from: 'sources',
@@ -1580,7 +1765,10 @@ async function warmRecentArticlesCache() {
           },
         },
       ]);
-      await redis.set(recentCacheKey(lang), JSON.stringify(recent), 'EX', RECENT_CACHE_TTL);
+      // Diversify at warm time — the request path stays a pure Redis read.
+      const diversified = interleaveBySourceGroup(recent, RECENT_INTERLEAVE_OPTS)
+        .slice(0, RECENT_LIMIT);
+      await redis.set(recentCacheKey(lang), JSON.stringify(diversified), 'EX', RECENT_CACHE_TTL);
     }
     // Don't log on every refresh — too chatty.
   } catch (err) {
@@ -1640,7 +1828,7 @@ articleRouter.get('/recent', async (req, res) => {
         },
       },
       { $sort: { publishedAt: -1 } },
-      { $limit: limit },
+      { $limit: RECENT_CANDIDATES },
       {
         $lookup: {
           from: 'sources',
@@ -1683,13 +1871,17 @@ articleRouter.get('/recent', async (req, res) => {
         },
       },
     ]);
+    // Same warm-time diversification as warmRecentArticlesCache — cache the
+    // full diversified list, serve the requested slice.
+    const diversified = interleaveBySourceGroup(recent, RECENT_INTERLEAVE_OPTS)
+      .slice(0, RECENT_LIMIT);
     try {
-      await redis.set(recentCacheKey(language), JSON.stringify(recent), 'EX', RECENT_CACHE_TTL);
+      await redis.set(recentCacheKey(language), JSON.stringify(diversified), 'EX', RECENT_CACHE_TTL);
     } catch (err) {
       // Non-fatal
     }
     res.setHeader('X-Cache', 'miss');
-    return res.json(recent);
+    return res.json(diversified.slice(0, limit));
   } catch (error) {
     console.error('❌ /articles/recent error:', error);
     return res.status(500).json({ error: 'recent error', message: error.message });
@@ -2017,10 +2209,18 @@ articleRouter.get('/personalized-light', auth, ensureMongoUser, async (req, res)
             'title content contentFormat url category publishedAt image sourceId viewCount likes dislikes commentCount language'
           )
           .sort({ publishedAt: -1 })
-          .limit(limit)
+          .limit(limit * 3)
           .lean();
         if (fallbackArticles.length >= Math.min(limit, 5)) break;
       }
+      // Recency sort clusters scraper bursts back-to-back; interleave by
+      // source (sourceId fallback — no group lookup on this path) before
+      // slicing down to the requested page size.
+      fallbackArticles = interleaveBySourceGroup(fallbackArticles, {
+        minGap: 3,
+        perGroupCap: 3,
+        fill: true,
+      }).slice(0, limit);
       return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
@@ -2414,7 +2614,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     // recently-served set (P0-2 follow-up). Viewed articles are still
     // only demoted in scoring, not excluded, so the feed doesn't
     // collapse for users with long view histories.
-    const buildMatch = (sinceMs) => {
+    const buildMatch = (sinceMs, { skipCategoryExclusion = false } = {}) => {
       const match = {
         language,
         publishedAt: { $gte: new Date(Date.now() - sinceMs) },
@@ -2432,7 +2632,7 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
             $nin: excluded.map((id) => new mongoose.Types.ObjectId(id)),
           };
         }
-        if (ctx.dislikedCategories.size > 0) {
+        if (!skipCategoryExclusion && ctx.dislikedCategories.size > 0) {
           match.category = { $nin: [...ctx.dislikedCategories] };
         }
       }
@@ -2444,9 +2644,9 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
     const candidateLimit = Math.min(page * limit + 200, 500);
     const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
-    const runCandidateQuery = (sinceMs) =>
+    const runCandidateQuery = (sinceMs, opts) =>
       Article.aggregate([
-        { $match: buildMatch(sinceMs) },
+        { $match: buildMatch(sinceMs, opts) },
         { $sort: { publishedAt: -1 } },
         { $limit: candidateLimit },
         {
@@ -2510,6 +2710,33 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
       usedWindowMs = sinceMs;
       if (candidates.length >= minCandidates) break;
     }
+
+    // Starvation guard — same rationale as personalized-light: if the
+    // disliked-category exclusion leaves a tiny or single-source pool,
+    // pull unfiltered candidates from the widest window and let the
+    // scoring penalty sink them instead of dead-ending pagination.
+    if (ctx?.dislikedCategories?.size > 0) {
+      const groups = new Set(
+        candidates.map((a) => a.sourceGroupName || (a.sourceId ? a.sourceId.toString() : 'unknown'))
+      );
+      if (candidates.length < limit * 2 || groups.size < 4) {
+        try {
+          const rescue = await runCandidateQuery(windows[windows.length - 1], {
+            skipCategoryExclusion: true,
+          });
+          const byId = new Map();
+          for (const a of rescue) byId.set(a._id.toString(), a);
+          for (const a of candidates) byId.set(a._id.toString(), a);
+          candidates = [...byId.values()];
+          console.log(
+            `🛟 pers-fast starvation guard: page ${page}, pool had ${groups.size} ` +
+            `source groups, now ${candidates.length} candidates after rescue`
+          );
+        } catch (err) {
+          console.warn('⚠️ pers-fast starvation guard failed:', err.message);
+        }
+      }
+    }
     const dbTime = Date.now() - queryStart;
 
     let scored;
@@ -2526,6 +2753,12 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
                 (a.dislikes || 0) * dislikesWeight) /
                 80
             );
+        // Disliked categories can exist without hasSignal (dislikes don't
+        // count toward it); starvation-guard rescue articles must still
+        // sink below eligible ones.
+        if (a.category && ctx?.dislikedCategories?.has(a.category)) {
+          a._score += PERS_W.dislikedCategoryPenalty;
+        }
       }
       scored = candidates.sort((x, y) => y._score - x._score);
     }
@@ -2596,10 +2829,16 @@ articleRouter.get('/personalized-fast', auth, ensureMongoUser, async (req, res) 
           )
           .sort({ publishedAt: -1 })
           .skip(skip)
-          .limit(limit)
+          .limit(limit * 3)
           .lean();
         if (fallbackArticles.length >= Math.min(limit, 5) || skip + fallbackArticles.length >= minNeeded) break;
       }
+      // Same anti-clustering pass as the personalized-light fallback.
+      fallbackArticles = interleaveBySourceGroup(fallbackArticles, {
+        minGap: 3,
+        perGroupCap: 3,
+        fill: true,
+      }).slice(0, limit);
       return res.json(fallbackArticles);
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
@@ -3584,9 +3823,9 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     const candidateLimit = Math.min(page * limit + 200, 500);
     const includeEmbedding = !!ctx?.embedding && !shouldSkipEmbedding(ctx);
 
-    const runCandidateQuery = (sinceMs) =>
+    const runCandidateQuery = (sinceMs, opts) =>
       Article.aggregate([
-        { $match: buildMatch(sinceMs) },
+        { $match: buildMatch(sinceMs, opts) },
         { $sort: { publishedAt: -1 } },
         { $limit: candidateLimit },
         {
@@ -3666,6 +3905,12 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
                 (a.dislikes || 0) * dislikesWeight) /
                 80
             );
+        // Disliked categories can exist without hasSignal (dislikes don't
+        // count toward it); starvation-guard rescue articles must still
+        // sink below eligible ones.
+        if (a.category && ctx?.dislikedCategories?.has(a.category)) {
+          a._score += PERS_W.dislikedCategoryPenalty;
+        }
       }
       scored = candidates.sort((x, y) => y._score - x._score);
     }

@@ -158,18 +158,26 @@ async function updateUserProfileEmbedding(userId) {
 
         console.log(`🎯 Total unique content in activity map: ${activityMap.size}`);
 
-        // Track disliked categories for future filtering
-        const dislikedCategories = new Set(user.disliked_categories || []);
+        // Derive disliked categories from dislike counts — do NOT seed from
+        // the existing user.disliked_categories. The old version was a
+        // ratchet: every disliked article's category was added forever, so
+        // one dislike per category eventually banned everything (one real
+        // account reached 19/20 categories and its feed collapsed to two
+        // sources). Deriving fresh each run means categories un-ban when
+        // dislikes age out of the articles collection, and bad historical
+        // data self-heals on the next cron.
+        const CATEGORY_DISLIKE_THRESHOLD = 3;
+        const dislikedCategories = new Set();
         if (user.disliked_articles && user.disliked_articles.length > 0) {
-            const dislikedArticles = await Article.find({
-                _id: { $in: user.disliked_articles }
-            }).select('category').lean();
-
-            dislikedArticles.forEach(article => {
-                if (article.category) {
-                    dislikedCategories.add(article.category);
+            const dislikedCounts = await Article.aggregate([
+                { $match: { _id: { $in: user.disliked_articles } } },
+                { $group: { _id: '$category', n: { $sum: 1 } } },
+            ]);
+            for (const c of dislikedCounts) {
+                if (c._id && c.n >= CATEGORY_DISLIKE_THRESHOLD) {
+                    dislikedCategories.add(c._id);
                 }
-            });
+            }
         }
 
         // If no positive activities, reset embeddings

@@ -58,18 +58,21 @@ async function updateUserEmbeddingFromActivities(userId) {
             }
         }
 
-        // Handle disliked articles separately - we'll avoid these categories
+        // Derive disliked categories from dislike counts (threshold, not
+        // one-tap) — mirrors utils/userEmbedding.js. A single dislike must
+        // not ban a whole category.
+        const CATEGORY_DISLIKE_THRESHOLD = 3;
         const dislikedCategories = new Set();
         if (user.disliked_articles && user.disliked_articles.length > 0) {
-            const dislikedArticles = await Article.find({
-                _id: { $in: user.disliked_articles }
-            }).select('category').lean();
-
-            dislikedArticles.forEach(article => {
-                if (article.category) {
-                    dislikedCategories.add(article.category);
+            const dislikedCounts = await Article.aggregate([
+                { $match: { _id: { $in: user.disliked_articles } } },
+                { $group: { _id: '$category', n: { $sum: 1 } } },
+            ]);
+            for (const c of dislikedCounts) {
+                if (c._id && c.n >= CATEGORY_DISLIKE_THRESHOLD) {
+                    dislikedCategories.add(c._id);
                 }
-            });
+            }
         }
 
         // If no positive activities, set empty embeddings

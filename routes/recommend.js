@@ -185,10 +185,14 @@ router.post('/recommend/feedback', auth, async (req, res) => {
 
         const updateData = {};
         if (feedback === 'not_interested') {
+            // Only record the reel itself. This endpoint used to also
+            // $addToSet client-sent categories into disliked_categories —
+            // the same field the ARTICLE feed hard-excludes with $nin — so
+            // "not interested" on a reel silently banned article categories
+            // forever. Article-category dislikes are now derived from
+            // article dislike counts only (see applyIncrementalEmbeddingUpdate
+            // and utils/userEmbedding.js).
             updateData.$addToSet = { disliked_reels: videoId };
-            if (categories && Array.isArray(categories)) {
-                updateData.$addToSet.disliked_categories = { $each: categories };
-            }
         }
 
         if (Object.keys(updateData).length > 0) {
