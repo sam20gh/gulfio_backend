@@ -395,6 +395,10 @@ const PERS_W = {
   preferredSourceBoost: 1.5,
   vector: 6.0,
   dislikedCategoryPenalty: -8.0,
+  // Explicit "show less from this source" (not-interested panel chip).
+  // Softer than a category ban: the source still appears when it has
+  // genuinely strong content, just far less often.
+  mutedSourcePenalty: -6.0,
   // Viewed articles are demoted (not excluded) so the feed never starves.
   // They sink below fresh content but reappear if no better candidates exist.
   viewedPenalty: -3.0,
@@ -520,6 +524,7 @@ function serializeCtx(ctx) {
     preferredCategories: Array.from(ctx.preferredCategories),
     preferredSourceIds: Array.from(ctx.preferredSourceIds),
     dislikedCategories: Array.from(ctx.dislikedCategories),
+    mutedSourceIds: Array.from(ctx.mutedSourceIds || []),
     likedIds: Array.from(ctx.likedIds),
     likedIdsOrdered: ctx.likedIdsOrdered,
     dislikedIds: Array.from(ctx.dislikedIds),
@@ -541,6 +546,7 @@ function deserializeCtx(plain) {
     preferredCategories: new Set(plain.preferredCategories || []),
     preferredSourceIds: new Set(plain.preferredSourceIds || []),
     dislikedCategories: new Set(plain.dislikedCategories || []),
+    mutedSourceIds: new Set(plain.mutedSourceIds || []),
     likedIds: new Set(plain.likedIds || []),
     likedIdsOrdered: plain.likedIdsOrdered || [],
     dislikedIds: new Set(plain.dislikedIds || []),
@@ -594,7 +600,7 @@ async function computeUserPersonalizationContext(userId) {
   const user = await User.findOne({ supabase_id: userId })
     .select(
       'preferred_categories preferred_sources disliked_categories ' +
-      'implicit_preferred_categories ' +
+      'implicit_preferred_categories muted_categories muted_sources ' +
       'liked_articles disliked_articles saved_articles viewed_articles ' +
       'following_sources embedding_pca language'
     )
@@ -686,7 +692,14 @@ async function computeUserPersonalizationContext(userId) {
     treatment: getTreatmentForUser(userId),
     preferredCategories,
     preferredSourceIds,
-    dislikedCategories: new Set(user.disliked_categories || []),
+    // Derived bans (≥3 dislikes, nightly cron) + explicit mutes from the
+    // not-interested panel share the exclusion machinery.
+    dislikedCategories: new Set([
+      ...(user.disliked_categories || []),
+      ...(user.muted_categories || []),
+    ]),
+    // Explicit "show less from this source" — scorer demotes, never excludes.
+    mutedSourceIds: toIdStringSet(user.muted_sources),
     likedIds: toIdStringSet(user.liked_articles),
     likedIdsOrdered,
     dislikedIds: toIdStringSet(user.disliked_articles),
@@ -818,6 +831,9 @@ function scorePersonalizedCandidates(candidates, ctx, { page = 1 } = {}) {
     let score = positiveScore * sourceQuality;
 
     if (a._dislikedCat) score += W.dislikedCategoryPenalty;
+    if (sourceIdStr && ctx.mutedSourceIds?.has(sourceIdStr)) {
+      score += W.mutedSourcePenalty;
+    }
     if (alreadyViewed) {
       // P1-6: scale by how deeply this article was previously consumed.
       // Full read (≥FULL_READ_SECONDS) gets the full -3.0 penalty;
@@ -1225,7 +1241,8 @@ function userStateHash(ctx) {
   return simpleHash(
     `${ctx.viewedIds.size}|${ctx.likedIds.size}|${ctx.dislikedIds.size}|` +
       `${ctx.savedIds.size}|${ctx.preferredCategories.size}|` +
-      `${ctx.followingSourceGroups.size}|${ctx.embedding ? ctx.embedding.length : 0}`
+      `${ctx.followingSourceGroups.size}|${ctx.embedding ? ctx.embedding.length : 0}|` +
+      `${ctx.dislikedCategories.size}|${ctx.mutedSourceIds?.size || 0}`
   );
 }
 
@@ -4347,6 +4364,72 @@ articleRouter.get('/', async (req, res) => {
 });
 
 // React (like/dislike) - Ultra-optimized for instant response
+/**
+ * POST /articles/feedback/mute
+ *
+ * Explicit "show less" from the feed's not-interested panel.
+ *   { type: 'source', value: '<sourceId>' }  — demote everything from this
+ *     source's whole group (expanded to all sourceIds sharing groupName,
+ *     e.g. the EN + AR editions of one outlet).
+ *   { type: 'category', value: 'sports' }    — exclude the category. This is
+ *     explicit intent, unlike the ≥3-dislikes derived bans, so it takes
+ *     effect immediately; the nightly cron never rewrites muted_* fields.
+ *   { ..., unmute: true }                    — reverse either.
+ *
+ * Sources are demoted (scorer penalty), not excluded — "show less", not
+ * "never". Categories join the dislikedCategories machinery, which the
+ * starvation guard already protects from feed collapse.
+ */
+articleRouter.post('/feedback/mute', auth, ensureMongoUser, async (req, res) => {
+  try {
+    const { type, value, unmute } = req.body;
+    const userId = req.mongoUser.supabase_id;
+
+    if (!['source', 'category'].includes(type) || !value) {
+      return res
+        .status(400)
+        .json({ message: "type must be 'source' or 'category' and value is required" });
+    }
+
+    if (type === 'source') {
+      if (!mongoose.Types.ObjectId.isValid(value)) {
+        return res.status(400).json({ message: 'Invalid source ID' });
+      }
+      const source = await Source.findById(value).select('groupName').lean();
+      if (!source) {
+        return res.status(404).json({ message: 'Source not found' });
+      }
+      const groupSources = source.groupName
+        ? await Source.find({ groupName: source.groupName }).select('_id').lean()
+        : [{ _id: source._id }];
+      const ids = groupSources.map((s) => s._id);
+      await User.updateOne(
+        { supabase_id: userId },
+        unmute
+          ? { $pullAll: { muted_sources: ids } }
+          : { $addToSet: { muted_sources: { $each: ids } } }
+      );
+    } else {
+      const category = String(value).toLowerCase();
+      await User.updateOne(
+        { supabase_id: userId },
+        unmute
+          ? { $pull: { muted_categories: category } }
+          : { $addToSet: { muted_categories: category } }
+      );
+    }
+
+    // Purge this user's feed caches + ctx so the next fetch reflects it.
+    await clearUserArticleCaches(userId);
+    await clearUserArticleCaches(req.mongoUser._id?.toString());
+
+    res.json({ success: true, type, unmuted: !!unmute });
+  } catch (error) {
+    console.error('❌ /feedback/mute error:', error);
+    res.status(500).json({ message: 'Error saving mute feedback', error: error.message });
+  }
+});
+
 articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
   // Set a timeout for this specific route to prevent hanging
   req.setTimeout(10000); // 10 second timeout
@@ -4362,7 +4445,11 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ message: 'Invalid article ID' });
     }
-    if (!['like', 'dislike'].includes(action)) {
+    // 'unreact' = undo: pull the user from both reaction arrays and stop.
+    // Used by the feed's "Not interested → Undo" flow. The small EMA
+    // embedding nudge from the original dislike is NOT reversed — the
+    // nightly cron rebuilds the embedding from activity history anyway.
+    if (!['like', 'dislike', 'unreact'].includes(action)) {
       return res.status(400).json({ message: 'Invalid action' });
     }
 
@@ -4379,11 +4466,16 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
     );
 
     // Step 2: Add user to the correct array and get updated document
-    const articleUpdate = await Article.findByIdAndUpdate(
-      articleId,
-      { $addToSet: { [updateField]: userId } },
-      { new: true, select: 'likedBy dislikedBy likes dislikes commentCount' }
-    ).lean();
+    // (unreact stops at the pull — just re-read the counts)
+    const articleUpdate = action === 'unreact'
+      ? await Article.findById(articleId)
+          .select('likedBy dislikedBy likes dislikes commentCount')
+          .lean()
+      : await Article.findByIdAndUpdate(
+          articleId,
+          { $addToSet: { [updateField]: userId } },
+          { new: true, select: 'likedBy dislikedBy likes dislikes commentCount' }
+        ).lean();
 
     if (!articleUpdate) {
       return res.status(404).json({ message: 'Article not found' });
@@ -4398,11 +4490,13 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       { $pull: { liked_articles: articleObjectId, disliked_articles: articleObjectId } }
     );
 
-    // Step 2: Add article to the correct user array
-    await User.findByIdAndUpdate(
-      mongoUser._id,
-      { $addToSet: { [userUpdateField]: articleObjectId } }
-    );
+    // Step 2: Add article to the correct user array (skipped for unreact)
+    if (action !== 'unreact') {
+      await User.findByIdAndUpdate(
+        mongoUser._id,
+        { $addToSet: { [userUpdateField]: articleObjectId } }
+      );
+    }
 
     // Calculate current counts from the updated arrays
     const likes = articleUpdate.likedBy?.length || 0;
@@ -4424,7 +4518,7 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
 
     // Respond with the confirmed reaction data with counts
     res.json({
-      userReact: action,
+      userReact: action === 'unreact' ? null : action,
       likes,
       dislikes,
       processingTime,
@@ -4451,15 +4545,19 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
         // for views/saves/comments and recalibrates from scratch.
         await applyIncrementalEmbeddingUpdate(userId, articleObjectId, action);
 
-        // 🎮 Log activity for gamification tracking + A/B telemetry (P3-1)
-        await UserActivity.create({
-          userId: userId,
-          eventType: action, // 'like' or 'dislike'
-          articleId: articleObjectId,
-          contentType: 'article',
-          timestamp: new Date(),
-          treatment: getTreatmentForUser(userId),
-        }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
+        // 🎮 Log activity for gamification tracking + A/B telemetry (P3-1).
+        // 'unreact' isn't in the UserActivity enum and shouldn't count as
+        // engagement — skip it.
+        if (action !== 'unreact') {
+          await UserActivity.create({
+            userId: userId,
+            eventType: action, // 'like' or 'dislike'
+            articleId: articleObjectId,
+            contentType: 'article',
+            timestamp: new Date(),
+            treatment: getTreatmentForUser(userId),
+          }).catch(err => console.error('⚠️ Failed to log activity:', err.message));
+        }
 
         // 🎮 Award points for liking (gamification)
         if (wasNewLike) {

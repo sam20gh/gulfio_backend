@@ -45,6 +45,13 @@ const userSchema = new mongoose.Schema({
         default: [],
     },
     disliked_categories: [{ type: String }],
+    // Explicit "show less" choices from the feed's not-interested panel.
+    // Distinct from disliked_categories (which the nightly cron derives from
+    // dislike counts and overwrites) — these are explicit user intent and no
+    // job may rewrite them. muted_sources holds every sourceId in the muted
+    // group (expanded at mute time); the scorer demotes, never excludes.
+    muted_categories: [{ type: String }],
+    muted_sources: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Source' }],
     // Top categories inferred from behavior (P1-3). Written by the daily
     // cron (utils/userEmbedding.js) from 30d weighted action history.
     // Merged with explicit `preferred_categories` at scoring time so both
