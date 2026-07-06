@@ -1268,7 +1268,9 @@ router.get('/search', async (req, res) => {
 
         if (!searchText) return res.status(400).json({ message: 'Missing search query' });
 
-        const regex = new RegExp(searchText, 'i'); // case-insensitive
+        // Escape regex metacharacters so queries like "c++" don't throw
+        const escaped = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'i'); // case-insensitive
         const results = await User.find({
             $or: [
                 { name: { $regex: regex } },

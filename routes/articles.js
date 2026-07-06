@@ -1906,6 +1906,113 @@ articleRouter.get('/recent', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/articles/search?query=...&language=...&limit=...
+ *
+ * Full-text article search used by the in-app SearchModal. Must be
+ * registered before the `/:id` catch-all — previously this path didn't
+ * exist and fell through to `/:id` with id="search", so article search
+ * always failed with a CastError.
+ *
+ * Primary: Atlas Search on title/content (relevance-ranked). When the
+ * text index finds nothing, falls back to semantic vector search over
+ * embedding_pca so conceptually-related articles still surface.
+ *
+ * Public like /recent — searches published news content only. Language
+ * is NOT filtered by default so Farsi/Arabic/Urdu sources are findable
+ * from any app locale; pass ?language= to restrict.
+ */
+articleRouter.get('/search', async (req, res) => {
+  try {
+    const query = (req.query.query || req.query.q || '').trim();
+    if (!query) return res.status(400).json({ message: 'Missing search query' });
+
+    const language = req.query.language?.trim() || null;
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 20), 50);
+
+    const cacheKey = `article_search_${language || 'all'}_${limit}_${query.toLowerCase()}`;
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'hit');
+        return res.json(JSON.parse(cached));
+      }
+    } catch (err) {
+      // Non-fatal
+    }
+
+    const { articles } = await searchArticles({ searchTerm: query, language, limit });
+
+    let results = articles;
+
+    // Semantic fallback for queries the text index can't match
+    if (results.length === 0) {
+      try {
+        const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
+        const embedding = await getDeepSeekEmbedding(query);
+        const pcaVector = await convertToPCAEmbedding(embedding);
+        if (pcaVector) {
+          results = await Article.aggregate([
+            {
+              $vectorSearch: {
+                index: 'default',
+                path: 'embedding_pca',
+                queryVector: pcaVector,
+                numCandidates: Math.max(200, limit * 10),
+                limit,
+              },
+            },
+            { $addFields: { searchScore: { $meta: 'vectorSearchScore' } } },
+            ...(language ? [{ $match: { language } }] : []),
+            {
+              $lookup: {
+                from: 'sources',
+                localField: 'sourceId',
+                foreignField: '_id',
+                as: 'source',
+              },
+            },
+            { $unwind: { path: '$source', preserveNullAndEmptyArrays: true } },
+            {
+              $project: {
+                _id: 1,
+                title: 1,
+                content: { $substrCP: ['$content', 0, 500] },
+                url: 1,
+                category: 1,
+                publishedAt: 1,
+                image: 1,
+                viewCount: 1,
+                likes: 1,
+                dislikes: 1,
+                language: 1,
+                searchScore: 1,
+                sourceId: 1,
+                sourceName: '$source.name',
+                sourceIcon: '$source.icon',
+                sourceGroupName: '$source.groupName',
+              },
+            },
+          ]);
+        }
+      } catch (err) {
+        console.warn('⚠️ Vector search fallback failed:', err.message);
+      }
+    }
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(results), 'EX', 120);
+    } catch (err) {
+      // Non-fatal
+    }
+
+    res.setHeader('X-Cache', 'miss');
+    return res.json(results);
+  } catch (error) {
+    console.error('❌ /articles/search error:', error);
+    return res.status(500).json({ message: 'Error searching articles', error: error.message });
+  }
+});
 
 // GET: Quick performance test endpoint
 articleRouter.get('/perf-test', auth, ensureMongoUser, async (req, res) => {

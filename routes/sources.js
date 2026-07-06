@@ -130,24 +130,30 @@ router.get('/:id/youtube/videos', async (req, res) => {
 router.get('/search', auth, async (req, res) => {
     try {
         const query = req.query.query?.trim();
-        const language = req.query.language || 'english';
+        // Only filter by language when explicitly requested. Defaulting to
+        // 'english' silently hid every non-English source (e.g. Varzesh3,
+        // language: 'farsi') from search.
+        const language = req.query.language?.trim();
 
         if (!query) return res.status(400).json({ message: 'Missing search query' });
 
-        const regex = new RegExp(query, 'i'); // case-insensitive
-        const results = await Source.find({
-            $and: [
-                {
-                    $or: [
-                        { name: { $regex: regex } },
-                        { category: { $regex: regex } },
-                        { groupName: { $regex: regex } }
-                    ]
-                },
-                { language }, // Add language filter
-                { status: { $ne: 'blocked' } } // Exclude blocked sources
-            ]
-        })
+        // Escape regex metacharacters so queries like "c++" don't throw
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'i'); // case-insensitive
+
+        const conditions = [
+            {
+                $or: [
+                    { name: { $regex: regex } },
+                    { category: { $regex: regex } },
+                    { groupName: { $regex: regex } }
+                ]
+            },
+            { status: { $ne: 'blocked' } } // Exclude blocked sources
+        ];
+        if (language) conditions.push({ language });
+
+        const results = await Source.find({ $and: conditions })
             .sort({ followers: -1 }) // Sort by popularity
             .limit(20); // Limit results
 

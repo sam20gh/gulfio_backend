@@ -44,7 +44,8 @@ async function searchArticles({
                     text: {
                         query: cleanedSearchTerm,
                         path: 'title',
-                        score: { boost: { value: 3 } } // Boost title matches
+                        score: { boost: { value: 3 } }, // Boost title matches
+                        fuzzy: { maxEdits: 1, prefixLength: 3 } // Typo tolerance
                     }
                 },
                 {
@@ -146,6 +147,7 @@ async function searchArticles({
                             language: 1,
                             searchScore: 1,
                             highlights: 1,
+                            sourceId: 1,
                             sourceName: '$source.name',
                             sourceIcon: '$source.icon',
                             sourceGroupName: '$source.groupName'
