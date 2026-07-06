@@ -40,6 +40,16 @@ const ArticleSchema = new mongoose.Schema({
     isBreakingNews: { type: Boolean, default: false },
     breakingNewsExpiry: { type: Date }, // Auto-expire breaking status after set duration
     breakingNewsPriority: { type: Number, default: 0 }, // Higher = more urgent (0-10)
+
+    // TTS Track 2: neural audio, generated on-demand and cached in R2.
+    // Absent until the first playback request for an eligible (new) article.
+    audio: {
+        url: { type: String },              // public R2 URL of the MP3
+        duration: { type: Number },         // seconds (estimated from char count)
+        voice: { type: String },            // Azure voice name used (for cache invalidation on upgrade)
+        charCount: { type: Number },        // billed characters, for cost accounting
+        generatedAt: { type: Date },
+    },
 });
 
 // Add compound index for title + sourceId to prevent duplicate titles from same source

@@ -16,6 +16,7 @@ const { searchArticles, findInContent } = require('../utils/atlasSearch');
 const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
 const NotificationService = require('../utils/notificationService'); // Phase 3.3: Notifications
+const { getOrCreateArticleAudio } = require('../utils/ttsAudio'); // TTS Track 2: on-demand neural audio
 const {
   EXPERIMENT_ID,
   getTreatmentForUser,
@@ -5421,6 +5422,33 @@ articleRouter.get('/trending', async (req, res) => {
 });
 
 // GET one - Must be last to avoid conflicts with specific routes
+// TTS Track 2: on-demand neural audio for an article.
+// Cached in R2; generated only for NEW articles (see utils/ttsAudio cutoff).
+// Always 200 with { available } so the app can cheaply fall back to on-device
+// TTS when audio isn't offered (old article, no text, or TTS disabled).
+articleRouter.get('/:id/audio', async (req, res) => {
+  try {
+    const article = await Article.findById(req.params.id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    const result = await getOrCreateArticleAudio(article);
+
+    if (result.status === 'ready') {
+      return res.json({
+        available: true,
+        url: result.audio.url,
+        duration: result.audio.duration,
+        voice: result.audio.voice,
+      });
+    }
+    return res.json({ available: false, reason: result.status });
+  } catch (err) {
+    console.error('GET /:id/audio error:', err);
+    // Non-fatal for the client — degrade to on-device TTS.
+    return res.status(200).json({ available: false, reason: 'error' });
+  }
+});
+
 articleRouter.get('/:id', async (req, res) => {
   try {
     const article = await Article.findById(req.params.id).populate('sourceId', 'name icon groupName');
