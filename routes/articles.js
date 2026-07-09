@@ -3920,7 +3920,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     // category pin. Only disliked articles are hard-excluded; liked
     // articles are NOT excluded (seeing a liked article again is fine,
     // and the previous behavior of dropping them shrank thin categories).
-    const buildMatch = (sinceMs) => {
+    const buildMatch = (sinceMs, { excludeServed = true } = {}) => {
       const match = {
         language,
         category,
@@ -3932,7 +3932,7 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
         if (ctx.dislikedIds.size > 0) {
           excluded.push(...[...ctx.dislikedIds].slice(0, 500));
         }
-        if (ctx.servedIds?.size > 0) {
+        if (excludeServed && ctx.servedIds?.size > 0) {
           excluded.push(...[...ctx.servedIds].slice(0, SERVED_MAX_EXCLUDE));
         }
         if (excluded.length > 0) {
@@ -4014,6 +4014,22 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
       usedWindowMs = sinceMs;
       if (candidates.length >= minCandidates) break;
     }
+
+    // Starvation rescue: the served-set exclusion is shared with the main
+    // feed, so a user who has been scrolling can have a thin category's
+    // entire 30-day pool marked as served. A chip tap is explicit intent —
+    // showing repeats beats "No Stories right now".
+    let rescuedWithoutExclusion = false;
+    if (candidates.length < limit && ctx?.servedIds?.size > 0) {
+      const widest = windows[windows.length - 1];
+      candidates = await runCandidateQuery(widest, { excludeServed: false });
+      usedWindowMs = widest;
+      rescuedWithoutExclusion = true;
+      console.log(
+        `🏷️ pers-cat-v2 rescue: cat="${category}" pool starved by served-set, ` +
+        `re-ran without exclusion → ${candidates.length} candidates`
+      );
+    }
     const dbTime = Date.now() - queryStart;
 
     let scored;
@@ -4044,7 +4060,11 @@ articleRouter.get('/personalized-category', auth, ensureMongoUser, async (req, r
     // slice from the top of the fresh pool rather than offsetting by
     // page. See the same comment in personalized-fast above.
     const interleaved = interleaveBySourceGroup(scored, { minGap: 2, perGroupCap: 8 });
-    const pageSlice = interleaved.slice(0, limit);
+    // Rescue candidates include already-served articles, so top-of-pool
+    // slicing would repeat page 1 on every page — offset by page instead.
+    const pageSlice = rescuedWithoutExclusion
+      ? interleaved.slice((page - 1) * limit, page * limit)
+      : interleaved.slice(0, limit);
 
     const finalArticles = sanitizeForResponse(pageSlice, {
       isCategory: true,
