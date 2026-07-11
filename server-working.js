@@ -255,6 +255,10 @@ function loadRoutes() {
         const jobsRouter = require('./routes/jobs'); // PHASE 2: Background jobs
         console.log('✅ Jobs routes loaded successfully');
 
+        console.log('🗳️ Loading Polls routes...');
+        const pollsRoutes = require('./routes/polls'); // Article opinion polls
+        console.log('✅ Polls routes loaded successfully');
+
         app.use('/api/scrape', scrapeRoute);
         app.use('/api/user', userActions);
         app.use('/api/recommendations', recommendations);
@@ -287,6 +291,10 @@ function loadRoutes() {
         console.log('🔧 Mounting Jobs routes at /api/jobs...');
         app.use('/api/jobs', jobsRouter); // PHASE 2: Background jobs
         console.log('✅ Jobs routes mounted successfully');
+
+        console.log('🗳️ Mounting Polls routes at /api/polls...');
+        app.use('/api/polls', pollsRoutes); // Article opinion polls
+        console.log('✅ Polls routes mounted successfully');
 
         console.log('🎉 All API routes loaded successfully!');
 

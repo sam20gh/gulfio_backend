@@ -23,6 +23,9 @@ module.exports = {
         REEL_LIKE: 2,
         REEL_SHARE: 10,
 
+        // Polls
+        POLL_VOTE: 5,              // First vote on an article poll
+
         // Engagement
         DAILY_LOGIN: 5,
         STREAK_BONUS: 5,           // Base streak bonus (multiplied by day)
