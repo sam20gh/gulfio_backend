@@ -23,25 +23,32 @@ router.post('/log', async (req, res) => {
 
         await newLog.save();
 
-        // 🎮 Award points for article reads (non-blocking)
+        // 🎮 Award points for article reads. Awaited so the app can show the
+        // "+5" floating-points feedback from this response; anti-abuse
+        // (cooldowns, daily caps) returns null and the app shows nothing.
+        let award = null;
         if (eventType === 'view' && articleId) {
-            Article.findById(articleId).select('category').lean().then(art => {
-                PointsService.awardPoints(userId, 'ARTICLE_READ', {
+            try {
+                const art = await Article.findById(articleId).select('category').lean().catch(() => null);
+                award = await PointsService.awardPoints(userId, 'ARTICLE_READ', {
                     articleId,
                     category: art?.category
-                }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
-            }).catch(() => {
-                // Award without category if article lookup fails
-                PointsService.awardPoints(userId, 'ARTICLE_READ', {
-                    articleId
-                }).catch(err => console.error('⚠️ Failed to award read points:', err.message));
-            });
+                });
+            } catch (err) {
+                console.error('⚠️ Failed to award read points:', err.message);
+            }
         }
 
         // Embedding updates now handled by daily cron job for better performance
         // This allows instant response while still tracking all activities
 
-        res.status(201).json({ message: 'Activity logged' });
+        res.status(201).json({
+            message: 'Activity logged',
+            pointsAwarded: award?.pointsAwarded ?? 0,
+            action: award ? 'article_read' : undefined,
+            leveledUp: award?.leveledUp || false,
+            newLevel: award?.newLevel ?? null,
+        });
     } catch (error) {
         console.error('Error logging activity:', error);
         res.status(500).json({ message: 'Error logging activity', error: error.message });
