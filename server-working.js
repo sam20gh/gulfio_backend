@@ -259,6 +259,10 @@ function loadRoutes() {
         const pollsRoutes = require('./routes/polls'); // Article opinion polls
         console.log('✅ Polls routes loaded successfully');
 
+        console.log('🧠 Loading Quiz routes...');
+        const quizRoutes = require('./routes/quiz'); // Daily news quiz
+        console.log('✅ Quiz routes loaded successfully');
+
         app.use('/api/scrape', scrapeRoute);
         app.use('/api/user', userActions);
         app.use('/api/recommendations', recommendations);
@@ -295,6 +299,10 @@ function loadRoutes() {
         console.log('🗳️ Mounting Polls routes at /api/polls...');
         app.use('/api/polls', pollsRoutes); // Article opinion polls
         console.log('✅ Polls routes mounted successfully');
+
+        console.log('🧠 Mounting Quiz routes at /api/quiz...');
+        app.use('/api/quiz', quizRoutes); // Daily news quiz
+        console.log('✅ Quiz routes mounted successfully');
 
         console.log('🎉 All API routes loaded successfully!');
 

@@ -9,7 +9,7 @@ const pointTransactionSchema = new mongoose.Schema({
             'article_read', 'article_read_full', 'article_like', 'article_share', 'article_save',
             'comment_post', 'comment_received_like', 'comment_quality_bonus',
             'reel_watch', 'reel_like', 'reel_share',
-            'poll_vote',
+            'poll_vote', 'quiz_correct',
             'daily_login', 'streak_bonus', 'weekly_challenge',
             'badge_earned', 'referral_signup', 'referral_active', 'profile_complete',
             'redemption' // For spending points on premium features

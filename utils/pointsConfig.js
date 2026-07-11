@@ -23,8 +23,9 @@ module.exports = {
         REEL_LIKE: 2,
         REEL_SHARE: 10,
 
-        // Polls
+        // Polls & quiz
         POLL_VOTE: 5,              // First vote on an article poll
+        QUIZ_CORRECT: 5,           // Per correct answer in the daily quiz
 
         // Engagement
         DAILY_LOGIN: 5,
