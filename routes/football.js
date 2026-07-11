@@ -802,6 +802,24 @@ router.post('/sync/teams-batch', async (req, res) => {
     }
 });
 
+// POST /api/football/poll-live-alerts - One goal/kickoff alert polling pass.
+// Invoked by Cloud Scheduler every ~2 minutes during match hours (see
+// docs/MATCH_ALERTS.md). Admin key required — not a user-facing endpoint.
+router.post('/poll-live-alerts', async (req, res) => {
+    if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY) {
+        return res.status(403).json({ message: 'Forbidden' });
+    }
+    try {
+        const { pollLiveMatchAlerts } = require('../utils/matchAlerts');
+        const summary = await pollLiveMatchAlerts();
+        console.log('⚽ Match-alert poll:', summary);
+        res.json(summary);
+    } catch (error) {
+        console.error('❌ Match-alert poll failed:', error);
+        res.status(500).json({ message: 'Poll failed', error: error.message });
+    }
+});
+
 // GET /api/football/sync/status - Check sync status
 router.get('/sync/status', async (req, res) => {
     try {

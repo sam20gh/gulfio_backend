@@ -43,6 +43,9 @@ const SETTING_DEFAULTS = {
     articleLikes: true,
     newFollowers: true,
     mentions: true,
+    // Goal/kickoff pushes for followed teams (targeted, not broadcast-budgeted;
+    // following a team is the opt-in — this switch is the opt-out)
+    matchAlerts: true,
 };
 
 // UTC offsets in hours for the cities available in the User schema.
