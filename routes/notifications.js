@@ -154,6 +154,55 @@ router.put('/mark-all-read', auth, async (req, res) => {
 });
 
 /**
+ * POST /api/notifications/opened
+ * Record that the user tapped a push notification (open-rate tracking).
+ *
+ * Bulk pushes don't carry per-user Notification ids, so the app reports the
+ * push payload instead: { type, articleId?, drawNumber? }. We stamp openedAt
+ * on the user's most recent matching history doc from the last 48h.
+ * MUST be registered before any /:id wildcard routes.
+ */
+router.post('/opened', auth, async (req, res) => {
+    try {
+        const userId = req.user?.sub;
+
+        if (!userId) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const { type, articleId, drawNumber } = req.body || {};
+
+        if (!type) {
+            return res.status(400).json({ error: 'Missing required field: type' });
+        }
+
+        const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        const query = {
+            userId,
+            type,
+            openedAt: null,
+            createdAt: { $gte: since },
+        };
+        if (articleId) query['data.articleId'] = String(articleId);
+        if (drawNumber != null) query['data.drawNumber'] = drawNumber;
+
+        const notification = await Notification.findOneAndUpdate(
+            query,
+            { openedAt: new Date(), read: true },
+            { new: true, sort: { createdAt: -1 } }
+        );
+
+        res.json({
+            success: true,
+            matched: !!notification,
+        });
+    } catch (error) {
+        console.error('❌ Error recording notification open:', error);
+        res.status(500).json({ error: 'Failed to record notification open' });
+    }
+});
+
+/**
  * DELETE /api/notifications/clear-all
  * Delete all read notifications for the user
  * MUST be registered before DELETE /:id to avoid the wildcard shadowing it.

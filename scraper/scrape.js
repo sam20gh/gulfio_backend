@@ -68,8 +68,7 @@ const cheerio = require('cheerio');
 const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
-const User = require('../models/User');
-const sendExpoNotification = require('../utils/sendExpoNotification');
+const NotificationService = require('../utils/notificationService');
 const { scrapeReelsForSource } = require('./instagramReels');
 const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
@@ -708,55 +707,15 @@ async function scrapeAllSources(frequency = null) {
     console.log(`📊 Sample article for notifications: ${sampleArticle ? 'Yes' : 'No'}`);
 
     if (totalNew > 0 && sampleArticle) {
-        // Get users with push tokens and check their notification preferences
-        const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-
-        // Filter users based on their notification settings
-        const eligibleUsers = users.filter(user => {
-            const settings = user.notificationSettings || {};
-
-            // Check if user has news notifications enabled
-            if (!settings.newsNotifications) return false;
-
-            // Check if this is breaking news and user has breaking news enabled
-            if (sampleArticle.category === 'headline' && !settings.breakingNews) return false;
-
-            // For now, we'll send to all users with news notifications enabled
-            // In the future, we can add more granular filtering based on followed sources
-            return true;
-        });
-
-        const tokens = eligibleUsers.map(u => u.pushToken);
-
-        if (tokens.length === 0) {
-            console.log('No eligible users for notifications based on their preferences.');
-            return;
+        // Phase 0: no more per-scrape blast. NotificationService enforces the
+        // policy: at most one news push per ~day globally, per-user daily
+        // budget, quiet hours, and the 10% holdout cohort.
+        try {
+            const digestResult = await NotificationService.sendNewArticlesDigest(sampleArticle, totalNew);
+            console.log('📱 News digest result:', JSON.stringify(digestResult));
+        } catch (err) {
+            console.error('❌ News digest notification failed:', err.message);
         }
-
-        // Truncate to, say, 140 chars so your notification body isn’t gigantic
-        const snippet = sampleArticle.content.length > 140
-            ? sampleArticle.content.slice(0, 140).trim() + '…'
-            : sampleArticle.content;
-
-        await sendExpoNotification(
-            // Use the article’s title as the push title
-            sampleArticle.title,
-            // Use your snippet as the push body
-            snippet,
-            tokens,
-            {
-                // Deep-link into your app
-                link: `gulfio://article/${sampleArticle._id}`,
-                // Pass the image URL so Expo can render it
-                imageUrl: sampleArticle.image && sampleArticle.image[0]
-            },
-            [
-                { actionId: 'view', buttonTitle: 'Read Article' },
-                { actionId: 'dismiss', buttonTitle: 'Dismiss' }
-            ]
-        );
-
-        console.log(`Summary notification sent to ${tokens.length} eligible users for ${totalNew} new articles.`);
     }
 
     // --- Lotto scraping integration ---
@@ -776,32 +735,10 @@ async function scrapeAllSources(frequency = null) {
                     console.log('✅ Saved new Lotto draw:', result.drawNumber);
                 }
 
-                // Expo push (optional, only for new draw)
-                const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-
-                // Filter users based on their notification settings
-                const eligibleUsers = users.filter(user => {
-                    const settings = user.notificationSettings || {};
-                    // Check if user has news notifications enabled
-                    return settings.newsNotifications === true;
-                });
-
-                const tokens = eligibleUsers.map(u => u.pushToken);
-                if (tokens.length) {
-                    const title = `UAE Lotto Draw #${result.drawNumber} Results`;
-                    const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers[0]?.prize || ''}`;
-                    const data = {
-                        drawNumber: result.drawNumber,
-                        link: `gulfio://lotto/${result.drawNumber}`,
-                        numbers: result.numbers,
-                        specialNumber: result.specialNumber,
-                        prizeTiers: result.prizeTiers,
-                        raffles: result.raffles,
-                        totalWinners: result.totalWinners
-                    };
-                    await sendExpoNotification(title, body, tokens, data);
-                    console.log(`Lotto notification sent to ${tokens.length} eligible users for draw #${result.drawNumber}.`);
-                }
+                // Phase 0: policy-filtered lotto push (dedupe per draw, quiet
+                // hours, daily budget, holdout) via NotificationService.
+                const lottoNotifyResult = await NotificationService.sendLottoResultNotification(result);
+                console.log('📱 Lotto notification result:', JSON.stringify(lottoNotifyResult));
             } else {
                 console.warn('❌ Lotto result could not be scraped.');
             }

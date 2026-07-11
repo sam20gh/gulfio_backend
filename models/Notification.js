@@ -29,6 +29,7 @@ const notificationSchema = new mongoose.Schema({
             'followed_source',
             'weekly_digest',
             'news',
+            'lotto',
         ],
     },
 
@@ -54,6 +55,13 @@ const notificationSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
         index: true,
+    },
+
+    // When the user tapped the push notification (open-rate tracking).
+    // Distinct from `read`, which the in-app notification center sets.
+    openedAt: {
+        type: Date,
+        default: null,
     },
 
     // Auto-delete after 30 days

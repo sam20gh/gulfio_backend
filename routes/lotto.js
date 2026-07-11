@@ -2,8 +2,7 @@
 const express = require('express');
 const scrapeUaeLottoResults = require('../scraper/lottoscrape');
 const LottoResult = require('../models/LottoResult');
-const User = require('../models/User');
-const sendExpoNotification = require('../utils/sendExpoNotification');
+const NotificationService = require('../utils/notificationService');
 
 const router = express.Router();
 
@@ -74,24 +73,10 @@ router.post('/scrape', async (req, res) => {
             console.log('[Lotto Scrape] Created new result for draw:', result.drawNumber);
         }
 
-        // Push notification logic (as before)...
-        const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-        const tokens = users.map(u => u.pushToken);
-        if (tokens.length) {
-            const title = `UAE Lotto Draw #${result.drawNumber} Results`;
-            const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers[0]?.prize || ''}`;
-            const data = {
-                drawNumber: result.drawNumber,
-                link: `gulfio://lotto/${result.drawNumber}`,
-                numbers: result.numbers,
-                specialNumber: result.specialNumber,
-                prizeTiers: result.prizeTiers,
-                raffles: result.raffles,
-                totalWinners: result.totalWinners
-            };
-            await sendExpoNotification(title, body, tokens, data);
-            console.log('[Lotto Scrape] Sent notifications to', tokens.length, 'users');
-        }
+        // Phase 0: policy-filtered lotto push (settings, dedupe per draw,
+        // quiet hours, daily budget, holdout).
+        const notifyResult = await NotificationService.sendLottoResultNotification(result);
+        console.log('[Lotto Scrape] Notification result:', JSON.stringify(notifyResult));
 
         return res.json({ success: true, result });
     } catch (err) {

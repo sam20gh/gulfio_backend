@@ -2,6 +2,7 @@
 const User = require('../models/User');
 const Notification = require('../models/Notification'); // Phase 3.3: Notification history
 const sendExpoNotification = require('./sendExpoNotification');
+const policy = require('./notificationPolicy');
 
 /**
  * Comprehensive notification service that respects user notification settings
@@ -54,12 +55,26 @@ class NotificationService {
 
             const tokens = [user.pushToken];
 
-            // Check if the specific notification type is enabled
-            const notificationSettings = user.notificationSettings;
-            // If settings exist and explicitly set to false, skip. Treat missing/null settings as enabled.
-            if (notificationSettings && notificationSettings[notificationType] === false) {
+            // Check if the specific notification type is enabled (missing key = schema default)
+            if (!policy.isTypeEnabled(user, notificationType)) {
                 console.log(`Notification type ${notificationType} disabled for user: ${userId}`);
                 return false;
+            }
+
+            // Broadcast (proactive) pushes go through the Phase 0 policy:
+            // holdout cohort, quiet hours, and the rolling daily budget.
+            // Transactional pushes (replies, likes, mentions, follows) are
+            // user-earned and skip this.
+            if (policy.isBroadcastSetting(notificationType)) {
+                const isBreaking = notificationType === 'breakingNews';
+                const { eligible, skipped } = await policy.filterBroadcastEligible([user], {
+                    bypassQuietHours: isBreaking,
+                    bypassBudget: isBreaking,
+                });
+                if (!eligible.length) {
+                    console.log(`Broadcast push to ${userId} blocked by policy:`, skipped);
+                    return false;
+                }
             }
 
             // Send the push notification
@@ -320,25 +335,41 @@ class NotificationService {
         try {
             console.log(`🔥 Sending breaking news to all users: ${article.title}`);
 
+            // Phase 0: hard cap — max 2 distinct breaking blasts per 7 days,
+            // and never the same article twice. Breaking news only stays
+            // credible if it is rare.
+            const cap = await policy.canSendBreakingBlast(article._id);
+            if (!cap.allowed) {
+                console.warn(`🚫 Breaking news blast blocked (${cap.reason}); ${cap.recentCount} blasts in last 7 days`);
+                return { totalSent: 0, totalFailed: 0, blocked: cap.reason };
+            }
+
             // Get all users with push tokens and breaking news enabled
             const users = await User.find({
                 pushToken: { $exists: true, $ne: null },
                 'notificationSettings.breakingNews': { $ne: false },
-            }).select('pushToken supabase_id');
+            }).select('pushToken supabase_id city');
 
             if (!users.length) {
                 console.log('⚠️ No users with push tokens found');
                 return { totalSent: 0, totalFailed: 0 };
             }
 
-            const allTokens = users.map(u => u.pushToken);
+            // Breaking news bypasses quiet hours and the daily budget by
+            // design, but the holdout cohort still never receives it.
+            const { eligible, skipped } = await policy.filterBroadcastEligible(users, {
+                bypassQuietHours: true,
+                bypassBudget: true,
+            });
+
+            const allTokens = eligible.map(u => u.pushToken);
 
             if (!allTokens.length) {
-                console.log('⚠️ No valid push tokens found');
+                console.log('⚠️ No eligible users after policy filtering', skipped);
                 return { totalSent: 0, totalFailed: 0 };
             }
 
-            console.log(`📤 Sending breaking news to ${allTokens.length} devices across ${users.length} users`);
+            console.log(`📤 Sending breaking news to ${allTokens.length} devices (skipped: ${JSON.stringify(skipped)})`);
 
             // Send push notification to all tokens
             await sendExpoNotification(
@@ -356,9 +387,9 @@ class NotificationService {
             console.log(`✅ Breaking news push sent to ${allTokens.length} devices`);
 
             // Save to database for notification history (Phase 3.3)
-            console.log(`💾 Saving breaking news notifications to database for ${users.length} users...`);
+            console.log(`💾 Saving breaking news notifications to database for ${eligible.length} users...`);
             await Promise.allSettled(
-                users.map((user) =>
+                eligible.map((user) =>
                     this.saveNotificationToDatabase(
                         user.supabase_id,
                         'breaking_news',
@@ -377,11 +408,149 @@ class NotificationService {
             return {
                 totalSent: allTokens.length,
                 totalFailed: 0,
-                usersReached: users.length,
+                usersReached: eligible.length,
             };
         } catch (error) {
             console.error('❌ Error in sendBreakingNewsToAllUsers:', error);
             return { totalSent: 0, totalFailed: 0, error: error.message };
+        }
+    }
+
+    /**
+     * Phase 0 replacement for the per-scrape "sample article" blast.
+     * Sends at most ONE news push per ~day globally, and each recipient is
+     * filtered through the broadcast policy (holdout, quiet hours, budget).
+     * Saves history docs so the budget and open-rate tracking work.
+     *
+     * @param {Object} article - A representative new article (title, content, _id, image)
+     * @param {number} totalNew - Number of new articles found in this scrape run
+     * @returns {Object} { sent, skippedReason?, skipped? }
+     */
+    static async sendNewArticlesDigest(article, totalNew = 1) {
+        try {
+            if (!article || !article._id) {
+                return { sent: 0, skippedReason: 'no_article' };
+            }
+
+            // Global once-per-day gate: if a 'news' push went out in the last
+            // 20h (any user), do nothing. Quiet-hour skips don't create
+            // history docs, so an early-morning scrape run doesn't burn the
+            // day's send — the next daytime run picks it up.
+            if (await policy.wasBroadcastSentRecently('news', 20)) {
+                console.log('📵 News digest already sent in the last 20h — skipping');
+                return { sent: 0, skippedReason: 'already_sent_today' };
+            }
+
+            const users = await User.find({
+                pushToken: { $exists: true, $ne: null },
+            }).select('pushToken supabase_id city notificationSettings');
+
+            const optedIn = users.filter(u => policy.isTypeEnabled(u, 'newsNotifications'));
+            const { eligible, skipped } = await policy.filterBroadcastEligible(optedIn);
+
+            if (!eligible.length) {
+                console.log('📵 No eligible users for news digest', skipped);
+                return { sent: 0, skippedReason: 'no_eligible_users', skipped };
+            }
+
+            const content = article.content || '';
+            const snippet = content.length > 140
+                ? content.slice(0, 140).trim() + '…'
+                : content || 'New articles are waiting for you';
+            const title = article.title || 'New Article';
+            const data = {
+                type: 'news',
+                articleId: article._id.toString(),
+                totalNew,
+                link: `gulfio://article/${article._id}`,
+                imageUrl: article.image && article.image[0],
+            };
+
+            await sendExpoNotification(title, snippet, eligible.map(u => u.pushToken), data, [
+                { actionId: 'view', buttonTitle: 'Read Article' },
+                { actionId: 'dismiss', buttonTitle: 'Dismiss' },
+            ]);
+
+            await Promise.allSettled(
+                eligible.map(user =>
+                    this.saveNotificationToDatabase(user.supabase_id, 'news', title, snippet, data)
+                )
+            );
+
+            console.log(`📤 News digest sent to ${eligible.length} users (skipped: ${JSON.stringify(skipped)}) for ${totalNew} new articles`);
+            return { sent: eligible.length, skipped };
+        } catch (error) {
+            console.error('❌ Error in sendNewArticlesDigest:', error);
+            return { sent: 0, skippedReason: 'error', error: error.message };
+        }
+    }
+
+    /**
+     * Lotto result push, policy-filtered. Previously lotto senders blasted
+     * every user with a token and ignored notification settings entirely.
+     * Gated behind the newsNotifications setting and counted against the
+     * daily broadcast budget as type 'lotto'.
+     *
+     * @param {Object} result - Lotto result (drawNumber, numbers, specialNumber, prizeTiers, raffles, totalWinners)
+     * @returns {Object} { sent, skippedReason?, skipped? }
+     */
+    static async sendLottoResultNotification(result) {
+        try {
+            if (!result || result.drawNumber == null) {
+                return { sent: 0, skippedReason: 'no_result' };
+            }
+
+            // Never announce the same draw twice (scrape + cron + manual route
+            // can all fire for one draw).
+            const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            const already = await Notification.findOne({
+                type: 'lotto',
+                'data.drawNumber': result.drawNumber,
+                createdAt: { $gte: since },
+            }).select('_id').lean();
+            if (already) {
+                console.log(`📵 Lotto draw #${result.drawNumber} already announced — skipping`);
+                return { sent: 0, skippedReason: 'already_sent_for_draw' };
+            }
+
+            const users = await User.find({
+                pushToken: { $exists: true, $ne: null },
+            }).select('pushToken supabase_id city notificationSettings');
+
+            const optedIn = users.filter(u => policy.isTypeEnabled(u, 'newsNotifications'));
+            const { eligible, skipped } = await policy.filterBroadcastEligible(optedIn);
+
+            if (!eligible.length) {
+                console.log('📵 No eligible users for lotto notification', skipped);
+                return { sent: 0, skippedReason: 'no_eligible_users', skipped };
+            }
+
+            const title = `UAE Lotto Draw #${result.drawNumber} Results`;
+            const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers?.[0]?.prize || ''}`;
+            const data = {
+                type: 'lotto',
+                drawNumber: result.drawNumber,
+                link: `gulfio://lotto/${result.drawNumber}`,
+                numbers: result.numbers,
+                specialNumber: result.specialNumber,
+                prizeTiers: result.prizeTiers,
+                raffles: result.raffles,
+                totalWinners: result.totalWinners,
+            };
+
+            await sendExpoNotification(title, body, eligible.map(u => u.pushToken), data);
+
+            await Promise.allSettled(
+                eligible.map(user =>
+                    this.saveNotificationToDatabase(user.supabase_id, 'lotto', title, body, data)
+                )
+            );
+
+            console.log(`📤 Lotto notification sent to ${eligible.length} users (skipped: ${JSON.stringify(skipped)}) for draw #${result.drawNumber}`);
+            return { sent: eligible.length, skipped };
+        } catch (error) {
+            console.error('❌ Error in sendLottoResultNotification:', error);
+            return { sent: 0, skippedReason: 'error', error: error.message };
         }
     }
 

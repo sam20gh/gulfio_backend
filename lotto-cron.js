@@ -3,8 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const scrapeUaeLottoResults = require('./scraper/lottoscrape');
 const LottoResult = require('./models/LottoResult');
-const User = require('./models/User');
-const sendExpoNotification = require('./utils/sendExpoNotification');
+const NotificationService = require('./utils/notificationService');
 
 async function main() {
     await mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
@@ -23,34 +22,11 @@ async function main() {
         console.log('✅ Saved new result for draw', result.drawNumber);
     }
 
-    // Fetch all users with Expo push tokens
-    const users = await User.find({ pushToken: { $exists: true, $ne: null } });
-    const tokens = users.map(u => u.pushToken);
-
-    // Compose push notification
-    const title = `UAE Lotto Draw #${result.drawNumber} Results`;
-    const body = `Numbers: ${result.numbers.join(', ')} | Special: ${result.specialNumber} | Jackpot: ${result.prizeTiers[0]?.prize || ''}`;
-    const data = {
-        drawNumber: result.drawNumber,
-        link: `gulfio://lotto/${result.drawNumber}`,
-        numbers: result.numbers,
-        specialNumber: result.specialNumber,
-        prizeTiers: result.prizeTiers,
-        raffles: result.raffles,
-        totalWinners: result.totalWinners
-    };
-
-    if (tokens.length) {
-        await sendExpoNotification(
-            title,
-            body,
-            tokens,
-            data
-        );
-        console.log('🔔 Expo push sent to', tokens.length, 'users');
-    } else {
-        console.log('No Expo push tokens found for users.');
-    }
+    // Phase 0: policy-filtered lotto push (settings, dedupe per draw, quiet
+    // hours, daily budget, holdout). Previously this blasted every user with
+    // a token, ignoring notification settings.
+    const notifyResult = await NotificationService.sendLottoResultNotification(result);
+    console.log('🔔 Lotto notification result:', JSON.stringify(notifyResult));
 
     process.exit(0);
 }
