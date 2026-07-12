@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const DailyQuiz = require('../models/DailyQuiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Article = require('../models/Article');
+const User = require('../models/User');
 const auth = require('../middleware/auth');
 const PointsService = require('../services/pointsService');
 const { chatCompletionJSON } = require('../services/openaiClient');
@@ -260,7 +261,28 @@ router.get('/leaderboard', auth, async (req, res) => {
             { $sort: { totalScore: -1, quizzes: 1 } },
             { $limit: limit },
         ]);
-        res.json(rows.map((r, i) => ({ rank: i + 1, userId: r._id, totalScore: r.totalScore, quizzes: r.quizzes })));
+
+        // Enrich with display name/avatar (batch lookup, same shape as the
+        // gamification leaderboard) and flag the requesting user's own row.
+        const currentUserId = req.user?.sub;
+        const userIds = rows.map((r) => r._id);
+        const users = await User.find({ supabase_id: { $in: userIds } })
+            .select('supabase_id name avatar_url profile_image')
+            .lean();
+        const userMap = new Map(users.map((u) => [u.supabase_id, u]));
+
+        res.json(rows.map((r, i) => {
+            const u = userMap.get(r._id);
+            return {
+                rank: i + 1,
+                userId: r._id,
+                name: u?.name || 'Anonymous',
+                avatar: u?.profile_image || u?.avatar_url || null,
+                totalScore: r.totalScore,
+                quizzes: r.quizzes,
+                isCurrentUser: r._id === currentUserId,
+            };
+        }));
     } catch (error) {
         console.error('❌ Quiz leaderboard error:', error);
         res.status(500).json({ message: 'Error fetching leaderboard', error: error.message });
