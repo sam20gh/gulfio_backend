@@ -1,18 +1,22 @@
 // utils/matchAlerts.js
 //
-// Goal/kickoff push alerts for followed teams. Designed to be invoked every
-// ~2 minutes during match hours by Cloud Scheduler hitting
+// Goal/kickoff/full-time push alerts for followed teams. Designed to be
+// invoked every ~2 minutes during match hours by Cloud Scheduler hitting
 // POST /api/football/poll-live-alerts (admin key protected).
 //
 // Flow per invocation:
 //   1. Collect the api-football team ids anyone follows (User.followed_teams).
 //   2. Fetch all live fixtures once; keep only those involving followed teams.
-//   3. Diff each against its last-seen score in Redis:
+//   3. Diff each against the previous pass's snapshot in Redis (one JSON key,
+//      matchalert:active = { [fixtureId]: {hId,aId,hName,aName,h,a} }):
 //        - first sighting in the opening minutes  → kickoff alert
 //        - first sighting mid-match               → silent baseline (no spam
-//          after deploys/scheduler gaps)
+//          after deploys/scheduler gaps) but still tracked
 //        - score increased                        → goal alert
-//   4. Push to followers of either team (both device-token formats),
+//   4. Full time is detected by DISAPPEARANCE: a followed fixture present in
+//      the previous snapshot but absent from the current live payload has
+//      finished — send a full-time alert from its last-known score.
+//   5. Push to followers of either team (both device-token formats),
 //      honouring the matchAlerts setting (default on).
 //
 // These are TARGETED, user-earned pushes — they do not count against the
@@ -30,79 +34,62 @@ const { isTypeEnabled } = require('./notificationPolicy');
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const BASE_URL = process.env.API_FOOTBALL_BASE_URL || 'https://v3.football.api-sports.io';
 
-const STATE_TTL_SECONDS = 6 * 60 * 60; // fixture score state
+const ACTIVE_KEY = 'matchalert:active';
+const STATE_TTL_SECONDS = 6 * 60 * 60; // active-fixtures snapshot
 const KICKOFF_WINDOW_MINUTES = 5;      // first sighting later than this = silent baseline
 
-const stateKey = (fixtureId) => `matchalert:${fixtureId}`;
-
 /**
- * Compare a live fixture against its last-seen Redis state.
- * Returns null (no alert) or { kind: 'kickoff' | 'goal', scoringSide? }.
- * Always writes the current state back.
+ * Pure: decide the in-play event from the previous snapshot entry (or
+ * undefined) and the current one. Exported for testing.
+ * Returns null | { kind: 'kickoff' } | { kind: 'goal', scoringSide }.
  */
-async function detectEvent(match) {
-    const fixtureId = match.fixture.id;
-    const current = {
-        h: match.goals?.home ?? 0,
-        a: match.goals?.away ?? 0,
-    };
-
-    let previousRaw = null;
-    try {
-        previousRaw = await redis.get(stateKey(fixtureId));
-    } catch {
-        // Redis down — fail silent (no alerts) rather than spam on every poll
-        return null;
-    }
-
-    try {
-        await redis.set(stateKey(fixtureId), JSON.stringify(current), 'EX', STATE_TTL_SECONDS);
-    } catch {
-        return null;
-    }
-
-    if (!previousRaw) {
-        const elapsed = match.fixture.status?.elapsed ?? 99;
-        if (elapsed <= KICKOFF_WINDOW_MINUTES && current.h === 0 && current.a === 0) {
+function detectInPlayEvent(prev, current) {
+    if (!prev) {
+        if (
+            current.elapsed != null &&
+            current.elapsed <= KICKOFF_WINDOW_MINUTES &&
+            current.h === 0 &&
+            current.a === 0
+        ) {
             return { kind: 'kickoff' };
         }
-        return null; // mid-match baseline, stay silent
+        return null; // mid-match baseline — stay silent, but caller still tracks it
     }
-
-    let previous;
-    try {
-        previous = JSON.parse(previousRaw);
-    } catch {
-        return null;
-    }
-
-    if (current.h > previous.h) return { kind: 'goal', scoringSide: 'home' };
-    if (current.a > previous.a) return { kind: 'goal', scoringSide: 'away' };
+    if (current.h > prev.h) return { kind: 'goal', scoringSide: 'home' };
+    if (current.a > prev.a) return { kind: 'goal', scoringSide: 'away' };
     // Score decrease (VAR overturn) or unchanged — silent
     return null;
 }
 
-function buildMessage(match, event) {
-    const home = match.teams.home.name;
-    const away = match.teams.away.name;
-    const score = `${match.goals?.home ?? 0}–${match.goals?.away ?? 0}`;
-    const elapsed = match.fixture.status?.elapsed;
+/**
+ * Pure: build the push title/body for an event from a fixture meta snapshot
+ * ({ hName, aName, h, a, elapsed? }). Exported for testing.
+ */
+function buildMessage(meta, event) {
+    const score = `${meta.h}–${meta.a}`;
 
     if (event.kind === 'kickoff') {
         return {
-            title: `🟢 Kickoff: ${home} vs ${away}`,
+            title: `🟢 Kickoff: ${meta.hName} vs ${meta.aName}`,
             body: 'Follow the match live in Gulfio',
         };
     }
 
-    const scorer = event.scoringSide === 'home' ? home : away;
+    if (event.kind === 'fulltime') {
+        return {
+            title: `⏱️ Full time: ${meta.hName} ${score} ${meta.aName}`,
+            body: 'See the match report in Gulfio',
+        };
+    }
+
+    const scorer = event.scoringSide === 'home' ? meta.hName : meta.aName;
     return {
-        title: `⚽ GOAL! ${home} ${score} ${away}`,
-        body: `${elapsed ? `${elapsed}' — ` : ''}${scorer} score`,
+        title: `⚽ GOAL! ${meta.hName} ${score} ${meta.aName}`,
+        body: `${meta.elapsed ? `${meta.elapsed}' — ` : ''}${scorer} score`,
     };
 }
 
-/** Collect unique push tokens across both token formats. */
+/** Collect unique push tokens across both token formats. Exported for testing. */
 function collectTokens(users) {
     const tokens = new Set();
     for (const user of users) {
@@ -114,7 +101,7 @@ function collectTokens(users) {
     return [...tokens];
 }
 
-async function notifyFollowers(match, event, teamDocIds) {
+async function notifyTeamFollowers(teamDocIds, fixtureId, title, body) {
     const followers = await User.find({ followed_teams: { $in: teamDocIds } })
         .select('supabase_id pushToken pushTokens notificationSettings')
         .lean();
@@ -123,12 +110,7 @@ async function notifyFollowers(match, event, teamDocIds) {
     const tokens = collectTokens(eligible);
     if (tokens.length === 0) return 0;
 
-    const { title, body } = buildMessage(match, event);
-    await sendExpoNotification(title, body, tokens, {
-        type: 'match_alert',
-        fixtureId: match.fixture.id,
-    });
-    console.log(`⚽ match_alert ${event.kind} → ${tokens.length} devices (fixture ${match.fixture.id})`);
+    await sendExpoNotification(title, body, tokens, { type: 'match_alert', fixtureId });
     return tokens.length;
 }
 
@@ -149,7 +131,18 @@ async function pollLiveMatchAlerts() {
         .lean();
     const apiIdToDocId = new Map(teams.map((t) => [t.apiId, t._id]));
 
-    // 2. All live fixtures in one call
+    // 2. Previous active snapshot. Redis outage → fail closed (skip the pass)
+    //    rather than risk spurious full-time/goal storms on the next read.
+    let prevActive;
+    try {
+        const raw = await redis.get(ACTIVE_KEY);
+        prevActive = raw ? JSON.parse(raw) : {};
+    } catch {
+        console.warn('⚠️ match-alert: Redis unavailable, skipping pass');
+        return { liveFixtures: 0, relevant: 0, events: 0, devicesNotified: 0, skipped: true };
+    }
+
+    // 3. All live fixtures in one call
     const { data } = await axios.get(`${BASE_URL}/fixtures`, {
         params: { live: 'all' },
         headers: { 'x-apisports-key': API_KEY },
@@ -157,28 +150,74 @@ async function pollLiveMatchAlerts() {
     });
     const fixtures = data?.response || [];
 
+    const currentActive = {};
     let relevant = 0;
     let events = 0;
     let devicesNotified = 0;
 
+    // 4. In-play events (goals/kickoffs) + build the current active snapshot
     for (const match of fixtures) {
-        const homeDocId = apiIdToDocId.get(match.teams?.home?.id);
-        const awayDocId = apiIdToDocId.get(match.teams?.away?.id);
+        const homeId = match.teams?.home?.id;
+        const awayId = match.teams?.away?.id;
+        const homeDocId = apiIdToDocId.get(homeId);
+        const awayDocId = apiIdToDocId.get(awayId);
         if (!homeDocId && !awayDocId) continue;
         relevant++;
 
-        const event = await detectEvent(match);
-        if (!event) continue;
-        events++;
+        const fixtureId = String(match.fixture.id);
+        const meta = {
+            hId: homeId,
+            aId: awayId,
+            hName: match.teams.home.name,
+            aName: match.teams.away.name,
+            h: match.goals?.home ?? 0,
+            a: match.goals?.away ?? 0,
+            elapsed: match.fixture.status?.elapsed ?? null,
+        };
 
-        devicesNotified += await notifyFollowers(
-            match,
-            event,
-            [homeDocId, awayDocId].filter(Boolean)
-        );
+        const event = detectInPlayEvent(prevActive[fixtureId], meta);
+        // Persist without `elapsed` — it's only meaningful for the live message
+        currentActive[fixtureId] = {
+            hId: meta.hId,
+            aId: meta.aId,
+            hName: meta.hName,
+            aName: meta.aName,
+            h: meta.h,
+            a: meta.a,
+        };
+
+        if (event) {
+            events++;
+            const { title, body } = buildMessage(meta, event);
+            devicesNotified += await notifyTeamFollowers(
+                [homeDocId, awayDocId].filter(Boolean),
+                match.fixture.id,
+                title,
+                body
+            );
+            console.log(`⚽ match_alert ${event.kind} → fixture ${fixtureId}`);
+        }
+    }
+
+    // 5. Full time: followed fixtures present last pass but gone from live now
+    for (const [fixtureId, meta] of Object.entries(prevActive)) {
+        if (currentActive[fixtureId]) continue; // still live
+        const teamDocIds = [apiIdToDocId.get(meta.hId), apiIdToDocId.get(meta.aId)].filter(Boolean);
+        if (teamDocIds.length === 0) continue; // nobody follows these teams anymore
+        events++;
+        const { title, body } = buildMessage(meta, { kind: 'fulltime' });
+        devicesNotified += await notifyTeamFollowers(teamDocIds, Number(fixtureId), title, body);
+        console.log(`⚽ match_alert fulltime → fixture ${fixtureId}`);
+    }
+
+    // 6. Persist the current snapshot for the next pass
+    try {
+        await redis.set(ACTIVE_KEY, JSON.stringify(currentActive), 'EX', STATE_TTL_SECONDS);
+    } catch {
+        // Non-fatal — next pass just re-baselines
     }
 
     return { liveFixtures: fixtures.length, relevant, events, devicesNotified };
 }
 
-module.exports = { pollLiveMatchAlerts, detectEvent, buildMessage, collectTokens };
+module.exports = { pollLiveMatchAlerts, detectInPlayEvent, buildMessage, collectTokens };
