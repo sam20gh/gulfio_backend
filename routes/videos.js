@@ -2287,7 +2287,7 @@ router.get('/reels/instant', async (req, res) => {
                 videoUrl: r.videoUrl,
                 thumbnailUrl: r.thumbnailUrl,
                 caption: r.caption?.substring(0, 100), // Truncate for speed
-                source: r.source?.name ? { name: r.source.name } : null,
+                source: r.source?.name ? { _id: r.source._id, name: r.source.name, icon: r.source.icon, favicon: r.source.favicon } : null,
                 viewCount: r.viewCount,
                 likes: r.likes,
                 // Phase 5: Quality hints for adaptive streaming
@@ -2319,7 +2319,7 @@ router.get('/reels/instant', async (req, res) => {
             videoUrl: { $exists: true, $ne: null }
         })
             .select('_id videoUrl thumbnailUrl caption viewCount likes source')
-            .populate('source', 'name')
+            .populate('source', 'name icon favicon')
             .sort({ viewCount: -1, scrapedAt: -1 })
             .limit(limit)
             .lean();
