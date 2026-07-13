@@ -56,6 +56,12 @@ async function addMongoIndexes() {
         await db.collection('users').createIndex({ "disliked_articles": 1 });
         console.log('✅ Added index: { disliked_articles: 1 }');
 
+        // Index for following_users - powers the dashboard-summary followers
+        // count (User.countDocuments({ following_users: <id> })), which was a
+        // full collection scan without it.
+        await db.collection('users').createIndex({ "following_users": 1 });
+        console.log('✅ Added index: { following_users: 1 }');
+
         console.log('🎉 All indexes created successfully!');
 
         // List all indexes to verify

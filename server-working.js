@@ -160,11 +160,17 @@ async function initializeApp() {
             minPoolSize: 2,
             retryWrites: true,
             retryReads: true,
-            // Do NOT auto-build indexes on boot. On Cloud Run every cold start would
-            // otherwise re-run createIndexes across all models (wasteful CPU) and could
-            // resurrect indexes we intentionally dropped. Manage indexes explicitly via
-            // scripts/ (auditIndexes.js / dropDeadIndexes.js). See DATABASE_OPTIMIZATION_REPORT.md.
-            autoIndex: false,
+            // Auto-build schema-defined indexes on boot so new indexes (e.g.
+            // following_users) are guaranteed present in production without a
+            // manual script run. autoIndex uses createIndexes semantics: it only
+            // CREATES missing indexes, never drops — and since the schemas now
+            // define only the indexes we actually want, it cannot resurrect the
+            // dead indexes that were dropped (see DATABASE_OPTIMIZATION_REPORT.md).
+            // Tradeoff: every Cloud Run cold start re-runs the index-existence
+            // check across all models (cheap no-op once indexes exist, but not
+            // free). If cold-start cost becomes an issue, set this back to false
+            // and manage indexes via `npm run add-indexes`.
+            autoIndex: true,
         });
 
         console.log('✅ MongoDB connected');

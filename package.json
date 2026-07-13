@@ -42,6 +42,7 @@
     "setup-recommendations": "node scripts/setupRecommendationSystem.js",
     "reduce-embeddings": "node scripts/reduceArticleEmbeddings.js",
     "add-indexes": "node scripts/addMongoIndexes.js",
+    "add-user-follow-index": "node scripts/addUserFollowIndex.js",
     "precompute-recommendations": "node scripts/precomputeRecommendations.js",
     "docs:build": "redocly build-docs openapi.yaml --output docs/index.html",
     "docs:serve": "redocly preview-docs openapi.yaml",
