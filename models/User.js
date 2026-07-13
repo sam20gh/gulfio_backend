@@ -81,6 +81,11 @@ const userSchema = new mongoose.Schema({
         }
     },
 
+    // Seed-engagement bot accounts (scripts/seedSyntheticEngagement.js).
+    // Excluded from analytics/recommendations; lets us purge all synthetic
+    // activity in one query when real users take over.
+    isSynthetic: { type: Boolean, default: false },
+
     // Gamification - Referral System
     referralCode: { type: String, unique: true, sparse: true }, // User's unique referral code
     referredBy: { type: String }, // Supabase ID of the user who referred them
