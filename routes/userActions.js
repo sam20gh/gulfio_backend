@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
 const { getTreatmentForUser } = require('../utils/experiments'); // P3-1
+const { invalidateDashboardSummary } = require('../utils/dashboardCache');
 // Removed updateUserProfileEmbedding - now handled by daily cron job
 
 function validateObjectId(id) {
@@ -105,6 +106,9 @@ router.post('/article/:id/like', auth, ensureMongoUser, async (req, res) => {
             // Don't fail the request if notification fails
         }
     }
+
+    // liked_count / disliked_count changed — drop the cached dashboard summary.
+    invalidateDashboardSummary(user.supabase_id);
 
     res.json({
         liked_articles: user.liked_articles,
@@ -258,6 +262,9 @@ router.post('/article/:id/save', auth, ensureMongoUser, async (req, res) => {
             }).catch(err => console.error('⚠️ Failed to award save points:', err.message));
         }
 
+        // saved_count changed — drop the cached dashboard summary.
+        invalidateDashboardSummary(user.supabase_id);
+
         res.json({
             isSaved: !isSaved,
             saved_articles: user.saved_articles,
@@ -298,6 +305,9 @@ router.post('/reel/:id/save', auth, ensureMongoUser, async (req, res) => {
 
         // Note: Reel saves don't affect article embeddings, so no UserActivity log needed
 
+        // saved_reels_count changed — drop the cached dashboard summary.
+        invalidateDashboardSummary(user.supabase_id);
+
         res.json({
             isSaved: !isSaved,
             saved_reels: user.saved_reels,
@@ -331,6 +341,9 @@ router.post('/source/:id/follow', auth, ensureMongoUser, async (req, res) => {
 
         // Note: Source follows affect personalization but are tracked in User model,
         // not UserActivity. The daily cron job will pick up changes from User.following_sources
+
+        // following_sources_count changed — drop the cached dashboard summary.
+        invalidateDashboardSummary(user.supabase_id);
 
         res.json({ following_sources: user.following_sources });
     } catch (err) {
@@ -402,6 +415,13 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
         // Note: User follows/blocks don't directly affect article embeddings
         // The daily cron job will handle any necessary updates
 
+        // A follow relationship change moves the actor's following_users_count
+        // AND the target's followers_count — invalidate both cached summaries.
+        if (action === 'follow' || action === 'unfollow' || action === 'block') {
+            invalidateDashboardSummary(user.supabase_id);
+            invalidateDashboardSummary(targetUser.supabase_id);
+        }
+
         res.json({
             isFollowing: action === 'follow' ? true
                 : action === 'unfollow' ? false
@@ -468,6 +488,9 @@ router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
 
         // Note: Source group follows affect personalization but are tracked in User model
         // The daily cron job will pick up changes from User.following_sources
+
+        // following_sources_count changed — drop the cached dashboard summary.
+        invalidateDashboardSummary(user.supabase_id);
 
         res.json({
             following_sources: user.following_sources,

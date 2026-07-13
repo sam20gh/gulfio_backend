@@ -9,6 +9,7 @@ const sendExpoNotification = require('../utils/sendExpoNotification');
 const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
 const redisClient = require('../utils/redis');
+const { dashboardSummaryKey, invalidateDashboardSummary } = require('../utils/dashboardCache');
 const axios = require('axios');
 const { updateUserProfileEmbedding } = require('../utils/userEmbedding');
 const Reel = require('../models/Reel');
@@ -61,11 +62,18 @@ router.post('/check-or-create', auth, async (req, res) => {
 });
 
 // GET dashboard summary - optimized single endpoint
-router.get('/dashboard-summary/:id', async (req, res) => {
+router.get('/dashboard-summary/:id', auth, async (req, res) => {
     const startTime = Date.now();
     const userId = req.params.id;
     const noCache = req.query.noCache === '1';
-    const cacheKey = `user_dashboard_summary_${userId}`;
+    const cacheKey = dashboardSummaryKey(userId);
+
+    // Ownership check: a caller may only read their own summary (the payload
+    // includes their email). Admin key bypasses for internal/support tooling.
+    const isAdmin = req.headers['x-api-key'] === process.env.ADMIN_API_KEY;
+    if (!isAdmin && req.user?.sub !== userId) {
+        return res.status(403).json({ message: 'Forbidden' });
+    }
 
     try {
         console.log(`Dashboard summary requested for user: ${userId}`);
@@ -135,13 +143,16 @@ router.get('/dashboard-summary/:id', async (req, res) => {
         const summary = result[0];
         console.log(`DB query completed for user: ${userId} in ${Date.now() - dbStartTime}ms`);
 
-        // Cache the result (with timeout)
+        // Cache the result — fire-and-forget so the response isn't delayed by
+        // the Redis round-trip. Note the 'EX' token: previously the TTL was
+        // passed as a bare number (`, 300`), which ioredis sends as an invalid
+        // SET option, so the write silently failed and nothing was ever cached.
+        // Invalidated explicitly on follow/save/like/profile-edit; the 5-minute
+        // TTL is just a backstop.
         if (redisClient.isConnected()) {
-            try {
-                await redisClient.set(cacheKey, JSON.stringify(summary), 120);
-            } catch (cacheErr) {
-                console.warn('Cache write error:', cacheErr.message);
-            }
+            redisClient
+                .set(cacheKey, JSON.stringify(summary), 'EX', 300)
+                .catch((cacheErr) => console.warn('Cache write error:', cacheErr.message));
         }
 
         const dbDuration = Date.now() - dbStartTime;
@@ -582,6 +593,8 @@ router.put('/update', auth, ensureMongoUser, async (req, res) => {
         if (language !== undefined) user.language = language;
 
         await user.save();
+        // Name/avatar surface on the dashboard summary — drop the cached copy.
+        invalidateDashboardSummary(user.supabase_id);
         res.json({ message: 'Profile updated' });
     } catch (error) {
         console.error('Error updating user profile:', error);
@@ -928,6 +941,9 @@ router.post('/:id/save-reel', auth, ensureMongoUser, async (req, res) => {
     if (!updatedReel) {
         return res.status(404).json({ message: 'Reel not found' });
     }
+
+    // saved_reels_count changed — drop the cached dashboard summary.
+    invalidateDashboardSummary(userId);
 
     // Return minimal response immediately — embedding update runs in background
     res.json({

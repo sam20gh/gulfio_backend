@@ -91,5 +91,10 @@ const userSchema = new mongoose.Schema({
 // Add index for push token queries (Phase 3.3)
 userSchema.index({ 'pushTokens.token': 1 });
 
+// Followers are counted with countDocuments({ following_users: <id> }) on the
+// dashboard-summary endpoint. Without this index that query is a full
+// collection scan of the users collection on every cache miss.
+userSchema.index({ following_users: 1 });
+
 module.exports = mongoose.model('User', userSchema);
 
