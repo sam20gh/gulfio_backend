@@ -86,7 +86,13 @@ function viewBump() {
 }
 
 function pickBots(botIds, max) {
-    const shuffled = [...botIds].sort(() => Math.random() - 0.5);
+    // Fisher–Yates: Array.sort with a random comparator is biased toward the
+    // original order, which made bot #1 author most of the comments.
+    const shuffled = [...botIds];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
     return shuffled.slice(0, rand(1, max));
 }
 
