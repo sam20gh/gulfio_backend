@@ -8,6 +8,7 @@ const admin = require('../firebaseAdmin');
 const sendExpoNotification = require('../utils/sendExpoNotification');
 const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
+const optionalAuth = require('../middleware/optionalAuth')
 const redisClient = require('../utils/redis');
 const { dashboardSummaryKey, invalidateDashboardSummary } = require('../utils/dashboardCache');
 const axios = require('axios');
@@ -61,8 +62,32 @@ router.post('/check-or-create', auth, async (req, res) => {
     }
 });
 
+// Zeroed summary for callers whose Mongo user doesn't exist yet (brand-new
+// signup) — lets the dashboard render an empty profile instead of erroring.
+function emptyDashboardSummary() {
+    return {
+        email: null,
+        name: null,
+        avatar_url: null,
+        profile_image: null,
+        following_sources_count: 0,
+        following_users_count: 0,
+        followers_count: 0,
+        liked_count: 0,
+        disliked_count: 0,
+        saved_count: 0,
+        saved_reels_count: 0
+    };
+}
+
 // GET dashboard summary - optimized single endpoint
-router.get('/dashboard-summary/:id', auth, async (req, res) => {
+//
+// Uses optionalAuth (not auth): the endpoint was public until 2026-07-13 and
+// released app builds still call it without an Authorization header — strict
+// auth would 401 every production client. Ownership is enforced whenever a
+// token IS present; tighten to the strict auth middleware once the app build
+// that sends the header is fully rolled out.
+router.get('/dashboard-summary/:id', optionalAuth, async (req, res) => {
     const startTime = Date.now();
     const userId = req.params.id;
     const noCache = req.query.noCache === '1';
@@ -71,7 +96,7 @@ router.get('/dashboard-summary/:id', auth, async (req, res) => {
     // Ownership check: a caller may only read their own summary (the payload
     // includes their email). Admin key bypasses for internal/support tooling.
     const isAdmin = req.headers['x-api-key'] === process.env.ADMIN_API_KEY;
-    if (!isAdmin && req.user?.sub !== userId) {
+    if (!isAdmin && req.user && req.user.sub !== userId) {
         return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -100,14 +125,36 @@ router.get('/dashboard-summary/:id', auth, async (req, res) => {
 
         // Use find instead of aggregation for better reliability
         console.log(`Querying user directly: ${userId}`);
-        const user = await User.findOne({ supabase_id: userId })
+        let user = await User.findOne({ supabase_id: userId })
             .select('_id email name avatar_url profile_image following_sources following_users liked_articles disliked_articles saved_articles saved_reels')
             .lean()
             .maxTimeMS(3000);
 
         if (!user) {
-            console.log(`User not found in DB: ${userId}`);
-            return res.status(404).json({ message: 'User not found' });
+            // Brand-new signup whose Mongo doc doesn't exist yet. If the caller
+            // proved their identity via JWT, create it from the token claims
+            // (same as ensureMongoUser); otherwise return an empty summary —
+            // never a 404, which old app builds render as a blank screen.
+            if (req.user?.sub === userId) {
+                console.log(`User not found in DB, creating from token claims: ${userId}`);
+                try {
+                    const created = await User.create({
+                        supabase_id: userId,
+                        email: req.user.email || '',
+                        name: req.user.name || '',
+                        avatar_url: req.user.picture || ''
+                    });
+                    user = created.toObject();
+                } catch (createErr) {
+                    // Race with a concurrent check-or-create is fine — re-read.
+                    console.warn(`User create failed (${createErr.message}), re-reading: ${userId}`);
+                    user = await User.findOne({ supabase_id: userId }).lean().maxTimeMS(3000);
+                }
+            }
+            if (!user) {
+                console.log(`User not found in DB, returning empty summary: ${userId}`);
+                return res.json(emptyDashboardSummary());
+            }
         }
 
         // Count followers (users whose following_users contains this user's _id).
