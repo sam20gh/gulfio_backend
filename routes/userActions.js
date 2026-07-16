@@ -452,49 +452,66 @@ router.post('/:targetSupabaseId/action', auth, ensureMongoUser, async (req, res)
     }
 });
 
+// Lightweight follow-status read. The article page only needs this boolean —
+// hitting /source/group/:groupName for it pays for the whole profile payload.
+// ensureMongoUser already fetched the user, so this route does zero extra queries.
+router.get('/source/follow-status/:groupName', auth, ensureMongoUser, (req, res) => {
+    const isFollowing = (req.mongoUser.following_sources || []).includes(req.params.groupName);
+    res.json({ isFollowing });
+});
+
 // Follow/Unfollow Source Group
+// Accepts explicit intent: { groupName, follow: true|false }. Requests with
+// intent are idempotent — retries and rapid taps converge on the intended
+// state. Legacy clients that omit `follow` get the old toggle behaviour.
 router.post('/source/follow-group', auth, ensureMongoUser, async (req, res) => {
-    const { groupName } = req.body;
+    const { groupName, follow } = req.body;
 
     if (!groupName) return res.status(400).json({ message: 'groupName is required' });
 
     try {
-        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
-        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
+        const sourceCount = await Source.countDocuments({ groupName });
+        if (!sourceCount) return res.status(404).json({ message: 'No sources found for this group' });
 
-        if (!user) {
+        const shouldFollow = typeof follow === 'boolean'
+            ? follow
+            : !(req.mongoUser.following_sources || []).includes(groupName);
+
+        // Atomic membership update ($addToSet/$pull) instead of the old
+        // read-modify-write save(), which could clobber concurrent updates.
+        // `new: false` returns the pre-update doc so we can tell whether
+        // membership actually changed and only then move follower counters.
+        const before = await User.findOneAndUpdate(
+            { supabase_id: req.mongoUser.supabase_id },
+            shouldFollow
+                ? { $addToSet: { following_sources: groupName } }
+                : { $pull: { following_sources: groupName } },
+            { new: false }
+        );
+
+        if (!before) {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const sources = await Source.find({ groupName });
-
-        if (!sources.length) return res.status(404).json({ message: 'No sources found for this group' });
-
-        const isFollowing = user.following_sources.includes(groupName);
-
-        if (isFollowing) {
-            // Unfollow: Remove groupName from user's following_sources
-            user.following_sources.pull(groupName);
-            // Decrement followers for all sources in the group
-            await Source.updateMany({ groupName }, { $inc: { followers: -1 } });
-        } else {
-            // Follow: Add groupName to user's following_sources
-            user.following_sources.push(groupName);
-            // Increment followers for all sources in the group
-            await Source.updateMany({ groupName }, { $inc: { followers: 1 } });
+        const beforeList = before.following_sources || [];
+        const wasFollowing = beforeList.includes(groupName);
+        if (wasFollowing !== shouldFollow) {
+            await Source.updateMany({ groupName }, { $inc: { followers: shouldFollow ? 1 : -1 } });
         }
 
-        await user.save();
+        const following_sources = shouldFollow
+            ? (wasFollowing ? beforeList : [...beforeList, groupName])
+            : beforeList.filter((g) => g !== groupName);
 
         // Note: Source group follows affect personalization but are tracked in User model
         // The daily cron job will pick up changes from User.following_sources
 
         // following_sources_count changed — drop the cached dashboard summary.
-        invalidateDashboardSummary(user.supabase_id);
+        invalidateDashboardSummary(before.supabase_id);
 
         res.json({
-            following_sources: user.following_sources,
-            action: isFollowing ? "unfollowed" : "followed",
+            following_sources,
+            action: shouldFollow ? "followed" : "unfollowed",
         });
 
     } catch (err) {

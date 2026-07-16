@@ -4,8 +4,6 @@ const Source = require('../models/Source');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const Reel = require('../models/Reel');
-const auth = require('../middleware/auth'); // Supabase auth
-const ensureMongoUser = require('../middleware/ensureMongoUser');
 
 // Get source group info + top articles + recent articles
 router.get('/group/:groupName', async (req, res) => {
@@ -13,24 +11,10 @@ router.get('/group/:groupName', async (req, res) => {
     const authHeader = req.headers['x-access-token'];
     let userFollowing = false;
 
-    // Debug logging
-    console.log('🔍 SOURCE GROUP DEBUG:');
-    console.log('  Raw groupName param:', JSON.stringify(groupName));
-    console.log('  groupName length:', groupName.length);
-    console.log('  groupName type:', typeof groupName);
-
     try {
         const sources = await Source.find({ groupName });
-        console.log(`  Found ${sources.length} sources for groupName: "${groupName}"`);
 
         if (!sources.length) {
-            // Let's also check what groups exist similar to this one
-            const allGroups = await Source.distinct('groupName');
-            const similarGroups = allGroups.filter(g =>
-                g.toLowerCase().includes('gulf') ||
-                g.toLowerCase().includes('news')
-            );
-            console.log('  Similar groups found:', similarGroups);
             return res.status(404).json({ message: 'No sources found for this group' });
         }
 
@@ -44,86 +28,51 @@ router.get('/group/:groupName', async (req, res) => {
                 const JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
                 const SUPABASE_ISSUER = process.env.SUPABASE_JWT_ISSUER;
 
-                // Try to verify and decode the JWT token
+                // Try to verify the JWT; fall back to unverified decode for
+                // compatibility with tokens issued before the issuer change.
                 let decoded;
-                let tokenVerified = false;
 
-                // First try with verification
                 if (JWT_SECRET && SUPABASE_ISSUER) {
                     try {
                         decoded = jwt.verify(authHeader, JWT_SECRET, {
                             algorithms: ['HS256'],
                             issuer: SUPABASE_ISSUER,
                         });
-                        tokenVerified = true;
-                        console.log('✅ JWT verified successfully for user:', decoded?.sub);
                     } catch (verifyError) {
-                        console.log('⚠️ JWT verification failed, trying decode only:', verifyError.message);
+                        // fall through to unverified decode
                     }
                 }
 
-                // Fallback to decode without verification (for compatibility)
                 if (!decoded) {
-                    try {
-                        decoded = jwt.decode(authHeader);
-                        console.log('ℹ️ Using unverified JWT decode for user:', decoded?.sub);
-                        console.log('🔍 Token details:', {
-                            sub: decoded?.sub,
-                            iss: decoded?.iss,
-                            exp: decoded?.exp,
-                            expectedIssuer: SUPABASE_ISSUER
-                        });
-                    } catch (decodeError) {
-                        console.log('❌ JWT decode failed:', decodeError.message);
-                        decoded = null;
-                    }
+                    decoded = jwt.decode(authHeader);
                 }
 
                 if (decoded && decoded.sub) {
-                    console.log('🔍 Checking follow status for user:', decoded.sub);
-                    const user = await User.findOne({ supabase_id: decoded.sub });
+                    const user = await User.findOne({ supabase_id: decoded.sub }).select('following_sources');
                     if (user) {
                         userFollowing = user.following_sources.includes(groupName);
-                        console.log('✅ User following status:', userFollowing, 'for group:', groupName);
-                        console.log('📋 User following_sources count:', user.following_sources.length);
-                    } else {
-                        console.log('❌ No user found with supabase_id:', decoded.sub);
                     }
-                } else {
-                    console.log('❌ Invalid JWT token or missing sub claim');
                 }
             } catch (authError) {
-                console.log('❌ Auth check failed, proceeding as unauthenticated user:', authError.message);
                 // Don't throw the error, just proceed as unauthenticated
             }
-        } else {
-            console.log('ℹ️ No auth header provided, treating as anonymous request');
-        }        // Get total count of articles for this group
-        console.log('Querying articles for sourceIds:', sourceIds);
-        const totalArticleCount = await Article.countDocuments({ sourceId: { $in: sourceIds } });
-        console.log('Total article count for group', groupName, ':', totalArticleCount);
-
-        // Debug: Let's also check if there are any articles at all for debugging
-        const sampleArticles = await Article.find({ sourceId: { $in: sourceIds } }).limit(3);
-        console.log('Sample articles found:', sampleArticles.length);
-        if (sampleArticles.length > 0) {
-            console.log('First article sourceId:', sampleArticles[0].sourceId);
         }
 
-        const topArticles = await Article.find({ sourceId: { $in: sourceIds } })
-            .sort({ likeCount: -1 })
-            .limit(5)
-            .select('_id title publishedAt likeCount url image');
-
-        const recentArticles = await Article.find({ sourceId: { $in: sourceIds } })
-            .sort({ publishedAt: -1 })
-            .limit(10)
-            .select('_id title publishedAt url image');
-
-        const reels = await Reel.find({ source: { $in: sourceIds } })
-            .sort({ publishedAt: -1 })
-            .limit(10)
-            .select('_id description videoUrl thumbnail publishedAt');
+        const [totalArticleCount, topArticles, recentArticles, reels] = await Promise.all([
+            Article.countDocuments({ sourceId: { $in: sourceIds } }),
+            Article.find({ sourceId: { $in: sourceIds } })
+                .sort({ likeCount: -1 })
+                .limit(5)
+                .select('_id title publishedAt likeCount url image'),
+            Article.find({ sourceId: { $in: sourceIds } })
+                .sort({ publishedAt: -1 })
+                .limit(10)
+                .select('_id title publishedAt url image'),
+            Reel.find({ source: { $in: sourceIds } })
+                .sort({ publishedAt: -1 })
+                .limit(10)
+                .select('_id description videoUrl thumbnail publishedAt'),
+        ]);
 
         const responseData = {
             sourceInfo: {
@@ -141,14 +90,6 @@ router.get('/group/:groupName', async (req, res) => {
             isFollowing: userFollowing, // ✅ Real following status
         };
 
-        console.log('Sending response for group', groupName, ':', {
-            totalArticleCount,
-            isFollowing: userFollowing,
-            topArticlesCount: topArticles.length,
-            recentArticlesCount: recentArticles.length,
-            reelsCount: reels.length
-        });
-
         res.json(responseData);
 
     } catch (error) {
@@ -157,42 +98,9 @@ router.get('/group/:groupName', async (req, res) => {
     }
 });
 
-// Follow/Unfollow Source Group
-router.post('/follow-group', auth, ensureMongoUser, async (req, res) => {
-    const { groupName } = req.body;
-
-    try {
-        if (!groupName) return res.status(400).json({ message: 'groupName is required' });
-
-        // req.mongoUser is a lean object, so we need to fetch the actual document for save()
-        const user = await User.findOne({ supabase_id: req.mongoUser.supabase_id });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        const isFollowing = user.following_sources.includes(groupName);
-
-        if (isFollowing) {
-            // Unfollow
-            user.following_sources.pull(groupName);
-            await Source.updateMany({ groupName }, { $inc: { followers: -1 } });
-        } else {
-            // Follow
-            user.following_sources.push(groupName);
-            await Source.updateMany({ groupName }, { $inc: { followers: 1 } });
-        }
-
-        await user.save();
-
-        res.json({
-            following_sources: user.following_sources,
-            action: isFollowing ? 'unfollowed' : 'followed',
-        });
-    } catch (error) {
-        console.error('Error following/unfollowing group:', error);
-        res.status(500).json({ message: 'Error updating follow status' });
-    }
-});
-
+// NOTE: the follow/unfollow endpoint lives in routes/userActions.js
+// (POST /api/user/source/follow-group). A duplicate copy here drifted out of
+// sync (it skipped dashboard-cache invalidation) and was removed — all app
+// clients call the userActions route.
 
 module.exports = router;
