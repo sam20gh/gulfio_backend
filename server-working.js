@@ -280,6 +280,7 @@ function loadRoutes() {
         app.use('/api/youtube', youtubeRoutes);
         app.use('/api/lotto', lottoRoutes);
         app.use('/api/metals', require('./routes/metals'));
+        app.use('/api/analytics', require('./routes/analytics'));
         app.use('/api/thumbnails', thumbnailRoutes);
         app.use('/api/debug', debugRoutes);
         app.use('/api/puppeteer', puppeteerDebugRoutes);
