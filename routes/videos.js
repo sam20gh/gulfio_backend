@@ -2601,7 +2601,10 @@ router.post('/related', async (req, res) => {
     }
 
     if (bestMatch) return res.json(bestMatch);
-    return res.status(404).json({ message: 'No related video found' });
+    // A source with no embedded videos is a normal, expected outcome — not a
+    // missing resource. Return 200 with a null payload so it doesn't pollute
+    // logs with 404 warnings. Client guards on `data?.videoId` either way.
+    return res.json({ related: null });
 });
 
 // ===================== NEW: OPTIMIZED CURSOR-BASED FEED =====================
