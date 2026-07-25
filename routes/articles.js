@@ -9,6 +9,7 @@ const Article = require('../models/Article');
 const User = require('../models/User');
 const UserActivity = require('../models/UserActivity');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
@@ -4724,6 +4725,59 @@ articleRouter.post('/:id/react', auth, ensureMongoUser, async (req, res) => {
       processingTime,
       success: false
     });
+  }
+});
+
+// Instagram/TikTok-style "liked by" list: who liked this article, newest
+// first, with the viewer's follow status against each so the modal can
+// render a Follow button inline. likedBy is populated via $addToSet in
+// /:id/react, so it's in like-order (oldest first) — reversed here.
+articleRouter.get('/:id/likes', optionalAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid article ID' });
+    }
+
+    const article = await Article.findById(id).select('likedBy').lean();
+    if (!article) {
+      return res.status(404).json({ message: 'Article not found' });
+    }
+
+    const likedByIds = [...(article.likedBy || [])].reverse();
+    if (likedByIds.length === 0) {
+      return res.json({ count: 0, users: [] });
+    }
+
+    const likers = await User.find({ supabase_id: { $in: likedByIds } })
+      .select('supabase_id name profile_image avatar_url')
+      .lean();
+    const likerMap = new Map(likers.map((u) => [u.supabase_id, u]));
+
+    let followingSet = new Set();
+    const viewerSupabaseId = req.user?.sub || null;
+    if (viewerSupabaseId) {
+      const viewer = await User.findOne({ supabase_id: viewerSupabaseId })
+        .select('following_users')
+        .lean();
+      followingSet = new Set((viewer?.following_users || []).map((v) => v.toString()));
+    }
+
+    const users = likedByIds
+      .map((sid) => likerMap.get(sid))
+      .filter(Boolean)
+      .map((u) => ({
+        supabase_id: u.supabase_id,
+        name: u.name || 'Gulfio user',
+        profile_image: u.profile_image || u.avatar_url || null,
+        isSelf: viewerSupabaseId === u.supabase_id,
+        isFollowing: followingSet.has(u._id.toString()),
+      }));
+
+    res.json({ count: users.length, users });
+  } catch (error) {
+    console.error('❌ Error in GET /:id/likes:', error);
+    res.status(500).json({ message: 'Error fetching likes' });
   }
 });
 

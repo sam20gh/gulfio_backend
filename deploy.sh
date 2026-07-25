@@ -11,6 +11,22 @@ if [ ! -f "app.js" ]; then
     exit 1
 fi
 
+# Load .env into the shell so every --set-env-vars "${VAR}" below actually
+# has a value. Without this, deploy just ships whatever was previously
+# `export`ed in the current terminal — silently deploying blanks for any var
+# that only exists in .env (bit us with CF_ACCOUNT_ID/CF_API_TOKEN: gcloud
+# accepted the deploy fine, Cloudflare got an empty account id, and nothing
+# in Cloud Run's own logs indicated a deploy-config problem).
+if [ -f ".env" ]; then
+    echo "📄 Loading environment variables from .env..."
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+else
+    echo "⚠️  No .env file found — relying on already-exported shell variables."
+fi
+
 # Check if gcloud is installed
 if ! command -v gcloud &> /dev/null; then
     echo "❌ Error: gcloud CLI is not installed."
