@@ -10,6 +10,7 @@ const Message = require('../models/Message');
 const Article = require('../models/Article');
 const Reel = require('../models/Reel');
 const NotificationService = require('../utils/notificationService');
+const supabaseAdmin = require('../utils/supabaseAdmin');
 
 function validateObjectId(id) {
     return mongoose.Types.ObjectId.isValid(id);
@@ -96,6 +97,35 @@ function previewFor(type, text) {
         case 'article_share': return '📰 Shared an article';
         case 'reel_share': return '🎬 Shared a reel';
         default: return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    }
+}
+
+// Realtime delivery, phase 2. Two broadcasts per send:
+//  - conversation:{id} carries the full message, for a thread screen that's
+//    currently open (both participants may be subscribed).
+//  - user:{supabase_id} is a lightweight "something changed" ping for the
+//    inbox list / unread badge, scoped to the recipient only.
+// Both are best-effort — channel.send() falls back to a stateless REST POST
+// when the channel was never joined, so this never blocks on a websocket.
+async function broadcastNewMessage(conversationId, enrichedMessage, recipientSupabaseId) {
+    try {
+        await supabaseAdmin.channel(`conversation:${conversationId}`).send({
+            type: 'broadcast',
+            event: 'new_message',
+            payload: enrichedMessage,
+        });
+    } catch (err) {
+        console.error('Error broadcasting new_message:', err);
+    }
+
+    try {
+        await supabaseAdmin.channel(`user:${recipientSupabaseId}`).send({
+            type: 'broadcast',
+            event: 'conversation_updated',
+            payload: { conversationId },
+        });
+    } catch (err) {
+        console.error('Error broadcasting conversation_updated:', err);
     }
 }
 
@@ -391,6 +421,8 @@ router.post('/conversations/:id/messages', auth, ensureMongoUser, async (req, re
 
         const [enrichedMessage] = await attachSharedPreviews([message.toObject()]);
         res.status(201).json({ message: enrichedMessage });
+
+        broadcastNewMessage(conversation._id.toString(), enrichedMessage, other.supabase_id);
 
         NotificationService.sendDirectMessageNotification(
             other.supabase_id,
