@@ -86,7 +86,10 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars GOLDAPI_KEY="${GOLDAPI_KEY}" \
     --set-env-vars AZURE_SPEECH_KEY="${AZURE_SPEECH_KEY}" \
     --set-env-vars AZURE_SPEECH_REGION="${AZURE_SPEECH_REGION}" \
-    --set-env-vars TTS_AUDIO_ENABLED_FROM="${TTS_AUDIO_ENABLED_FROM}"
+    --set-env-vars TTS_AUDIO_ENABLED_FROM="${TTS_AUDIO_ENABLED_FROM}" \
+    --set-env-vars CF_API_TOKEN="${CF_API_TOKEN}" \
+    --set-env-vars CF_ACCOUNT_ID="${CF_ACCOUNT_ID}"
+    
 
 if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
