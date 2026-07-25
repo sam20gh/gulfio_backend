@@ -30,6 +30,7 @@ const notificationSchema = new mongoose.Schema({
             'weekly_digest',
             'news',
             'lotto',
+            'direct_message',
         ],
     },
 

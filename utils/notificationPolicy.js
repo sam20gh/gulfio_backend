@@ -46,6 +46,9 @@ const SETTING_DEFAULTS = {
     // Goal/kickoff pushes for followed teams (targeted, not broadcast-budgeted;
     // following a team is the opt-in — this switch is the opt-out)
     matchAlerts: true,
+    // Direct messages — transactional like follows/likes, not broadcast-budgeted.
+    // Users expect DM pushes in real time regardless of quiet hours.
+    directMessages: true,
 };
 
 // UTC offsets in hours for the cities available in the User schema.

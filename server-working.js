@@ -269,6 +269,10 @@ function loadRoutes() {
         const quizRoutes = require('./routes/quiz'); // Daily news quiz
         console.log('✅ Quiz routes loaded successfully');
 
+        console.log('💬 Loading Messages routes...');
+        const messagesRoutes = require('./routes/messages'); // Direct messages (1:1)
+        console.log('✅ Messages routes loaded successfully');
+
         app.use('/api/scrape', scrapeRoute);
         app.use('/api/user', userActions);
         app.use('/api/recommendations', recommendations);
@@ -310,6 +314,10 @@ function loadRoutes() {
         console.log('🧠 Mounting Quiz routes at /api/quiz...');
         app.use('/api/quiz', quizRoutes); // Daily news quiz
         console.log('✅ Quiz routes mounted successfully');
+
+        console.log('💬 Mounting Messages routes at /api/messages...');
+        app.use('/api/messages', messagesRoutes); // Direct messages (1:1)
+        console.log('✅ Messages routes mounted successfully');
 
         console.log('🎉 All API routes loaded successfully!');
 

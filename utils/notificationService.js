@@ -220,6 +220,32 @@ class NotificationService {
     }
 
     /**
+     * Send notification for a new direct message. Transactional (user-earned
+     * by sending the message), so it skips quiet hours/daily budget — see
+     * notificationPolicy.js BROADCAST_SETTING_KEYS.
+     * @param {string} recipientSupabaseId - The message recipient
+     * @param {string} senderSupabaseId - The message sender
+     * @param {string} senderName - Display name of the sender
+     * @param {string} conversationId - Conversation the message belongs to
+     * @param {string} preview - Short preview of the message body
+     */
+    static async sendDirectMessageNotification(recipientSupabaseId, senderSupabaseId, senderName, conversationId, preview) {
+        return await this.sendNotificationToUser(
+            recipientSupabaseId,
+            'directMessages',
+            senderName || 'New message',
+            preview,
+            {
+                type: 'direct_message',
+                senderId: senderSupabaseId,
+                senderName: senderName,
+                conversationId: conversationId,
+                link: `gulfio://messages/${conversationId}`
+            }
+        );
+    }
+
+    /**
      * Send notification about breaking news
      * @param {string} userId - The user ID to send notification to
      * @param {string} title - Breaking news title

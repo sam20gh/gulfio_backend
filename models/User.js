@@ -78,6 +78,7 @@ const userSchema = new mongoose.Schema({
             articleLikes: true,
             newFollowers: true,
             mentions: true,
+            directMessages: true,
         }
     },
 
