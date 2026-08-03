@@ -18,8 +18,8 @@ const PCA_MODEL_NAME = 'article_embedding_pca_v1';
  * Does NOT persist — caller decides. Returns null if there isn't enough
  * data to train (<50 valid 1536D embeddings).
  */
-async function trainPCAFromCorpus() {
-    console.log('🔄 Training PCA from current article+reel corpus...');
+async function trainPCAFromCorpus({ articleSamples = 3000, reelSamples = 2000 } = {}) {
+    console.log(`🔄 Training PCA from current article+reel corpus (${articleSamples} articles, ${reelSamples} reels)...`);
 
     // NOTE: { embedding: { $exists } } cannot use an index (embedding is a 1536-float
     // array; a btree on it is multikey bloat). These are deliberately bounded collscans.
@@ -28,12 +28,12 @@ async function trainPCAFromCorpus() {
     // (see initializePCAModel) means this should run at most once per basis, not per boot.
     const [sampleArticles, sampleReels] = await Promise.all([
         Article.find({ embedding: { $exists: true, $ne: null } })
-            .limit(3000)
+            .limit(articleSamples)
             .select('embedding')
             .maxTimeMS(45000)
             .lean(),
         Reel.find({ embedding: { $exists: true, $ne: null } })
-            .limit(2000)
+            .limit(reelSamples)
             .select('embedding')
             .maxTimeMS(45000)
             .lean(),
@@ -146,8 +146,8 @@ async function _initializePCAModel() {
  * WARNING: invalidates the 128-D basis. All previously-generated
  * embedding_pca values become stale and should be regenerated.
  */
-async function retrainAndPersistPCA() {
-    const trained = await trainPCAFromCorpus();
+async function retrainAndPersistPCA(sampleOpts) {
+    const trained = await trainPCAFromCorpus(sampleOpts);
     if (!trained) {
         return { success: false, error: 'Not enough corpus to train' };
     }
