@@ -21,7 +21,14 @@ const PCAModelSchema = new mongoose.Schema({
     name: { type: String, unique: true, required: true },
     // ml-pca toJSON() output; opaque to us — we just hand it back to PCA.load()
     model: { type: mongoose.Schema.Types.Mixed, required: true },
+    // Components actually persisted. Capped at 128 (the embedding_pca index width):
+    // PCA returns min(samples, features) components, so training on >1536 samples
+    // yields a 1536x1536 loadings matrix (~18 MB) that breaks Mongo's 16 MB document
+    // limit. See serializeTruncated() in utils/pcaEmbedding.js.
     components: { type: Number },
+    // Share of TOTAL variance those components capture. Must be declared here or
+    // Mongoose silently strips it on write.
+    explainedVariance: { type: Number },
     sampleCount: { type: Number },
     trainedAt: { type: Date, default: Date.now },
 });
