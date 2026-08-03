@@ -14,6 +14,69 @@ let initPromise = null;
 const PCA_MODEL_NAME = 'article_embedding_pca_v1';
 
 /**
+ * Number of components we keep — matches the 128-dim `embedding_pca` Atlas index.
+ *
+ * This is also a hard storage requirement, not just a preference. PCA yields
+ * min(samples, features) components, so training on more than 1536 samples produces a
+ * 1536x1536 loadings matrix: 2.36M doubles ~= 18 MB, over MongoDB's 16 MB per-document
+ * limit. Persisting the full model then fails with a Buffer "offset is out of range"
+ * error. Keeping 128 columns brings it to ~1.6 MB.
+ *
+ * Truncation is lossless for our use: predict() multiplies by U and slices to
+ * nComponents, so the first 128 columns give bit-identical output to slicing the full
+ * matrix. S is left intact (it is ~12 KB) so getExplainedVariance() stays honest about
+ * the share of total variance these components capture.
+ */
+const PCA_COMPONENTS = 128;
+
+/**
+ * Serialize a trained PCA, keeping only PCA_COMPONENTS columns of the loadings matrix.
+ * Returns a plain JSON object ready for Mongo (Matrix instances become arrays).
+ */
+function serializeTruncated(pca) {
+    const json = pca.toJSON();
+    const U = Matrix.checkMatrix(json.U);
+    if (U.columns > PCA_COMPONENTS) {
+        json.U = U.subMatrix(0, U.rows - 1, 0, PCA_COMPONENTS - 1);
+    }
+    return JSON.parse(JSON.stringify(json));
+}
+
+/**
+ * Persist a trained model and adopt the persisted form in memory, so this process
+ * projects through exactly the same basis every other process will load.
+ */
+async function persistPCA(pca, sampleCount) {
+    const serialized = serializeTruncated(pca);
+    const kept = Matrix.checkMatrix(serialized.U).columns;
+    // Share of total variance captured, computed before truncation.
+    const variance = pca.getExplainedVariance();
+    const explained = variance.slice(0, kept).reduce((a, b) => a + b, 0);
+
+    await PCAModel.updateOne(
+        { name: PCA_MODEL_NAME },
+        {
+            $set: {
+                name: PCA_MODEL_NAME,
+                model: serialized,
+                components: kept,
+                explainedVariance: explained,
+                sampleCount,
+                trainedAt: new Date(),
+            },
+        },
+        { upsert: true }
+    );
+
+    globalPCA = PCA.load(serialized);
+    console.log(
+        `💾 Persisted PCA "${PCA_MODEL_NAME}" — ${kept} components ` +
+        `from ${sampleCount} samples, ${(explained * 100).toFixed(1)}% of total variance`
+    );
+    return globalPCA;
+}
+
+/**
  * Train a fresh PCA model from the current article+reel corpus.
  * Does NOT persist — caller decides. Returns null if there isn't enough
  * data to train (<50 valid 1536D embeddings).
@@ -112,20 +175,7 @@ async function _initializePCAModel() {
 
         // 3. Persist so subsequent boots are deterministic.
         try {
-            await PCAModel.updateOne(
-                { name: PCA_MODEL_NAME },
-                {
-                    $set: {
-                        name: PCA_MODEL_NAME,
-                        model: JSON.parse(JSON.stringify(globalPCA.toJSON())),
-                        components: globalPCA.getExplainedVariance().length,
-                        sampleCount: trained.sampleCount,
-                        trainedAt: new Date(),
-                    },
-                },
-                { upsert: true }
-            );
-            console.log(`💾 Persisted PCA model to Mongo as "${PCA_MODEL_NAME}"`);
+            await persistPCA(trained.pca, trained.sampleCount);
         } catch (saveErr) {
             console.error('⚠️ Failed to persist PCA model:', saveErr.message);
             // Non-fatal: the in-memory model still works for this process.
@@ -151,24 +201,11 @@ async function retrainAndPersistPCA(sampleOpts) {
     if (!trained) {
         return { success: false, error: 'Not enough corpus to train' };
     }
-    globalPCA = trained.pca;
-    await PCAModel.updateOne(
-        { name: PCA_MODEL_NAME },
-        {
-            $set: {
-                name: PCA_MODEL_NAME,
-                model: JSON.parse(JSON.stringify(globalPCA.toJSON())),
-                components: globalPCA.getExplainedVariance().length,
-                sampleCount: trained.sampleCount,
-                trainedAt: new Date(),
-            },
-        },
-        { upsert: true }
-    );
+    await persistPCA(trained.pca, trained.sampleCount);
     console.log(`🔁 PCA retrained + persisted (${trained.sampleCount} samples)`);
     return {
         success: true,
-        components: globalPCA.getExplainedVariance().length,
+        components: Matrix.checkMatrix(globalPCA.U).columns,
         sampleCount: trained.sampleCount,
     };
 }
@@ -202,8 +239,13 @@ async function convertToPCAEmbedding(embedding) {
         const inputMatrix = new Matrix([embeddingValues]);
         console.log(`🔄 Created input matrix: ${inputMatrix.rows}x${inputMatrix.columns}`);
 
-        // Apply PCA transformation
-        const pcaResult = globalPCA.predict(inputMatrix, { nComponents: 128 });
+        // Apply PCA transformation. Clamp to the model's actual width: a rank-limited
+        // model (trained when the corpus was small) can have fewer columns than
+        // PCA_COMPONENTS, and predict() would throw slicing past the end.
+        const available = Matrix.checkMatrix(globalPCA.U).columns;
+        const pcaResult = globalPCA.predict(inputMatrix, {
+            nComponents: Math.min(PCA_COMPONENTS, available),
+        });
         console.log(`🔄 PCA prediction completed: ${pcaResult.rows}x${pcaResult.columns}`);
 
         // Extract the 128D vector

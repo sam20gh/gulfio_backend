@@ -44,6 +44,7 @@
     "migrate-embeddings": "node scripts/migrateEmbeddingsToBinaryVector.js",
     "reproject-pca": "node --max-old-space-size=4096 scripts/retrainAndReprojectPCA.js",
     "test:vector": "node tests/vector.test.js",
+    "test:pca": "node tests/pcaTruncation.test.js",
     "add-indexes": "node scripts/addMongoIndexes.js",
     "add-user-follow-index": "node scripts/addUserFollowIndex.js",
     "precompute-recommendations": "node scripts/precomputeRecommendations.js",
