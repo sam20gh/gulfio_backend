@@ -12,24 +12,32 @@ Both need exactly one secret: `MONGO_URI`. They never call the embedding API.
 
 ---
 
-## 0. Push the code
-
-Cloud Shell clones from GitHub, so the commits must be on `origin/main` first:
-
-```bash
-git push origin main            # in backend/
-```
-
 ## 1. Register the jobs
 
-In Cloud Shell:
+Run this **from your Mac**, not Cloud Shell. `gcloud builds submit` uploads the working
+directory and builds inside GCP, so no Docker is needed locally and no push is required —
+it picks up uncommitted changes:
 
 ```bash
-git clone git@github.com:sam20gh/gulfio_backend.git
-cd gulfio_backend
-chmod +x deploy-migration-job.sh
+cd backend
 ./deploy-migration-job.sh                 # defaults to region me-central1
+./deploy-migration-job.sh --skip-build    # config-only change, reuse existing image
 ```
+
+<details>
+<summary>Cloud Shell fallback</summary>
+
+Cloud Shell has no SSH key registered with GitHub, so an `git@github.com:` clone fails
+with `Permission denied (publickey)`. The repo is public, so use HTTPS:
+
+```bash
+git clone https://github.com/sam20gh/gulfio_backend.git
+cd gulfio_backend && chmod +x deploy-migration-job.sh && ./deploy-migration-job.sh
+```
+
+This path *does* require the commits to be pushed first, and `deploy-migration-job.sh`
+is force-added because `.gitignore` ignores `*.sh`.
+</details>
 
 The script builds a lean image (`Dockerfile.migration` — no Chrome/ffmpeg/Puppeteer
 browser, so it builds in about a minute) and registers both jobs. It resolves
@@ -60,11 +68,32 @@ Watch progress:
 gcloud beta run jobs logs tail gulfio-migrate-embeddings --region $REGION --project $PROJECT
 ```
 
-Dry runs first, if you want counts without writes:
+### Dry runs
+
+`gcloud run jobs execute --args=...` is **broken on gcloud 548.0.0** — the override
+payload includes a `priorityTier` field the Cloud Run API rejects:
+
+```
+INVALID_ARGUMENT: Unknown name "priorityTier" at 'overrides'
+```
+
+So change the job's args, execute, then change them back:
 
 ```bash
-gcloud run jobs execute gulfio-migrate-embeddings --region $REGION --project $PROJECT --wait \
-  --args="--max-old-space-size=1536,scripts/migrateEmbeddingsToBinaryVector.js,--dry-run"
+REAL="--max-old-space-size=1536,scripts/migrateEmbeddingsToBinaryVector.js,--resume"
+DRY="--max-old-space-size=1536,scripts/migrateEmbeddingsToBinaryVector.js,--dry-run,--max=2000"
+
+gcloud run jobs update  gulfio-migrate-embeddings --region $REGION --project $PROJECT --args="$DRY"
+gcloud run jobs execute gulfio-migrate-embeddings --region $REGION --project $PROJECT --wait
+gcloud run jobs update  gulfio-migrate-embeddings --region $REGION --project $PROJECT --args="$REAL"
+```
+
+Reading logs (`logs tail` needs the beta component; this works without it):
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_job" AND resource.labels.job_name="gulfio-migrate-embeddings"' \
+  --project $PROJECT --limit=40 --freshness=30m --format="value(textPayload)"
 ```
 
 ## 3. Redeploy — required
@@ -95,6 +124,10 @@ this is not a new regression, but the fix isn't live until the redeploy lands.)
   invalidate every document already re-projected.
 - **Least privilege.** The jobs get `MONGO_URI` and nothing else.
 - Task timeout is 24h with 3 retries; realistically both finish far inside that.
+
+Measured from the job in `me-central1`: **~1,200 documents/sec**, versus ~330/sec running
+the same script from a laptop. At that rate the full 405k-article migration is on the
+order of 5–10 minutes.
 
 ## Verification (already done before shipping)
 

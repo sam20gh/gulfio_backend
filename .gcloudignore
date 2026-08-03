@@ -9,6 +9,10 @@
 # host-built native binaries into a Linux image.
 node_modules/
 
+# ~400 MB of macOS Chrome downloaded by Puppeteer on the host. Useless in a Linux
+# image (the main Dockerfile installs its own) and pure upload cost on every build.
+.cache/
+
 # Secrets are injected as Cloud Run env vars, never baked into an image.
 .env
 .env.*

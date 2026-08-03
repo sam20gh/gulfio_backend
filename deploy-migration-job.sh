@@ -13,9 +13,18 @@
 set -euo pipefail
 
 PROJECT_ID="grub24-217509"
+
+# Pass --skip-build to re-register the jobs against the existing image (config-only
+# changes) without paying for another build.
+SKIP_BUILD=false
+ARGS=()
+for a in "$@"; do
+    if [ "$a" = "--skip-build" ]; then SKIP_BUILD=true; else ARGS+=("$a"); fi
+done
+
 # Match the backend service's region so the job sits close to Atlas — these scripts are
 # network-bound (they stream every article's embedding), so latency dominates runtime.
-REGION="${1:-me-central1}"
+REGION="${ARGS[0]:-me-central1}"
 IMAGE="gcr.io/${PROJECT_ID}/gulfio-db-migration:latest"
 
 MIGRATE_JOB="gulfio-migrate-embeddings"
@@ -60,18 +69,26 @@ if [ -z "${MONGO_URI:-}" ] || [ "$MONGO_URI" = "null" ]; then
 fi
 echo "✅ MONGO_URI resolved"
 
-echo ""
-echo "🔨 Building migration image..."
-gcloud builds submit \
-    --config=cloudbuild.migration.yaml \
-    --project="$PROJECT_ID" \
-    --region="$REGION"
+if [ "$SKIP_BUILD" = true ]; then
+    echo ""
+    echo "⏭  Skipping build (--skip-build) — reusing $IMAGE"
+else
+    echo ""
+    echo "🔨 Building migration image..."
+    # No --region: Cloud Build isn't offered in every Cloud Run region (me-central1
+    # among them), and the build's location is irrelevant because gcr.io is
+    # multi-regional.
+    gcloud builds submit \
+        --config=cloudbuild.migration.yaml \
+        --project="$PROJECT_ID"
+fi
 
 # create-or-update: `gcloud run jobs create` fails if the job already exists.
 deploy_job() {
     local name="$1" cpu="$2" mem="$3" heap="$4" script="$5"
     shift 5
-    local extra_args=("$@")
+    # Iterate "$@" directly rather than copying into an array: macOS ships bash 3.2,
+    # where "${arr[@]}" on an empty array trips `set -u`.
 
     local verb="create"
     if gcloud run jobs describe "$name" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
@@ -85,7 +102,7 @@ deploy_job() {
     # the beginning, and on a Cloud Run retry it picks up where the previous task died.
     # The checkpoint lives in Mongo (utils/migrationState.js), not the container disk.
     local args="--max-old-space-size=${heap},${script},--resume"
-    for a in "${extra_args[@]}"; do args="${args},${a}"; done
+    for a in "$@"; do args="${args},${a}"; done
 
     gcloud run jobs "$verb" "$name" \
         --image="$IMAGE" \
