@@ -40,10 +40,11 @@
  */
 
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 const mongoose = require('mongoose');
 const { ObjectId } = mongoose.mongo;
+const { makeCheckpointStore } = require('../utils/migrationState');
+
+const CHECKPOINT_KEY = 'pca-reprojection';
 
 const args = process.argv.slice(2);
 const hasFlag = (n) => args.includes(`--${n}`);
@@ -61,8 +62,6 @@ const BATCH_SIZE = parseInt(getOpt('batch', '500'), 10);
 const SLEEP_MS = parseInt(getOpt('sleep', '25'), 10);
 /** Cap documents scanned per collection. For validating a slice; omit for a full run. */
 const MAX_DOCS = parseInt(getOpt('max', '0'), 10) || Infinity;
-const CHECKPOINT = path.join(__dirname, '.pca-reprojection-checkpoint.json');
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function withRetry(label, fn, attempts = 5) {
@@ -79,13 +78,18 @@ async function withRetry(label, fn, attempts = 5) {
     throw lastErr;
 }
 
-function readCheckpoint() {
-    if (!RESUME || !fs.existsSync(CHECKPOINT)) return {};
-    try { return JSON.parse(fs.readFileSync(CHECKPOINT, 'utf8')); }
-    catch { return {}; }
+// Checkpoint lives in Mongo, not on disk — Cloud Run containers are ephemeral, so a
+// task timeout or retry would otherwise restart a 405k-document scan from zero.
+let checkpointStore = null;
+async function readCheckpoint() {
+    if (!RESUME) return {};
+    const saved = await checkpointStore.load();
+    if (saved) console.log(`▶️  Resuming from saved checkpoint: ${JSON.stringify(saved)}`);
+    else console.log('ℹ️  --resume given but no saved checkpoint found — starting from the beginning');
+    return saved || {};
 }
-function writeCheckpoint(state) {
-    if (!DRY_RUN) fs.writeFileSync(CHECKPOINT, JSON.stringify(state));
+async function writeCheckpoint(state) {
+    if (!DRY_RUN) await checkpointStore.save(state);
 }
 
 /**
@@ -127,7 +131,7 @@ async function reproject({ collection, label, project, checkpoint, checkpointKey
         scanned += page.length;
         lastId = page[page.length - 1]._id;
         checkpoint[checkpointKey] = lastId.toString();
-        writeCheckpoint(checkpoint);
+        await writeCheckpoint(checkpoint);
 
         const rate = scanned / Math.max((Date.now() - startedAt) / 1000, 0.001);
         process.stdout.write(`\r   scanned ${scanned}  reprojected ${updated}  skipped ${skipped}  ${rate.toFixed(0)}/s   `);
@@ -147,13 +151,20 @@ async function reproject({ collection, label, project, checkpoint, checkpointKey
 
     const { retrainAndPersistPCA, initializePCAModel, convertToPCAEmbedding } = require('../utils/pcaEmbedding');
     const db = mongoose.connection.db;
-    const checkpoint = readCheckpoint();
+    checkpointStore = makeCheckpointStore(db, CHECKPOINT_KEY);
+    const checkpoint = await readCheckpoint();
 
     console.log(`\n${DRY_RUN ? '🔍 DRY RUN — no writes' : '🚀 Retrain + re-projection'}`);
 
     // ---- 1. Retrain the canonical basis -------------------------------------
-    if (SKIP_RETRAIN) {
-        console.log('\n=== step 1: retrain SKIPPED (--skip-retrain) — loading persisted basis ===');
+    // A resumed run must NEVER retrain: the documents already re-projected are in the
+    // current basis, and training a new one would silently invalidate them. This makes
+    // the job safe to retry (Cloud Run retries re-run the same command).
+    const resumedMidRun = Object.keys(checkpoint).length > 0;
+
+    if (SKIP_RETRAIN || resumedMidRun) {
+        const why = SKIP_RETRAIN ? '--skip-retrain' : 'resuming an in-progress re-projection';
+        console.log(`\n=== step 1: retrain SKIPPED (${why}) — loading persisted basis ===`);
         const ok = await initializePCAModel();
         if (!ok) throw new Error('No persisted PCA model to load');
     } else if (DRY_RUN) {
@@ -228,8 +239,8 @@ async function reproject({ collection, label, project, checkpoint, checkpointKey
     console.log(`articles reprojected: ${articleStats.updated}`);
     console.log(`reels reprojected   : ${reelStats.updated}`);
     console.log(`users rebuilt       : ${userUpdated}`);
-    if (!DRY_RUN && fs.existsSync(CHECKPOINT)) {
-        fs.unlinkSync(CHECKPOINT);
+    if (!DRY_RUN) {
+        await checkpointStore.clear();
         console.log('checkpoint cleared');
     }
     console.log('\n⚠️  Redeploy backend AND scraper-job now — both cache the PCA basis in');

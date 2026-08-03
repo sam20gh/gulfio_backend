@@ -1,0 +1,26 @@
+# Lean image for one-off database migration jobs (Cloud Run Jobs).
+#
+# Deliberately NOT the main backend Dockerfile: that one installs Chrome, ffmpeg and
+# Puppeteer's browser bundle, which take many minutes to build and are useless here.
+# The migration scripts only need node + mongoose + ml-pca/ml-matrix.
+#
+# Build/deploy with ./deploy-migration-job.sh — the command and args are supplied by the
+# Cloud Run job definition, so this image has no baked-in migration behaviour.
+
+FROM node:20-slim
+
+# Puppeteer is a backend dependency; skip its ~300 MB browser download for this image.
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    NODE_ENV=production
+
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+RUN npm install --omit=dev --ignore-scripts
+
+COPY . .
+
+# Overridden by the job's --command/--args. Printing usage is a safe default: an
+# accidentally-triggered job does nothing to the database.
+CMD ["node", "-e", "console.log('Set --command/--args to choose a migration script.')"]

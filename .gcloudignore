@@ -1,0 +1,19 @@
+# Keeps the Cloud Build upload small and keeps secrets out of the build context.
+# Conservative on purpose — this file applies to every `gcloud builds submit` from this
+# directory, including the main backend deploy, so it excludes only what no image needs.
+
+.git/
+.gitignore
+
+# Reinstalled inside the image by `npm install`; uploading it is slow and can smuggle
+# host-built native binaries into a Linux image.
+node_modules/
+
+# Secrets are injected as Cloud Run env vars, never baked into an image.
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+*.log
+npm-debug.log*

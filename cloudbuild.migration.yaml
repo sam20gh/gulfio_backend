@@ -1,0 +1,15 @@
+# Builds the lean migration image. `gcloud builds submit --tag` always uses the default
+# Dockerfile, so a config file is the way to point Cloud Build at Dockerfile.migration.
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.migration'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/gulfio-db-migration:latest'
+      - '.'
+images:
+  - 'gcr.io/$PROJECT_ID/gulfio-db-migration:latest'
+options:
+  logging: CLOUD_LOGGING_ONLY

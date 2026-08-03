@@ -30,11 +30,12 @@
  */
 
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 // The driver is only present nested under mongoose in this repo, so go through
 // mongoose.mongo rather than requiring 'mongodb' directly.
 const { MongoClient, Binary, ObjectId } = require('mongoose').mongo;
+const { makeCheckpointStore } = require('../utils/migrationState');
+
+const CHECKPOINT_KEY = 'embedding-binary-vector';
 
 const args = process.argv.slice(2);
 const hasFlag = (name) => args.includes(`--${name}`);
@@ -48,26 +49,8 @@ const RESUME = hasFlag('resume');
 const BATCH_SIZE = parseInt(getOpt('batch', '250'), 10);
 const SLEEP_MS = parseInt(getOpt('sleep', '25'), 10);
 const MAX_DOCS = parseInt(getOpt('max', '0'), 10) || Infinity;
-const CHECKPOINT = path.join(__dirname, '.embedding-migration-checkpoint.json');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function readCheckpoint() {
-    if (!RESUME || !fs.existsSync(CHECKPOINT)) return null;
-    try {
-        const saved = JSON.parse(fs.readFileSync(CHECKPOINT, 'utf8'));
-        console.log(`▶️  Resuming from checkpoint: _id > ${saved.lastId} (${saved.converted} already converted)`);
-        return saved;
-    } catch (err) {
-        console.warn('⚠️  Unreadable checkpoint, starting from the beginning:', err.message);
-        return null;
-    }
-}
-
-function writeCheckpoint(state) {
-    if (DRY_RUN) return;
-    fs.writeFileSync(CHECKPOINT, JSON.stringify(state));
-}
 
 /** Run an operation, retrying transient Atlas/network errors with backoff. */
 async function withRetry(label, fn, attempts = 5) {
@@ -94,12 +77,25 @@ async function withRetry(label, fn, attempts = 5) {
         socketTimeoutMS: 300000,
     });
     await client.connect();
-    const articles = client.db().collection('articles');
+    const db = client.db();
+    const articles = db.collection('articles');
+
+    // Checkpoint lives in Mongo, not on disk — Cloud Run containers are ephemeral.
+    const store = makeCheckpointStore(db, CHECKPOINT_KEY);
+    const saveCheckpoint = (state) => (DRY_RUN ? Promise.resolve() : store.save(state));
 
     console.log(`\n${DRY_RUN ? '🔍 DRY RUN — no writes' : '🚀 Migrating'} articles.embedding → BSON Binary float32`);
     console.log(`   batch=${BATCH_SIZE} sleep=${SLEEP_MS}ms\n`);
 
-    const checkpoint = readCheckpoint();
+    let checkpoint = null;
+    if (RESUME) {
+        checkpoint = await store.load();
+        if (checkpoint) {
+            console.log(`▶️  Resuming: _id > ${checkpoint.lastId} (${checkpoint.converted} already converted)`);
+        } else {
+            console.log('ℹ️  --resume given but no saved checkpoint found — starting from the beginning');
+        }
+    }
     let lastId = checkpoint ? new ObjectId(checkpoint.lastId) : null;
 
     let scanned = checkpoint ? checkpoint.scanned : 0;
@@ -153,7 +149,7 @@ async function withRetry(label, fn, attempts = 5) {
         converted += ops.length;
         scanned += page.length;
         lastId = page[page.length - 1]._id;
-        writeCheckpoint({ lastId: lastId.toString(), scanned, converted });
+        await saveCheckpoint({ lastId: lastId.toString(), scanned, converted });
 
         const elapsed = (Date.now() - startedAt) / 1000;
         const rate = scanned / Math.max(elapsed, 0.001);
@@ -174,8 +170,8 @@ async function withRetry(label, fn, attempts = 5) {
     console.log(`estimated saving: ~${((bytesBefore - bytesAfter) / 1024 ** 3).toFixed(2)} GB of BSON`);
     console.log(`elapsed         : ${((Date.now() - startedAt) / 60000).toFixed(1)} min`);
 
-    if (!DRY_RUN && fs.existsSync(CHECKPOINT)) {
-        fs.unlinkSync(CHECKPOINT);
+    if (!DRY_RUN) {
+        await store.clear();
         console.log('checkpoint cleared');
     }
     console.log('\nNote: storageSize reclaims only after a compact or rolling resync.\n');
