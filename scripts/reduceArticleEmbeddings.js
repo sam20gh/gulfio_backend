@@ -3,6 +3,7 @@ const faiss = require('faiss-node');
 const { Matrix } = require('ml-matrix');
 const { PCA } = require('ml-pca');
 const Article = require('../models/Article');
+const { fromVector, isValidEmbedding } = require('../utils/vector');
 require('dotenv').config(); // Load environment variables
 
 async function reduceEmbeddings() {
@@ -24,12 +25,11 @@ async function reduceEmbeddings() {
             return;
         }
 
-        // Filter articles with valid embeddings
-        const validArticles = articles.filter(article =>
-            article.embedding &&
-            Array.isArray(article.embedding) &&
-            article.embedding.length === ORIGINAL_DIMENSIONS
-        );
+        // Filter articles with valid embeddings. `embedding` is a BSON Binary float32
+        // vector — isValidEmbedding/fromVector handle it (and legacy arrays).
+        const validArticles = articles
+            .filter(article => isValidEmbedding(article.embedding, ORIGINAL_DIMENSIONS))
+            .map(article => ({ ...article, embedding: fromVector(article.embedding) }));
 
         console.log(`Found ${validArticles.length} articles with valid ${ORIGINAL_DIMENSIONS}D embeddings`);
 

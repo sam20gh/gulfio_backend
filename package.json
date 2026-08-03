@@ -41,6 +41,8 @@
     "cleanup-articles": "node scripts/cleanupArticles.js",
     "setup-recommendations": "node scripts/setupRecommendationSystem.js",
     "reduce-embeddings": "node scripts/reduceArticleEmbeddings.js",
+    "migrate-embeddings": "node scripts/migrateEmbeddingsToBinaryVector.js",
+    "test:vector": "node tests/vector.test.js",
     "add-indexes": "node scripts/addMongoIndexes.js",
     "add-user-follow-index": "node scripts/addUserFollowIndex.js",
     "precompute-recommendations": "node scripts/precomputeRecommendations.js",

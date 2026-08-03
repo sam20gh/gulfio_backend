@@ -4,6 +4,7 @@ const { Matrix } = require('ml-matrix');
 const Article = require('../models/Article');
 const Reel = require('../models/Reel');
 const PCAModel = require('../models/PCAModel');
+const { fromVector, isValidEmbedding, vectorLength } = require('./vector');
 
 let globalPCA = null;
 // Single-flight lock: concurrent convertToPCAEmbedding() calls (e.g. a scraper batch)
@@ -40,10 +41,14 @@ async function trainPCAFromCorpus() {
 
     console.log(`📊 Found ${sampleArticles.length} articles + ${sampleReels.length} reels`);
 
+    // Articles store `embedding` as a BSON Binary float32 vector, reels still as an
+    // array of doubles. fromVector normalises both to number[] for the PCA matrix.
     const validEmbeddings = [
         ...sampleArticles.map((a) => a.embedding),
         ...sampleReels.map((r) => r.embedding),
-    ].filter((e) => Array.isArray(e) && e.length === 1536);
+    ]
+        .filter((e) => isValidEmbedding(e))
+        .map((e) => fromVector(e));
 
     if (validEmbeddings.length < 50) {
         console.warn('⚠️ Not enough valid 1536D embeddings for PCA training');
@@ -170,14 +175,15 @@ async function retrainAndPersistPCA() {
 
 /**
  * Convert a 1536D embedding to 128D using the global PCA model
- * @param {Array} embedding - 1536D embedding array
+ * @param {Array|Binary} embedding - 1536D embedding, array or BSON Binary float32 vector
  * @returns {Array} 128D PCA embedding or null if failed
  */
 async function convertToPCAEmbedding(embedding) {
-    if (!Array.isArray(embedding) || embedding.length !== 1536) {
+    if (!isValidEmbedding(embedding)) {
         console.warn('⚠️ Invalid embedding for PCA conversion');
         return null;
     }
+    const embeddingValues = fromVector(embedding);
 
     // Initialize PCA model if not already done
     if (!globalPCA) {
@@ -193,7 +199,7 @@ async function convertToPCAEmbedding(embedding) {
         console.log(`🔄 Converting 1536D embedding to 128D PCA...`);
 
         // Convert single embedding to matrix
-        const inputMatrix = new Matrix([embedding]);
+        const inputMatrix = new Matrix([embeddingValues]);
         console.log(`🔄 Created input matrix: ${inputMatrix.rows}x${inputMatrix.columns}`);
 
         // Apply PCA transformation
@@ -211,7 +217,7 @@ async function convertToPCAEmbedding(embedding) {
             error: error.message,
             stack: error.stack,
             hasGlobalPCA: !!globalPCA,
-            embeddingLength: embedding?.length
+            embeddingLength: vectorLength(embedding)
         });
         return null;
     }

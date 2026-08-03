@@ -13,6 +13,7 @@ const optionalAuth = require('../middleware/optionalAuth');
 const ensureMongoUser = require('../middleware/ensureMongoUser');
 const redis = require('../utils/redis');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { fromVector, toVector } = require('../utils/vector');
 const { searchArticles, findInContent } = require('../utils/atlasSearch');
 const { enrichArticlesWithSources, getSourceMap } = require('../utils/sourceCache');
 const PointsService = require('../services/pointsService'); // 🎮 Gamification
@@ -4856,7 +4857,10 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
     }
 
     // Method 2: Fallback to manual cosine similarity with limited sample
-    if (related.length === 0 && target.embedding && Array.isArray(target.embedding) && target.embedding.length > 0) {
+    // `embedding` is a BSON Binary float32 vector — decode with fromVector before any
+    // JS maths. Array.isArray/.length are meaningless on it.
+    const targetEmbedding = fromVector(target.embedding);
+    if (related.length === 0 && targetEmbedding.length > 0) {
       // Use a smaller, indexed query - only recent articles with embeddings
       const sampleArticles = await Article.find({
         _id: { $ne: id },
@@ -4868,10 +4872,10 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
         .limit(100) // Reduced from 200
         .lean();
 
-      // Filter to only articles with embeddings (in JS, faster than $exists in query)
-      const articlesWithEmbeddings = sampleArticles.filter(a =>
-        a.embedding && Array.isArray(a.embedding) && a.embedding.length > 0
-      );
+      // Decode + filter to only articles with embeddings (in JS, faster than $exists in query)
+      const articlesWithEmbeddings = sampleArticles
+        .map(a => ({ ...a, embedding: fromVector(a.embedding) }))
+        .filter(a => a.embedding.length > 0);
 
       const cosineSimilarity = (a, b) => {
         if (!a || !b || a.length !== b.length) return 0;
@@ -4887,7 +4891,7 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
       related = articlesWithEmbeddings
         .map(a => {
           const { embedding, ...rest } = a;
-          return { ...rest, similarity: cosineSimilarity(target.embedding, embedding) };
+          return { ...rest, similarity: cosineSimilarity(targetEmbedding, embedding) };
         })
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, limit);
@@ -5085,7 +5089,9 @@ articleRouter.post('/', auth, async (req, res) => {
     }
 
     const newArticle = new Article({
-      title, content, url, sourceId, category, publishedAt, image, embedding,
+      title, content, url, sourceId, category, publishedAt, image,
+      // Binary float32 vector, not an array of doubles — see utils/vector.js.
+      embedding: toVector(embedding),
     });
     const savedArticle = await newArticle.save();
     res.status(201).json(savedArticle);

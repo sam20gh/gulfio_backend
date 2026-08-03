@@ -74,6 +74,7 @@ const scrapeUaeLottoResults = require('./lottoscrape');
 const LottoResult = require('../models/LottoResult');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
 const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
+const { toVector } = require('../utils/vector');
 const { generateBlurhash } = require('../utils/blurhash');
 const { scrapeYouTubeShortsViaRSS } = require('./youtubeRSSShortsScraper.js'); // Using RSS-based scraper
 const { scrapeYouTubeForSource } = require('./youtubeScraper');
@@ -628,7 +629,8 @@ async function scrapeAllSources(frequency = null) {
                                 category: source.category,
                                 publishedAt: new Date(),
                                 language: source.language || "english",
-                                embedding
+                                // Binary float32 vector, not an array of doubles — see utils/vector.js.
+                                embedding: toVector(embedding)
                             };
 
                             // Add PCA embedding if available

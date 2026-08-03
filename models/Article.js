@@ -26,9 +26,14 @@ const ArticleSchema = new mongoose.Schema({
     likedBy: [{ type: String }],      // Supabase user ID or email
     dislikedBy: [{ type: String }],
     language: { type: String, default: 'english' },
+    // Stored as a BSON Binary float32 vector (subtype 9), not an array of doubles —
+    // ~6.1 KB instead of ~20 KB per article. Mixed so Mongoose passes the Binary
+    // through uncast; legacy array documents still read fine.
+    // Always go through utils/vector.js (toVector/fromVector/vectorLength) — never
+    // touch `.length` or Array.isArray on this field directly.
     embedding: {
-        type: [Number],
-        default: [],
+        type: mongoose.Schema.Types.Mixed,
+        default: undefined,
     },
     embedding_pca: {
         type: [Number],

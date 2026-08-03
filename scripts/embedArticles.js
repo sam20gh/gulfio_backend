@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Article = require('../models/Article');
 const { getDeepSeekEmbedding } = require('../utils/deepseek');
+const { toVector } = require('../utils/vector');
 
 async function embedAllArticles() {
     await mongoose.connect(process.env.MONGO_URI);
@@ -9,7 +10,7 @@ async function embedAllArticles() {
     for (let article of articles) {
         const text = `${article.title}\n\n${article.content?.slice(0, 512) || ''}`;
         try {
-            article.embedding = await getDeepSeekEmbedding(text);
+            article.embedding = toVector(await getDeepSeekEmbedding(text));
             await article.save();
             console.log(`✅ Embedded: ${article.title}`);
         } catch (err) {
