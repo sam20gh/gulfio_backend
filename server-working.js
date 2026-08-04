@@ -284,6 +284,7 @@ function loadRoutes() {
         app.use('/api/youtube', youtubeRoutes);
         app.use('/api/lotto', lottoRoutes);
         app.use('/api/metals', require('./routes/metals'));
+        app.use('/api/fx', require('./routes/fx'));
         app.use('/api/analytics', require('./routes/analytics'));
         app.use('/api/thumbnails', thumbnailRoutes);
         app.use('/api/debug', debugRoutes);
@@ -361,6 +362,15 @@ async function initializeOptimizations() {
                 console.log('⏰ Breaking news expiry job started');
             } catch (error) {
                 console.error('⚠️ Breaking news expiry job failed:', error.message);
+            }
+
+            // FX first — metals reads the shared snapshot this job stores, so
+            // starting it earlier means one HTTP call serves both features.
+            try {
+                const { startExchangeRatesJob } = require('./jobs/refreshExchangeRates');
+                startExchangeRatesJob();
+            } catch (error) {
+                console.error('⚠️ Exchange rates job failed:', error.message);
             }
 
             try {

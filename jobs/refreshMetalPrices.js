@@ -32,7 +32,10 @@ function startMetalPricesJob() {
     console.log('🚀 Metal prices refresh job started (runs daily at 05:00 UTC)');
 
     // Catch-up on startup, but only if we don't already have today's data.
-    setTimeout(() => refreshIfNeeded('startup'), 8000);
+    // Deliberately later than the FX job's 5s boot fetch: metals reads the FX
+    // snapshot, so giving that request time to land means one shared HTTP call
+    // instead of both jobs fetching rates independently.
+    setTimeout(() => refreshIfNeeded('startup'), 25000);
 
     return job;
 }

@@ -1,20 +1,23 @@
 // services/metalPrices.js
 //
-// Fetches gold & silver from GoldAPI (in USD only — 2 calls) plus live daily
-// USD→AED/SAR/QAR rates from a free, keyless FX API, and upserts a single daily
-// snapshot. Keeping GoldAPI to 2 calls/day (~60/month) stays well inside the
-// 100-calls/month free tier, while the FX API supplies genuinely live rates
-// (not the fixed peg).
+// Fetches gold & silver from GoldAPI (in USD only — 2 calls) and upserts a
+// single daily snapshot. Keeping GoldAPI to 2 calls/day (~60/month) stays well
+// inside the 100-calls/month free tier.
+//
+// FX is NOT fetched here. Currency rates are owned by services/exchangeRates.js
+// and shared: whichever job runs first pays for the single daily HTTP call and
+// the other reads the stored snapshot. This service just picks the three Gulf
+// currencies it needs out of that shared set.
 const axios = require('axios');
 const MetalPrice = require('../models/MetalPrice');
+const { getRatesForToday, PEG_FALLBACK } = require('./exchangeRates');
 
 const GOLDAPI_BASE = 'https://www.goldapi.io/api';
-const FX_URL = 'https://open.er-api.com/v6/latest/USD';
 const GRAMS_PER_TROY_OUNCE = 31.1034768;
 const REQUEST_TIMEOUT_MS = 15000;
 
-/** Hard-peg fallbacks, used only if the live FX API is unreachable. */
-const FX_FALLBACK = { AED: 3.6725, SAR: 3.75, QAR: 3.64 };
+/** MetalPrice.fxRates requires exactly these three and they must never be absent. */
+const METAL_CURRENCIES = ['AED', 'SAR', 'QAR'];
 
 /** UTC date key, 'YYYY-MM-DD'. */
 function todayKey(d = new Date()) {
@@ -49,25 +52,24 @@ async function fetchMetalUsd(metal) {
     };
 }
 
-/** Live USD→Gulf currency rates; falls back to pegs if the FX API fails. */
+/**
+ * USD→Gulf currency rates, taken from the shared daily FX snapshot.
+ *
+ * Any currency missing from the snapshot falls back to its official peg —
+ * accurate rather than approximate, since AED/SAR/QAR are all pegged to USD by
+ * their central banks and do not float.
+ */
 async function fetchFxRates() {
-    try {
-        const { data } = await axios.get(FX_URL, { timeout: REQUEST_TIMEOUT_MS });
-        const rates = data && data.rates;
-        if (data?.result === 'success' && rates && rates.AED && rates.SAR && rates.QAR) {
-            return {
-                rates: { AED: rates.AED, SAR: rates.SAR, QAR: rates.QAR },
-                source: 'open.er-api.com',
-                updatedAt: data.time_last_update_unix
-                    ? new Date(data.time_last_update_unix * 1000)
-                    : new Date(),
-            };
-        }
-        throw new Error('FX API returned unexpected payload');
-    } catch (err) {
-        console.warn('⚠️ [Metals] FX API failed, using peg fallback:', err.message);
-        return { rates: { ...FX_FALLBACK }, source: 'peg-fallback', updatedAt: new Date() };
+    const snapshot = await getRatesForToday();
+    const rates = {};
+    for (const code of METAL_CURRENCIES) {
+        rates[code] = snapshot.rates?.[code] ?? PEG_FALLBACK[code];
     }
+    return {
+        rates,
+        source: snapshot.source,
+        updatedAt: snapshot.providerUpdatedAt || snapshot.fetchedAt || new Date(),
+    };
 }
 
 /**
