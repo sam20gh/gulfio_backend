@@ -7,25 +7,41 @@ if (process.env.REDIS_URL) {
     try {
         redis = new Redis(process.env.REDIS_URL, {
             connectTimeout: 10000,
+            // Per-command cap: while the connection is down, a command gives up after
+            // this many reconnect attempts and rejects. The wrapper methods below catch
+            // that and return their safe default, so callers degrade instead of hanging.
             maxRetriesPerRequest: 3,
             enableOfflineQueue: true, // Allow commands to queue while connecting
             lazyConnect: false, // Connect immediately
-            retryStrategy: (times) => {
-                if (times > 3) {
-                    console.warn('⚠️ Redis max retries reached, disabling cache');
-                    return null; // Stop retrying
-                }
-                return Math.min(times * 100, 2000); // Exponential backoff
+            // Reconnect forever with capped backoff. This must never return null:
+            // returning null makes ioredis give up permanently, so a single blip
+            // would kill caching AND rate limiting until the container restarted.
+            retryStrategy: (times) => Math.min(times * 200, 30000),
+        });
+
+        // Throttled so a long outage doesn't flood logs — ioredis emits 'error' on
+        // every failed reconnect attempt.
+        let lastErrorLog = 0;
+        let sawError = false;
+        redis.on('error', (err) => {
+            sawError = true;
+            const now = Date.now();
+            if (now - lastErrorLog > 30000) {
+                lastErrorLog = now;
+                // Do NOT null out the client here — ioredis reconnects on its own, and
+                // isConnected() already reports status === 'ready' so callers fail open
+                // while it's down and resume automatically once it recovers.
+                console.error('Redis error (reconnecting):', err.message);
             }
         });
 
-        redis.on('error', (err) => {
-            console.error('Redis error:', err);
-            redis = null; // Disable redis on error
-        });
-
-        redis.on('connect', () => {
-            console.log('✅ Redis connected successfully');
+        redis.on('ready', () => {
+            if (sawError) {
+                sawError = false;
+                console.log('✅ Redis reconnected');
+            } else {
+                console.log('✅ Redis connected successfully');
+            }
         });
     } catch (error) {
         console.warn('⚠️ Redis initialization failed, continuing without cache:', error.message);
