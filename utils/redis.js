@@ -104,6 +104,18 @@ module.exports = {
             return 0;
         }
     },
+    // Returns the value after increment (1 on first write), so callers can tell
+    // "I just created this key" from "I bumped an existing one" — that's how the
+    // daily-limit counters know when to set their TTL. Returns 0 when unavailable.
+    incr: async (key) => {
+        if (!redis) return 0;
+        try {
+            return await redis.incr(key);
+        } catch (error) {
+            console.warn('Redis INCR error:', error.message);
+            return 0;
+        }
+    },
     expire: async (key, seconds) => {
         if (!redis) return;
         try {

@@ -210,9 +210,13 @@ class PointsService {
                 await redis.set(cooldownKey, '1', 'PX', cooldownMs);
             }
 
-            // Increment daily count with 24hr expiry
-            await redis.incr(dailyKey);
-            await redis.expire(dailyKey, 86400);
+            // Increment daily count, setting the 24h TTL only when the counter is
+            // first created. Re-expiring on every action would slide the window
+            // forward indefinitely, so an active user's count would never reset.
+            const newCount = await redis.incr(dailyKey);
+            if (newCount === 1) {
+                await redis.expire(dailyKey, 86400);
+            }
 
             return true;
         } catch (error) {
