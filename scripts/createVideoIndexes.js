@@ -79,17 +79,21 @@ async function createIndexes() {
         // Verify Atlas Search vector index exists
         console.log('🔍 Checking for Atlas Search vector index...');
         try {
-            const indexes = await db.collection('reels').listIndexes().toArray();
-            const vectorIndex = indexes.find(idx => idx.name === 'reel_vector_index');
+            // listSearchIndexes, not listIndexes — search indexes live in mongot and
+            // never appear in the btree index list, so the old check could never pass.
+            const indexes = await db.collection('reels').listSearchIndexes().toArray();
+            const vectorIndex = indexes.find(idx => idx.name === 'default');
 
             if (vectorIndex) {
-                console.log('✅ Atlas Search vector index "reel_vector_index" found');
+                console.log('✅ Atlas vector search index "default" found');
                 console.log(`📊 Vector index details:`, {
                     name: vectorIndex.name,
-                    type: vectorIndex.type || 'search'
+                    type: vectorIndex.type || 'search',
+                    status: vectorIndex.status,
+                    queryable: vectorIndex.queryable
                 });
             } else {
-                console.log('⚠️ Atlas Search vector index "reel_vector_index" not found');
+                console.log('⚠️ Atlas vector search index "default" not found');
                 console.log('📝 Please create the vector index manually in MongoDB Atlas:');
                 console.log(`
 {

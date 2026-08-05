@@ -4501,28 +4501,31 @@ router.post('/reels/precompute-recommendations', async (req, res) => {
                         .limit(100)
                         .distinct('articleId');
 
-                    // Atlas Search kNN query
+                    const excludedIds = lastSeenReelIds
+                        .concat(userPrefs.disliked_videos || [])
+                        .map(id => typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id);
+
+                    // Atlas Vector Search. Was $search + knnBeta against
+                    // 'reel_vector_index', which does not exist on the cluster — the
+                    // reels vectorSearch index is named 'default'. It has no filter
+                    // fields, so exclusions run as a post-search $match and the
+                    // candidate pool is oversized to absorb them.
                     const reels = await Reel.aggregate([
                         {
-                            $search: {
-                                index: 'reel_vector_index',
-                                knnBeta: {
-                                    vector: userEmbedding,
-                                    path: 'embedding_pca',
-                                    k: 40,
-                                    filter: {
-                                        compound: {
-                                            mustNot: [{
-                                                terms: {
-                                                    path: '_id',
-                                                    value: lastSeenReelIds.concat(userPrefs.disliked_videos || [])
-                                                }
-                                            }]
-                                        }
-                                    }
-                                }
+                            $vectorSearch: {
+                                index: 'default',
+                                path: 'embedding_pca',
+                                queryVector: userEmbedding,
+                                // limit must stay <= numCandidates; excludedIds is unbounded
+                                // (disliked_videos), so scale the pool with it.
+                                numCandidates: Math.min(Math.max(300, (40 + excludedIds.length) * 3), 2000),
+                                limit: Math.min(40 + excludedIds.length, 2000)
                             }
                         },
+                        { $addFields: { _searchScore: { $meta: 'vectorSearchScore' } } },
+                        ...(excludedIds.length > 0
+                            ? [{ $match: { _id: { $nin: excludedIds } } }]
+                            : []),
                         { $limit: 40 },
                         {
                             $lookup: {

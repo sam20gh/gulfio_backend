@@ -4,11 +4,18 @@ const {
     chatCompletion,
     streamChatCompletion,
 } = require('./openaiClient');
+const { convertToPCAEmbedding } = require('../utils/pcaEmbedding');
 
 const CHAT_MODEL = 'gpt-4o-mini';
 const MAX_ARTICLES = 4;
-const VECTOR_INDEX_NAME = 'vec_full';
-const VECTOR_CANDIDATES = 150;
+// `default` is the 128D embedding_pca index. It replaces the old 1536D `vec_full`
+// index, which cost ~2.5GB of mongot memory + re-indexing on every scraped article
+// to serve this one endpoint. `default` also indexes language/category as filter
+// fields, so those are pushed into $vectorSearch instead of post-filtering.
+const VECTOR_INDEX_NAME = 'default';
+// Higher than the old 150: filters now run inside the vector stage, so the
+// candidate pool has to survive them. Cheap at 128 dims.
+const VECTOR_CANDIDATES = 200;
 const MAX_TOKENS = 450;
 const ARTICLE_PREVIEW_CHARS = 180;
 const GOOD_SCORE_THRESHOLD = 0.35;
@@ -35,25 +42,30 @@ function detectLocation(query) {
 // Legacy export name kept for backward compatibility
 const generateQueryEmbedding = embedQuery;
 
-async function runVectorSearch(queryEmbedding, matchConditions, detectedLocation) {
+/**
+ * @param {number[]} pcaVector 128D query vector, already projected through the global PCA model
+ * @param {object} filterConditions equality conditions on indexed filter fields (language/category)
+ */
+async function runVectorSearch(pcaVector, filterConditions, detectedLocation) {
     const recentDate = new Date();
     recentDate.setDate(recentDate.getDate() - 30);
     const veryRecentDate = new Date();
     veryRecentDate.setDate(veryRecentDate.getDate() - 7);
 
-    const pipeline = [{
-        $vectorSearch: {
-            index: VECTOR_INDEX_NAME,
-            path: 'embedding',
-            queryVector: queryEmbedding,
-            numCandidates: VECTOR_CANDIDATES,
-            limit: MAX_ARTICLES * 4,
-        },
-    }];
-
-    if (Object.keys(matchConditions).length > 0) {
-        pipeline.push({ $match: matchConditions });
+    const vectorStage = {
+        index: VECTOR_INDEX_NAME,
+        path: 'embedding_pca',
+        queryVector: pcaVector,
+        numCandidates: VECTOR_CANDIDATES,
+        limit: MAX_ARTICLES * 4,
+    };
+    // language/category are indexed filter fields on `default`, so filtering here
+    // is both cheaper and higher-recall than $match after limit:16 truncated the pool.
+    if (Object.keys(filterConditions).length > 0) {
+        vectorStage.filter = filterConditions;
     }
+
+    const pipeline = [{ $vectorSearch: vectorStage }];
 
     // Title-only location regex (dropped expensive substring scan on $content)
     pipeline.push({
@@ -122,18 +134,27 @@ async function searchArticles(query, category = null, _userId = null, _usePerson
         const detectedLocation = detectLocation(query);
         const queryEmbedding = precomputedEmbedding || await embedQuery(query);
 
-        const matchConditions = {};
-        if (category && category !== 'all') matchConditions.category = category;
-        matchConditions.language = detectedLanguage;
+        // Articles are indexed on embedding_pca (128D), so the 1536D query vector has
+        // to go through the same persisted PCA basis. If the model can't load there is
+        // no usable vector path — text search is the only correct answer.
+        const pcaVector = await convertToPCAEmbedding(queryEmbedding);
+        if (!pcaVector || pcaVector.length === 0) {
+            console.warn('⚠️ PCA projection unavailable for query — falling back to text search');
+            return fallbackTextSearch(query, category, detectedLocation, detectedLanguage);
+        }
 
-        let articles = await runVectorSearch(queryEmbedding, matchConditions, detectedLocation);
+        const filterConditions = {};
+        if (category && category !== 'all') filterConditions.category = category;
+        filterConditions.language = detectedLanguage;
+
+        let articles = await runVectorSearch(pcaVector, filterConditions, detectedLocation);
 
         // If language filter eliminated everything, drop ONLY the language filter
         // and rerun once (instead of doing a full re-search with original conditions).
         if (articles.length === 0) {
             const broadConditions = {};
             if (category && category !== 'all') broadConditions.category = category;
-            articles = await runVectorSearch(queryEmbedding, broadConditions, detectedLocation);
+            articles = await runVectorSearch(pcaVector, broadConditions, detectedLocation);
         }
 
         const hasGoodResults = articles.some(a => a.relevanceScore && a.relevanceScore > GOOD_SCORE_THRESHOLD);

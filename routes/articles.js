@@ -4821,7 +4821,11 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
         const vectorResults = await Article.aggregate([
           {
             $vectorSearch: {
-              index: 'article_embeddings_pca',
+              // Must be VECTOR_INDEX ('default'). The old 'article_embeddings_pca'
+              // name does not exist on the cluster, so this stage always threw and
+              // silently dropped every request into the Method 2 cosine fallback —
+              // which reads 100 full articles (embeddings included) off disk.
+              index: VECTOR_INDEX,
               path: 'embedding_pca',
               queryVector: target.embedding_pca,
               numCandidates: limit * 10,

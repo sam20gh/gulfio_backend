@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
     await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 30000, connectTimeoutMS: 30000 });
     const Article = require('../models/Article');
     const lang = 'english';
-    const VECTOR_INDEX = 'article_embeddings_pca';
+    const VECTOR_INDEX = 'default';
 
     const time = async (label, fn) => {
         const t = Date.now();
