@@ -24,6 +24,44 @@ const openaiAxios = axios.create({
     },
 });
 
+// Surface the actual OpenAI error body so failures are self-explanatory in the
+// logs (e.g. quota exhaustion) instead of a generic axios "Request failed with
+// status code 429". Also tags the error so route handlers can distinguish an
+// "AI temporarily unavailable" condition from a real server bug.
+openaiAxios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        const status = error.response?.status;
+        const body = error.response?.data;
+        // Streaming requests reject with a stream body, not JSON — only read it
+        // when it's a plain object.
+        const apiError =
+            body && typeof body === 'object' && typeof body.pipe !== 'function'
+                ? body.error
+                : undefined;
+
+        if (status) {
+            console.error(
+                `❌ OpenAI API ${status}`,
+                apiError
+                    ? `[${apiError.type || 'error'}/${apiError.code || 'n/a'}] ${apiError.message}`
+                    : error.message
+            );
+        }
+
+        if (apiError) {
+            error.openaiError = apiError; // { message, type, code, ... }
+        }
+        error.isQuotaError =
+            apiError?.type === 'insufficient_quota' ||
+            apiError?.code === 'insufficient_quota' ||
+            apiError?.code === 'credit_balance_exhausted';
+        error.isRateLimit = status === 429 && !error.isQuotaError;
+
+        return Promise.reject(error);
+    }
+);
+
 function embedCacheKey(text) {
     return `ai:embed:${EMBEDDING_MODEL}:${crypto.createHash('sha1').update(text.trim().toLowerCase()).digest('hex')}`;
 }

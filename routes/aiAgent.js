@@ -212,6 +212,16 @@ router.post('/chat/message', auth, async (req, res) => {
     } catch (error) {
         console.error('Error processing message:', error.message);
         if (!res.headersSent) {
+            // OpenAI quota/rate-limit is a transient "temporarily unavailable"
+            // condition, not a server bug — return 503 so the client can tell the
+            // difference and show a clearer message.
+            if (error.isQuotaError || error.isRateLimit) {
+                return res.status(503).json({
+                    success: false,
+                    error: 'AI is temporarily unavailable',
+                    fallback: "I'm a little overloaded right now. Please try again in a moment.",
+                });
+            }
             res.status(500).json({
                 success: false,
                 error: 'Failed to process message',
