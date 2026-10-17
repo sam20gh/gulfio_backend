@@ -5,6 +5,7 @@ const Poll = require('../models/Poll');
 const PollVote = require('../models/PollVote');
 const Article = require('../models/Article');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const PointsService = require('../services/pointsService');
 const { chatCompletionJSON } = require('../services/openaiClient');
 
@@ -113,7 +114,8 @@ function serializePoll(poll, userVote) {
  * Returns the article's poll, generating it on first request.
  * Guests (admin key, no JWT) get the poll without userVote.
  */
-router.get('/article/:articleId', auth, async (req, res) => {
+// Public read so signed-out readers see the poll; userVote is only filled when a token is sent.
+router.get('/article/:articleId', optionalAuth, async (req, res) => {
     const { articleId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(articleId)) {
         return res.status(400).json({ message: 'Invalid article id' });

@@ -4909,7 +4909,8 @@ articleRouter.get('/related-embedding/:id', async (req, res) => {
 });
 
 // Feature (unchanged, minus minor cleanups)
-articleRouter.get('/feature', auth, async (req, res) => {
+// Public read: signed-out readers use this. optionalAuth still attaches the user when a token is sent.
+articleRouter.get('/feature', optionalAuth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
@@ -4981,7 +4982,8 @@ articleRouter.get('/feature', auth, async (req, res) => {
 });
 
 // Breaking (unchanged)
-articleRouter.get('/headline', auth, async (req, res) => {
+// Public read: signed-out readers use this. optionalAuth still attaches the user when a token is sent.
+articleRouter.get('/headline', optionalAuth, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;

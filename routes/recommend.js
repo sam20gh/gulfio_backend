@@ -7,6 +7,7 @@ const express = require('express');
 const User = require('../models/User');
 const { recommendationIndex } = require('../recommendation/fastIndex');
 const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/studioAuth');
 
 const router = express.Router();
 
@@ -212,7 +213,8 @@ router.post('/recommend/feedback', auth, async (req, res) => {
  * POST /recommend/rebuild-index
  * Rebuild recommendation index (admin)
  */
-router.post('/recommend/rebuild-index', async (req, res) => {
+// Rebuilding the index is expensive; it was open to anyone. The app never calls it.
+router.post('/recommend/rebuild-index', requireAdmin, async (req, res) => {
     try {
         console.log('🔄 Manual index rebuild requested');
         const success = await recommendationIndex.forceRebuild();

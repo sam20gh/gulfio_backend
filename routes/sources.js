@@ -6,6 +6,10 @@ const Article = require('../models/Article');
 const { invalidateSourceCache } = require('../utils/sourceCache');
 
 const { requireStudio, requireAdmin, assertSource } = require('../middleware/studioAuth');
+const optionalAuth = require('../middleware/optionalAuth');
+
+// Commercial terms are for the studio (/api/studio/sources), not the public app list.
+const PRIVATE_SOURCE_FIELDS = '-revSharePercent -payoutCurrency -quality_score -quality_score_updated_at';
 
 const { scrapeReelsForSource } = require('../scraper/instagramReels');
 const { scrapeYouTubeForSource } = require('../scraper/youtubeScraper');
@@ -38,9 +42,10 @@ router.get('/public', async (req, res) => {
     }
 });
 
-router.get('/', auth, async (req, res) => {
+// Public read: the app lists sources for signed-out readers too (it used to need the admin key).
+router.get('/', optionalAuth, async (req, res) => {
     try {
-        const sources = await Source.find({ status: { $ne: 'blocked' } });
+        const sources = await Source.find({ status: { $ne: 'blocked' } }).select(PRIVATE_SOURCE_FIELDS);
 
         // Get article counts for each source
         const sourceIds = sources.map(s => s._id);
@@ -153,7 +158,8 @@ router.get('/:id/youtube/videos', requireStudio(), async (req, res) => {
 });
 
 // Search sources endpoint
-router.get('/search', auth, async (req, res) => {
+// Public read: signed-out readers use this. optionalAuth still attaches the user when a token is sent.
+router.get('/search', optionalAuth, async (req, res) => {
     try {
         const query = req.query.query?.trim();
         // Only filter by language when explicitly requested. Defaulting to
@@ -180,6 +186,7 @@ router.get('/search', auth, async (req, res) => {
         if (language) conditions.push({ language });
 
         const results = await Source.find({ $and: conditions })
+            .select(PRIVATE_SOURCE_FIELDS)
             .sort({ followers: -1 }) // Sort by popularity
             .limit(20); // Limit results
 

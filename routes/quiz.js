@@ -6,6 +6,7 @@ const QuizAttempt = require('../models/QuizAttempt');
 const Article = require('../models/Article');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const PointsService = require('../services/pointsService');
 const { chatCompletionJSON } = require('../services/openaiClient');
 
@@ -243,7 +244,8 @@ router.post('/:quizId/submit', auth, async (req, res) => {
  * GET /api/quiz/leaderboard?days=7&limit=20
  * Total quiz score over the window — powers a weekly quiz leaderboard.
  */
-router.get('/leaderboard', auth, async (req, res) => {
+// Public read: signed-out readers use this. optionalAuth still attaches the user when a token is sent.
+router.get('/leaderboard', optionalAuth, async (req, res) => {
     const days = Math.min(parseInt(req.query.days, 10) || 7, 31);
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
     const sinceKey = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
