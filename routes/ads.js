@@ -4,6 +4,7 @@ const AdRevenueEvent = require('../models/AdRevenueEvent');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
 const mongoose = require('mongoose');
+const { requireAdmin } = require('../middleware/studioAuth');
 
 // Allowlist of valid ad unit IDs (only for source-attributed content)
 const VALID_AD_UNIT_IDS = [
@@ -114,7 +115,7 @@ router.post('/paid', rateLimit, async (req, res) => {
 });
 
 // GET /api/ads/summary/sources - Summarize revenue by source
-router.get('/summary/sources', async (req, res) => {
+router.get('/summary/sources', requireAdmin, async (req, res) => {
     try {
         const { from, to, currency = 'USD' } = req.query;
 
@@ -223,7 +224,7 @@ router.get('/summary/sources', async (req, res) => {
 });
 
 // GET /api/ads/events - Get recent ad revenue events (for debugging)
-router.get('/events', async (req, res) => {
+router.get('/events', requireAdmin, async (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 50, 500);
         const skip = parseInt(req.query.skip) || 0;

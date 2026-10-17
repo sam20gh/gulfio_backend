@@ -3,8 +3,9 @@ const router = express.Router();
 const scrapeAllSources = require('../scraper/scrape');
 const testSingleSource = require('../scraper/testSingleSource');
 const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/studioAuth');
 
-router.post('/', auth, async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
     try {
         await scrapeAllSources();
         res.json({ message: 'Scraping completed.' });

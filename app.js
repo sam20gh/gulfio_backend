@@ -79,7 +79,7 @@ const initializeCacheWarmer = () => {
 
 app.use(cors({
     origin: '*', // Or specify your app's origin e.g. 'https://your-app-url'
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'], // ✅ crucial
 }));
 
@@ -264,6 +264,7 @@ app.use('/api/gamification', gamificationRoutes); // 🎮 Gamification routes
 // PHASE 2: Background jobs
 console.log('🔧 Registering jobs router at /api/jobs');
 app.use('/api/jobs', jobsRouter);
+app.use('/api/studio', require('./routes/studio')); // Admin + publisher panel
 console.log('✅ Jobs router registered successfully');
 
 // Image proxy endpoint for SSL certificate issues

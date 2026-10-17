@@ -42,6 +42,7 @@ const redis = require('../utils/redis'); // Ensure Redis is set up
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const router = express.Router();
+const { requireStudio, assertSource } = require('../middleware/studioAuth');
 
 // ============================================
 // PHASE 2.2: SMART CACHING
@@ -3794,9 +3795,11 @@ router.post('/user/clear-history', async (req, res) => {
 });
 
 // ===================== NEW: UPLOAD REEL ROUTE =====================
-router.post('/reels/upload', async (req, res) => {
+// Studio roles only, and only into a source the caller owns (it was fully open).
+router.post('/reels/upload', requireStudio(), async (req, res) => {
     try {
         const { reelUrl, caption, sourceId } = req.body;
+        if (sourceId && !assertSource(req, res, sourceId)) return;
         console.log(`📥 Received upload request: ${JSON.stringify({ reelUrl, caption, sourceId })}`);
 
         if (!reelUrl || !caption || !sourceId) {
@@ -4002,8 +4005,9 @@ router.post('/reels/upload', async (req, res) => {
 });
 
 // ============= Instagram refresh route remains unchanged =============
-router.post('/:id/instagram/refresh', async (req, res) => {
+router.post('/:id/instagram/refresh', requireStudio(), async (req, res) => {
     try {
+        if (!assertSource(req, res, req.params.id)) return;
         const source = await Source.findById(req.params.id);
         if (!source || !source.instagramUsername) {
             return res.status(404).json({ error: 'No Instagram username configured for this source' });

@@ -9,6 +9,7 @@ const sendExpoNotification = require('../utils/sendExpoNotification');
 const NotificationService = require('../utils/notificationService');
 const ensureMongoUser = require('../middleware/ensureMongoUser')
 const optionalAuth = require('../middleware/optionalAuth')
+const { requireAdmin } = require('../middleware/studioAuth');
 const redisClient = require('../utils/redis');
 const { dashboardSummaryKey, invalidateDashboardSummary } = require('../utils/dashboardCache');
 const axios = require('axios');
@@ -1215,7 +1216,7 @@ router.get('/notification-settings', auth, async (req, res) => {
 });
 
 // Admin route to send breaking news notifications
-router.post('/admin/send-breaking-news', auth, async (req, res) => {
+router.post('/admin/send-breaking-news', requireAdmin, async (req, res) => {
     try {
         // Note: You might want to add admin role verification here
         const { title, body, articleId, targetUsers } = req.body;
@@ -1253,7 +1254,7 @@ router.post('/admin/send-breaking-news', auth, async (req, res) => {
 });
 
 // Admin route to send followed source notifications
-router.post('/admin/send-followed-source-notification', auth, async (req, res) => {
+router.post('/admin/send-followed-source-notification', requireAdmin, async (req, res) => {
     try {
         const { sourceName, title, articleId } = req.body;
 
@@ -1288,7 +1289,7 @@ router.post('/admin/send-followed-source-notification', auth, async (req, res) =
 });
 
 // Admin route to send weekly digest
-router.post('/admin/send-weekly-digest', auth, async (req, res) => {
+router.post('/admin/send-weekly-digest', requireAdmin, async (req, res) => {
     try {
         const { title, body, data, targetUsers } = req.body;
 

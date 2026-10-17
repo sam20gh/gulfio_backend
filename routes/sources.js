@@ -5,6 +5,8 @@ const Reel = require('../models/Reel');
 const Article = require('../models/Article');
 const { invalidateSourceCache } = require('../utils/sourceCache');
 
+const { requireStudio, requireAdmin, assertSource } = require('../middleware/studioAuth');
+
 const { scrapeReelsForSource } = require('../scraper/instagramReels');
 const { scrapeYouTubeForSource } = require('../scraper/youtubeScraper');
 // Avoid redeclaring 'auth' if already declared elsewhere
@@ -47,7 +49,8 @@ router.get('/', auth, async (req, res) => {
     }
 });
 
-router.post('/', auth, async (req, res) => {
+// Writes are admin-only here; publishers manage their own sources via /api/studio/sources.
+router.post('/', requireAdmin, async (req, res) => {
     try {
         const newSource = new Source(req.body);
         await newSource.save();
@@ -57,7 +60,7 @@ router.post('/', auth, async (req, res) => {
         res.status(400).json({ message: err.message });
     }
 });
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', requireAdmin, async (req, res) => {
     try {
         const updated = await Source.findByIdAndUpdate(req.params.id, req.body, { new: true });
         if (!updated) return res.status(404).json({ message: 'Source not found' });
@@ -67,7 +70,7 @@ router.put('/:id', auth, async (req, res) => {
         res.status(400).json({ message: err.message });
     }
 });
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
     try {
         const deleted = await Source.findByIdAndDelete(req.params.id);
         if (!deleted) return res.status(404).json({ message: 'Source not found' });
@@ -78,8 +81,9 @@ router.delete('/:id', auth, async (req, res) => {
     }
 });
 
-router.get('/:id/instagram/reels', async (req, res) => {
+router.get('/:id/instagram/reels', requireStudio(), async (req, res) => {
     try {
+        if (!assertSource(req, res, req.params.id)) return;
         const source = await Source.findById(req.params.id);
         if (!source || !source.instagramUsername) {
             return res.status(404).json({ error: 'No Instagram account configured' });
@@ -94,7 +98,8 @@ router.get('/:id/instagram/reels', async (req, res) => {
         res.status(502).json({ error: err.message });
     }
 });
-router.post('/:id/youtube', async (req, res) => {
+router.post('/:id/youtube', requireStudio(), async (req, res) => {
+    if (!assertSource(req, res, req.params.id)) return;
     const { youtubeChannelId } = req.body;
     if (!youtubeChannelId) {
         return res.status(400).json({ error: 'YouTube Channel ID is required' });
@@ -113,8 +118,9 @@ router.post('/:id/youtube', async (req, res) => {
 });
 
 // GET /api/sources/:id/youtube/videos
-router.get('/:id/youtube/videos', async (req, res) => {
+router.get('/:id/youtube/videos', requireStudio(), async (req, res) => {
     try {
+        if (!assertSource(req, res, req.params.id)) return;
         const source = await Source.findById(req.params.id);
         if (!source || !source.youtubeChannelId) {
             return res.status(404).json({ error: 'YouTube Channel not configured' });

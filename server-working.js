@@ -11,7 +11,7 @@ const app = express();
 // Middleware
 app.use(cors({
     origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
 }));
 
@@ -319,6 +319,14 @@ function loadRoutes() {
         console.log('💬 Mounting Messages routes at /api/messages...');
         app.use('/api/messages', messagesRoutes); // Direct messages (1:1)
         console.log('✅ Messages routes mounted successfully');
+
+        // Studio (admin + publisher panel). Own try so a failure here can't take the app's routes down.
+        try {
+            app.use('/api/studio', require('./routes/studio'));
+            console.log('✅ Studio routes mounted at /api/studio');
+        } catch (studioErr) {
+            console.error('❌ Failed to load studio routes:', studioErr.message);
+        }
 
         console.log('🎉 All API routes loaded successfully!');
 
