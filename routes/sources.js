@@ -18,6 +18,26 @@ try {
     auth = (_, __, next) => next();
 }
 
+// Public, logo-only list for the www.gulfio.app home page marquee. Unauthenticated by
+// design, so it exposes nothing beyond what the app already shows readers: name, logo
+// and publisher group of active sources. (The page used to call GET / with the admin key.)
+let publicSourcesCache = { at: 0, data: null };
+router.get('/public', async (req, res) => {
+    try {
+        if (!publicSourcesCache.data || Date.now() - publicSourcesCache.at > 10 * 60 * 1000) {
+            const sources = await Source.find({ status: { $nin: ['suspended', 'blocked'] } })
+                .select('name icon groupName -_id')
+                .sort({ followers: -1 })
+                .lean();
+            publicSourcesCache = { at: Date.now(), data: sources };
+        }
+        res.set('Cache-Control', 'public, max-age=600');
+        res.json(publicSourcesCache.data);
+    } catch (err) {
+        res.status(500).json({ message: 'Could not load sources' });
+    }
+});
+
 router.get('/', auth, async (req, res) => {
     try {
         const sources = await Source.find({ status: { $ne: 'blocked' } });

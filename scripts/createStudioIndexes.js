@@ -39,7 +39,8 @@ const SPECS = [
 ];
 
 (async () => {
-    await mongoose.connect(process.env.MONGO_URI);
+    // Index builds on ~550k articles outlast the default socket timeout; wait as long as it takes.
+    await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 30000, socketTimeoutMS: 0 });
     const db = mongoose.connection.db;
 
     for (const spec of SPECS) {
@@ -60,6 +61,11 @@ const SPECS = [
     if (!APPLY) console.log('\nDry run. Re-run with --apply to build.');
     await mongoose.disconnect();
 })().catch((err) => {
+    if (err.name === 'MongoNetworkTimeoutError') {
+        // The build keeps running on Atlas after the client drops — re-run this script
+        // in a few minutes; it reports "already exists" once the build has finished.
+        console.error('Connection dropped; the build likely continues server-side. Re-run in a few minutes to confirm.');
+    }
     console.error(err);
     process.exit(1);
 });
