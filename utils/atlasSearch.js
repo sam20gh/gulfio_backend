@@ -90,7 +90,13 @@ async function searchArticles({
         });
     }
 
-    // Build aggregation pipeline
+    // Build aggregation pipeline.
+    //
+    // Pagination happens straight after $search, and the total comes from $$SEARCH_META
+    // with a lowerBound count. The previous version ran a $facet with $count over every
+    // match, which materialised the whole result set before returning 20 rows: 26s for
+    // "dubai" (16k matches) and 50s for "الإمارات" (42k). lowerBound counts exactly up to
+    // the threshold and approximately beyond it, which is all a results header needs.
     const pipeline = [
         {
             $search: {
@@ -102,69 +108,61 @@ async function searchArticles({
                 highlight: {
                     path: ['title', 'content']
                 },
-                count: { type: 'total' }
+                count: { type: 'lowerBound', threshold: 1000 }
             }
         },
+        { $skip: skip },
+        { $limit: limit },
         {
             $addFields: {
                 searchScore: { $meta: 'searchScore' },
-                highlights: { $meta: 'searchHighlights' }
+                highlights: { $meta: 'searchHighlights' },
+                searchMeta: '$$SEARCH_META'
             }
         },
-        // Get total count before pagination
         {
-            $facet: {
-                metadata: [{ $count: 'total' }],
-                articles: [
-                    { $skip: skip },
-                    { $limit: limit },
-                    {
-                        $lookup: {
-                            from: 'sources',
-                            localField: 'sourceId',
-                            foreignField: '_id',
-                            as: 'source'
-                        }
-                    },
-                    {
-                        $unwind: {
-                            path: '$source',
-                            preserveNullAndEmptyArrays: true
-                        }
-                    },
-                    {
-                        $project: {
-                            _id: 1,
-                            title: 1,
-                            content: { $substrCP: ['$content', 0, 500] }, // Truncate content
-                            url: 1,
-                            category: 1,
-                            publishedAt: 1,
-                            image: 1,
-                            viewCount: 1,
-                            likes: 1,
-                            dislikes: 1,
-                            language: 1,
-                            searchScore: 1,
-                            highlights: 1,
-                            sourceId: 1,
-                            sourceName: '$source.name',
-                            sourceIcon: '$source.icon',
-                            sourceGroupName: '$source.groupName'
-                        }
-                    }
-                ]
+            $lookup: {
+                from: 'sources',
+                localField: 'sourceId',
+                foreignField: '_id',
+                as: 'source'
+            }
+        },
+        {
+            $unwind: {
+                path: '$source',
+                preserveNullAndEmptyArrays: true
+            }
+        },
+        {
+            $project: {
+                _id: 1,
+                title: 1,
+                content: { $substrCP: ['$content', 0, 500] }, // Truncate content
+                url: 1,
+                category: 1,
+                publishedAt: 1,
+                image: 1,
+                viewCount: 1,
+                likes: 1,
+                dislikes: 1,
+                language: 1,
+                searchScore: 1,
+                highlights: 1,
+                sourceId: 1,
+                sourceName: '$source.name',
+                sourceIcon: '$source.icon',
+                sourceGroupName: '$source.groupName',
+                searchMeta: 1
             }
         }
     ];
 
     try {
-        const results = await Article.aggregate(pipeline);
+        const rows = await Article.aggregate(pipeline);
 
-        const total = results[0]?.metadata[0]?.total || 0;
-        const articles = results[0]?.articles || [];
-
-        console.log(`✅ Atlas Search found ${total} total, returning ${articles.length} articles`);
+        const total = rows[0]?.searchMeta?.count?.lowerBound || 0;
+        const articles = rows.map(({ searchMeta, ...article }) => article);
 
         return { articles, total };
     } catch (error) {
