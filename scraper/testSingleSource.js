@@ -3,7 +3,8 @@ const cheerio = require('cheerio');
 const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
-const { fetchWithPuppeteer } = require('./fetchWithPuppeteer');
+// The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
+const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
 // Utility functions from the main scraper
 function cleanText(text) {
@@ -637,7 +638,6 @@ async function testSingleSource(sourceId) {
                 console.log('🔍 SPA detected, switching to Puppeteer for JavaScript rendering...');
 
                 try {
-                    const fetchWithPuppeteer = require('./fetchWithPuppeteer');
                     const puppeteerResult = await fetchWithPuppeteer(source.url);
                     const puppeteerHtml = puppeteerResult.html;
                     $ = cheerio.load(puppeteerHtml);
