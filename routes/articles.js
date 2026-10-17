@@ -4932,7 +4932,9 @@ articleRouter.get('/feature', auth, async (req, res) => {
     const skip = (page - 1) * limit;
     const articles = await Article.aggregate([
       { $match: { category: 'feature', language } },
-      { $sort: { publishedAt: -1 } },
+      // Most recently featured first (set by the studio); legacy features without
+      // featuredAt fall back to publish date after them.
+      { $sort: { featuredAt: -1, publishedAt: -1 } },
       { $skip: skip },
       { $limit: limit },
       {

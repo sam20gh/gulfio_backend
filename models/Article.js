@@ -41,6 +41,13 @@ const ArticleSchema = new mongoose.Schema({
     },
     relatedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Article' }],
 
+    // Home-screen carousel (GET /articles/feature). Articles are featured by setting
+    // category 'feature'; featuredAt orders the carousel so a newly featured story takes
+    // slot 1 even if it was published days ago, and featurePreviousCategory lets the
+    // studio put a story back where it came from when it leaves the carousel.
+    featuredAt: { type: Date, default: undefined },
+    featurePreviousCategory: { type: String, default: undefined },
+
     // Phase 3.3: Breaking News Support
     isBreakingNews: { type: Boolean, default: false },
     breakingNewsExpiry: { type: Date }, // Auto-expire breaking status after set duration

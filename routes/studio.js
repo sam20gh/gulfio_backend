@@ -83,7 +83,11 @@ const delta = (cur, prev) => (prev > 0 ? round(((cur - prev) / prev) * 100, 1) :
 
 const ARTICLE_LIST_FIELDS =
     'title image sourceId category language publishedAt viewCount likes dislikes commentCount ' +
-    'isBreakingNews breakingNewsExpiry breakingNewsPriority contentFormat url';
+    'isBreakingNews breakingNewsExpiry breakingNewsPriority contentFormat url featuredAt featurePreviousCategory';
+
+/** The app's home carousel: GET /articles/feature → the newest N by featuredAt, per language. */
+const FEATURE_CATEGORY = 'feature';
+const CAROUSEL_SLOTS = 5;
 
 const SOURCE_EDITABLE = [
     'name', 'groupName', 'url', 'baseUrl', 'type', 'category', 'frequency', 'language', 'icon',
@@ -478,6 +482,14 @@ router.get('/articles', async (req, res) => {
         if (req.query.category) filter.category = String(req.query.category);
         if (req.query.language) filter.language = String(req.query.language);
         if (req.query.breaking === '1') filter.isBreakingNews = true;
+        if (req.query.featured === '1') filter.category = FEATURE_CATEGORY;
+        // Category is only indexed behind language ({ language, category, publishedAt }), so
+        // a category filter on its own scans all ~550k articles and times out. Spelling out
+        // the known languages lets the index serve it, one range per language.
+        if (filter.category && !filter.language) {
+            const languages = (await Source.distinct('language')).filter(Boolean);
+            filter.language = { $in: [...new Set([...languages, 'english'])] };
+        }
         if (req.query.from || req.query.to) {
             filter.publishedAt = {};
             if (req.query.from) filter.publishedAt.$gte = new Date(req.query.from);
@@ -502,7 +514,10 @@ router.get('/articles', async (req, res) => {
             return res.json({ items, page, limit, total, hasMore: total === null ? ids.length === limit : skip + ids.length < total, mode: 'ranked' });
         }
 
-        const sort = req.query.sort === 'oldest' ? { publishedAt: 1 } : { publishedAt: -1 };
+        // Featured view is listed in carousel order, exactly as the app shows it.
+        const sort = req.query.featured === '1'
+            ? { featuredAt: -1, publishedAt: -1 }
+            : req.query.sort === 'oldest' ? { publishedAt: 1 } : { publishedAt: -1 };
         const unfiltered = Object.keys(filter).length === 0;
         const [items, total] = await Promise.all([
             Article.find(filter).sort(sort).skip(skip).limit(limit)
@@ -552,6 +567,9 @@ router.post('/articles', async (req, res) => {
 
         const source = await Source.findById(body.sourceId).select('language category').lean();
         if (!source) return res.status(400).json({ message: 'That source no longer exists.' });
+        if (body.category === FEATURE_CATEGORY && !req.studio.isAdmin) {
+            return res.status(403).json({ message: 'Only admins can put stories on the home carousel.' });
+        }
 
         let embedding;
         try {
@@ -570,6 +588,7 @@ router.post('/articles', async (req, res) => {
             url: body.url?.trim() || undefined,
             sourceId: body.sourceId,
             publishedAt: body.publishedAt ? new Date(body.publishedAt) : new Date(),
+            ...(body.category === FEATURE_CATEGORY ? { featuredAt: new Date(), featurePreviousCategory: source.category || 'general' } : {}),
             ...(embedding ? { embedding } : {}),
         });
 
@@ -583,11 +602,22 @@ router.post('/articles', async (req, res) => {
 router.patch('/articles/:id', async (req, res) => {
     try {
         if (!isId(req.params.id)) return res.status(404).json({ message: 'Article not found.' });
-        const existing = await Article.findById(req.params.id).select('sourceId').lean();
+        const existing = await Article.findById(req.params.id).select('sourceId category').lean();
         if (!existing) return res.status(404).json({ message: 'Article not found.' });
         if (!assertSource(req, res, existing.sourceId)) return;
 
         const update = pick(req.body || {}, ARTICLE_EDITABLE);
+        // Keep the carousel bookkeeping consistent when the category moves in or out of 'feature'.
+        if (update.category !== undefined && update.category !== existing.category) {
+            if (update.category === FEATURE_CATEGORY) {
+                if (!req.studio.isAdmin) return res.status(403).json({ message: 'Only admins can put stories on the home carousel.' });
+                update.featuredAt = new Date();
+                update.featurePreviousCategory = existing.category || 'general';
+            } else if (existing.category === FEATURE_CATEGORY) {
+                if (!req.studio.isAdmin) return res.status(403).json({ message: 'Only admins can take stories off the home carousel.' });
+                update.$unset = { featuredAt: '', featurePreviousCategory: '' };
+            }
+        }
         if (update.sourceId !== undefined) {
             if (!isId(String(update.sourceId))) return res.status(400).json({ message: 'Choose a valid source.' });
             if (!assertSource(req, res, update.sourceId)) return;
@@ -598,7 +628,12 @@ router.patch('/articles/:id', async (req, res) => {
             return res.status(400).json({ message: 'Title cannot be empty.' });
         }
 
-        const article = await Article.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true })
+        const { $unset, ...fields } = update;
+        const article = await Article.findByIdAndUpdate(
+            req.params.id,
+            { $set: fields, ...($unset ? { $unset } : {}) },
+            { new: true, runValidators: true },
+        )
             .select('-embedding -embedding_pca -likedBy -dislikedBy -relatedIds')
             .populate('sourceId', 'name icon groupName language category')
             .lean();
@@ -624,6 +659,58 @@ router.delete('/articles/:id', async (req, res) => {
         res.json({ deleted: true });
     } catch (err) {
         fail(res, err, 'Could not delete the article.');
+    }
+});
+
+/**
+ * Put a story on the home carousel (or bump it back to slot 1). Admin only: the
+ * carousel is shared by every reader. The app shows the newest CAROUSEL_SLOTS by
+ * featuredAt, so this pushes the oldest live story off the end.
+ */
+router.post('/articles/:id/feature', requireAdmin, async (req, res) => {
+    try {
+        if (!isId(req.params.id)) return res.status(404).json({ message: 'Article not found.' });
+        const article = await Article.findById(req.params.id).select('category language').lean();
+        if (!article) return res.status(404).json({ message: 'Article not found.' });
+
+        const set = { category: FEATURE_CATEGORY, featuredAt: new Date() };
+        if (article.category !== FEATURE_CATEGORY) set.featurePreviousCategory = article.category || 'general';
+        await Article.updateOne({ _id: article._id }, { $set: set });
+        await clearArticlesCache();
+
+        const live = await Article.find({ category: FEATURE_CATEGORY, language: article.language || 'english' })
+            .sort({ featuredAt: -1, publishedAt: -1 }).limit(CAROUSEL_SLOTS + 1).select('title').lean();
+        res.json({
+            featured: true,
+            slot: live.findIndex((a) => String(a._id) === String(article._id)) + 1,
+            bumped: live.length > CAROUSEL_SLOTS ? { _id: live[CAROUSEL_SLOTS]._id, title: live[CAROUSEL_SLOTS].title } : null,
+        });
+    } catch (err) {
+        fail(res, err, 'Could not feature the article.');
+    }
+});
+
+/** Take a story off the carousel, into the given category or back to where it came from. */
+router.post('/articles/:id/unfeature', requireAdmin, async (req, res) => {
+    try {
+        if (!isId(req.params.id)) return res.status(404).json({ message: 'Article not found.' });
+        const article = await Article.findById(req.params.id).select('category featurePreviousCategory sourceId').lean();
+        if (!article) return res.status(404).json({ message: 'Article not found.' });
+
+        let category = String(req.body?.category || '').trim().toLowerCase();
+        if (!category || category === FEATURE_CATEGORY) {
+            category = article.featurePreviousCategory
+                || (await Source.findById(article.sourceId).select('category').lean())?.category
+                || 'general';
+        }
+        await Article.updateOne(
+            { _id: article._id },
+            { $set: { category }, $unset: { featuredAt: '', featurePreviousCategory: '' } },
+        );
+        await clearArticlesCache();
+        res.json({ featured: false, category });
+    } catch (err) {
+        fail(res, err, 'Could not take the article off the carousel.');
     }
 });
 
