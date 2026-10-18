@@ -916,6 +916,35 @@ router.post('/sources/:id/test', async (req, res) => {
     }
 });
 
+// "Diagnose & fix" — admin only. Selectors decide what gets fetched and saved for every
+// reader, so publishers keep the plain test; fixes are applied through PATCH /sources/:id.
+router.post('/sources/:id/diagnose', requireAdmin, async (req, res) => {
+    try {
+        if (!isId(req.params.id)) return res.status(404).json({ message: 'Source not found.' });
+        const source = await Source.findById(req.params.id).lean();
+        if (!source) return res.status(404).json({ message: 'Source not found.' });
+        const { diagnoseSource } = require('../scraper/sourceDoctor');
+        res.json(await diagnoseSource(source));
+    } catch (err) {
+        fail(res, err, 'The diagnosis failed to run.');
+    }
+});
+
+// Run the test scrape with unsaved selector values from the fix playground.
+router.post('/sources/:id/preview', requireAdmin, async (req, res) => {
+    try {
+        if (!isId(req.params.id)) return res.status(404).json({ message: 'Source not found.' });
+        const testSingleSource = require('../scraper/testSingleSource');
+        const overrides = pick((req.body && req.body.selectors) || {}, testSingleSource.helpers.PREVIEW_FIELDS);
+        for (const [k, v] of Object.entries(overrides)) {
+            if (typeof v !== 'string' || v.length > 500) delete overrides[k];
+        }
+        res.json(await testSingleSource(req.params.id, { overrides }));
+    } catch (err) {
+        fail(res, err, 'The preview failed to run.');
+    }
+});
+
 router.post('/sources/:id/scrape-reels', async (req, res) => {
     try {
         if (!isId(req.params.id)) return res.status(404).json({ message: 'Source not found.' });

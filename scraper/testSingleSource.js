@@ -4,6 +4,7 @@ const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
+const { extractContentText } = require('./selectorTools');
 // The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
 const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
@@ -600,12 +601,17 @@ async function testRSSSource(source) {
     }
 }
 
+// Fields Studio's "Diagnose & fix" playground may override for an unsaved preview run.
+const PREVIEW_FIELDS = ['listSelector', 'linkSelector', 'titleSelector', 'contentSelector', 'imageSelector', 'baseUrl'];
+
 /**
  * Test scraping functionality for a single source
  * @param {string} sourceId - MongoDB ObjectId of the source to test
+ * @param {Object} [opts]
+ * @param {Object} [opts.overrides] - unsaved selector values to test instead of the stored ones
  * @returns {Object} Test results including extracted data and any errors
  */
-async function testSingleSource(sourceId) {
+async function testSingleSource(sourceId, { overrides } = {}) {
     console.log(`🧪 Starting test scrape for source ID: ${sourceId}`);
 
     // Ensure MongoDB connection
@@ -624,10 +630,16 @@ async function testSingleSource(sourceId) {
     }
 
     try {
-        // Find the source
-        const source = await Source.findById(sourceId);
+        // Find the source (plain object, so preview overrides never touch the stored doc)
+        let source = await Source.findById(sourceId).lean();
         if (!source) {
             throw new Error(`Source with ID ${sourceId} not found`);
+        }
+        if (overrides) {
+            source = { ...source };
+            for (const k of PREVIEW_FIELDS) {
+                if (typeof overrides[k] === 'string') source[k] = overrides[k];
+            }
         }
 
         console.log(`🎯 Testing source: ${source.name}`);
@@ -905,14 +917,9 @@ async function testSingleSource(sourceId) {
                     : (apiCfg && apiCfg.contentSelector)
                         ? apiCfg.contentSelector
                         : (source.contentSelector || '.story-element.story-element-text p');
-                const content = cleanText(
-                    $$(contentSelector)
-                        .filter((_, p) => isElementVisible($$, p))
-                        .map((_, p) => $$(p).text().trim())
-                        .get()
-                        .filter(text => text.length > 10)
-                        .join('\n\n')
-                );
+                // Same multi-element vs container rule as production (scraper-job), so a
+                // selector production reads as a container is tested as one.
+                const content = extractContentText($$, contentSelector, isElementVisible);
 
                 // Extract images. KT inline <img> are lazy SVG placeholders (data: URIs);
                 // the real lead image is in .img-wrap, with og:image as fallback. Sites whose
@@ -980,3 +987,8 @@ async function testSingleSource(sourceId) {
 }
 
 module.exports = testSingleSource;
+// Shared with sourceDoctor (Studio "Diagnose & fix") so both read sites the same way.
+module.exports.helpers = {
+    cleanText, isElementVisible, normalizeImages, resolveHref, getListApiConfig, fetchApiListingLinks,
+    extractPublishedAt, assessFreshness, PREVIEW_FIELDS,
+};
