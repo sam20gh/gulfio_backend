@@ -3,6 +3,7 @@ const cheerio = require('cheerio');
 const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
+const Article = require('../models/Article');
 // The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
 const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
@@ -282,6 +283,128 @@ function parseKhaleejLinks($, source) {
     return links;
 }
 
+// ---------------------------------------------------------------------------
+// Freshness — a source can pass every extraction check and still be dead: the
+// site stops publishing, the listing keeps serving the same old links, and each
+// scheduled run silently saves nothing (El Balad Sport froze in Sep 2025 this way).
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_PUBLISH_DAYS = 30;
+const FREQUENCY_HOURS = { hourly: 1, '3hours': 3, '6hours': 6, '9hours': 9, '12hours': 12, daily: 24, weekly: 168 };
+
+function parseDate(value) {
+    if (!value || typeof value !== 'string') return null;
+    const d = new Date(value.trim());
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Publish date from JSON-LD, then common meta tags, then the first <time datetime>. */
+function extractPublishedAt($) {
+    let found = null;
+    $('script[type="application/ld+json"]').each((_, el) => {
+        if (found) return;
+        let data;
+        try { data = JSON.parse($(el).contents().text()); } catch { return; }
+        const stack = [data];
+        while (stack.length && !found) {
+            const node = stack.shift();
+            if (!node || typeof node !== 'object') continue;
+            if (Array.isArray(node)) { stack.push(...node); continue; }
+            found = parseDate(node.datePublished);
+            if (node['@graph']) stack.push(node['@graph']);
+        }
+    });
+    if (found) return found;
+
+    const metaSelectors = [
+        'meta[property="article:published_time"]',
+        'meta[name="article:published_time"]',
+        'meta[itemprop="datePublished"]',
+        'meta[name="pubdate"]',
+        'meta[name="publish-date"]',
+        'meta[name="date"]',
+    ];
+    for (const sel of metaSelectors) {
+        const d = parseDate($(sel).attr('content'));
+        if (d) return d;
+    }
+    return parseDate($('[itemprop="datePublished"]').attr('datetime')) || parseDate($('time[datetime]').first().attr('datetime'));
+}
+
+function formatAge(ms) {
+    const days = Math.floor(ms / DAY_MS);
+    if (days >= 1) return `${days} day${days === 1 ? '' : 's'}`;
+    const hours = Math.max(1, Math.floor(ms / (60 * 60 * 1000)));
+    return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
+/**
+ * Flags dormant sources. Adds `freshness` + `warnings` to the results and echoes each
+ * warning into `steps` so older consumers that only render the step log still see it.
+ *
+ * "Every link already stored" is only a warning when the source also hasn't saved a new
+ * article for a while — otherwise any hourly source tested right after its scheduled run
+ * would trip it. The quiet window is 2× the scrape interval, minimum 48h.
+ */
+async function assessFreshness(source, links, publishDates, testResults) {
+    const now = Date.now();
+    const freshness = {
+        linksFound: links.length,
+        linksAlreadyStored: null,
+        lastSavedAt: null,
+        newestPublishedAt: null,
+        stale: false,
+    };
+    testResults.freshness = freshness;
+    const warn = (msg) => {
+        freshness.stale = true;
+        testResults.warnings.push(msg);
+        testResults.steps.push(`⚠️ ${msg}`);
+    };
+
+    try {
+        const urls = links.filter((u) => typeof u === 'string' && u);
+        if (urls.length > 0) {
+            const strip = (u) => u.replace(/\/+$/, '');
+            const variants = [...new Set(urls.flatMap((u) => [strip(u), `${strip(u)}/`]))];
+            const stored = await Article.find({ url: { $in: variants } }).select('url').lean();
+            const storedSet = new Set(stored.map((a) => strip(a.url)));
+            freshness.linksAlreadyStored = urls.filter((u) => storedSet.has(strip(u))).length;
+
+            const latest = await Article.findOne({ sourceId: source._id }).sort({ _id: -1 }).select('_id').lean();
+            if (latest) freshness.lastSavedAt = latest._id.getTimestamp().toISOString();
+
+            if (freshness.linksAlreadyStored === urls.length) {
+                const quietMs = Math.max(48, 2 * (FREQUENCY_HOURS[source.frequency] || 24)) * 60 * 60 * 1000;
+                const sinceSaved = latest ? now - latest._id.getTimestamp().getTime() : Infinity;
+                if (sinceSaved > quietMs) {
+                    warn(`All ${urls.length} links on the listing are already stored and no new article has been saved in ${latest ? formatAge(sinceSaved) : 'ever'} — the site may have stopped publishing`);
+                } else {
+                    testResults.steps.push(`ℹ️ All ${urls.length} links already stored (last new article saved ${formatAge(sinceSaved)} ago)`);
+                }
+            } else {
+                testResults.steps.push(`✅ ${urls.length - freshness.linksAlreadyStored} of ${urls.length} links are new`);
+            }
+        }
+
+        const dates = publishDates.filter(Boolean);
+        if (dates.length > 0) {
+            const newest = new Date(Math.max(...dates.map((d) => d.getTime())));
+            freshness.newestPublishedAt = newest.toISOString();
+            const age = now - newest.getTime();
+            if (age > STALE_PUBLISH_DAYS * DAY_MS) {
+                warn(`Newest tested article was published ${newest.toISOString().slice(0, 10)} (${formatAge(age)} ago) — older than ${STALE_PUBLISH_DAYS} days`);
+            }
+        } else if (testResults.articles.length > 0) {
+            testResults.steps.push('ℹ️ No publish date found on tested articles — age check skipped');
+        }
+    } catch (err) {
+        console.warn('⚠️ Freshness check failed:', err.message);
+        testResults.steps.push(`ℹ️ Freshness check skipped: ${err.message}`);
+    }
+}
+
 /**
  * Test RSS feed parsing for a single RSS source
  * @param {Object} source - Source document from MongoDB
@@ -300,6 +423,7 @@ async function testRSSSource(source) {
         steps: [],
         articles: [],
         errors: [],
+        warnings: [],
         success: false
     };
 
@@ -449,6 +573,12 @@ async function testRSSSource(source) {
         }
 
         testResults.steps.push(`✅ Completed processing ${testResults.articles.length} RSS items`);
+
+        const itemUrls = items.map((item) => {
+            const link = feedType === 'Atom' && item.link && typeof item.link === 'object' ? item.link.href : item.link;
+            return typeof link === 'string' ? link.trim() : '';
+        });
+        await assessFreshness(source, itemUrls, testResults.articles.map((a) => parseDate(a.pubDate)), testResults);
         testResults.success = testResults.articles.length > 0 && testResults.articles.some(a => a.title !== 'No title found');
 
         console.log(`🏁 RSS test completed for ${source.name}`);
@@ -528,6 +658,7 @@ async function testSingleSource(sourceId) {
             steps: [],
             articles: [],
             errors: [],
+            warnings: [],
             success: false
         };
 
@@ -687,6 +818,7 @@ async function testSingleSource(sourceId) {
 
         // Step 3: Test first 3 articles
         const testLinks = links.slice(0, 3);
+        const publishDates = [];
         testResults.steps.push(`Testing first ${testLinks.length} articles...`);
 
         for (let i = 0; i < testLinks.length; i++) {
@@ -792,8 +924,12 @@ async function testSingleSource(sourceId) {
                     if (og) images = normalizeImages([og], source.baseUrl || source.url);
                 }
 
+                const publishedAt = extractPublishedAt($$);
+                if (publishedAt) publishDates.push(publishedAt);
+
                 const articleData = {
                     url: link,
+                    publishedAt: publishedAt ? publishedAt.toISOString() : null,
                     title: title || 'No title extracted',
                     content: content || 'No content extracted',
                     images: images,
@@ -813,6 +949,7 @@ async function testSingleSource(sourceId) {
         }
 
         testResults.steps.push(`✅ Completed testing ${testResults.articles.length} articles`);
+        await assessFreshness(source, links, publishDates, testResults);
         testResults.success = testResults.articles.length > 0 && testResults.articles.some(a => a.title !== 'No title extracted');
 
         console.log(`🏁 Test completed for ${source.name}`);
@@ -827,6 +964,7 @@ async function testSingleSource(sourceId) {
             steps: ['❌ Test failed during initialization'],
             articles: [],
             errors: [error.message],
+            warnings: [],
             success: false
         };
     }
