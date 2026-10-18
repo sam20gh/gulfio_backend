@@ -70,6 +70,37 @@ function extractContentText($, selector, isVisible = () => true) {
     return squash($c.text());
 }
 
+/** schema.org JSON-LD articleBody (longest found), as plain text — mirrors scraper-job. */
+function jsonLdArticleBody($) {
+    let best = '';
+    $('script[type="application/ld+json"]').each((_, el) => {
+        let data;
+        try { data = JSON.parse($(el).contents().text()); } catch { return; }
+        const stack = [data];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== 'object') continue;
+            if (Array.isArray(node)) { stack.push(...node); continue; }
+            if (typeof node.articleBody === 'string' && node.articleBody.length > best.length) best = node.articleBody;
+            if (node['@graph']) stack.push(node['@graph']);
+        }
+    });
+    return best.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n\n').trim();
+}
+
+/**
+ * Production's content: the selector's text, unless it found only a stub/summary
+ * (<1000 chars) and the page's JSON-LD articleBody is at least twice as long.
+ */
+function extractContentWithFallback($, selector, isVisible) {
+    const text = extractContentText($, selector, isVisible);
+    if (text.length < 1000) {
+        const ld = jsonLdArticleBody($);
+        if (ld.length >= 300 && ld.length >= text.length * 2) return { text: ld, viaJsonLd: true };
+    }
+    return { text, viaJsonLd: false };
+}
+
 // ─────────────────────────────── why a fetch failed ───────────────────────────────
 
 const TLS_CODES = new Set([
@@ -227,6 +258,8 @@ module.exports = {
     safeSelect,
     squash,
     extractContentText,
+    jsonLdArticleBody,
+    extractContentWithFallback,
     detectBlock,
     classifyFetchError,
     looksJsRendered,

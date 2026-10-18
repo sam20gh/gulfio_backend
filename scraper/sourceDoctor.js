@@ -254,7 +254,7 @@ function imageCandidates($, baseUrl) {
     const out = new Map();
     $('img').slice(0, 300).each((_, img) => {
         const src = img.attribs.src || img.attribs['data-src'] || String(img.attribs.srcset || '').split(/[\s,]/)[0];
-        if (!src || /^data:/i.test(src) || /\.svg(\?|$)/i.test(src) || /(logo|icon|avatar|sprite|placeholder|pixel|blank)/i.test(src)) return;
+        if (!src || /^data:/i.test(src) || /\.svg(\?|$)/i.test(src) || /(logo|icon|avatar|author|sprite|placeholder|pixel|blank)/i.test(src)) return;
         if (inChrome($, img)) return;
         let score = 0;
         let decoded = src;
@@ -308,14 +308,17 @@ async function diagnoseArticles(source, urls, apiCfg) {
     const { $ } = pages[0];
     const $all = pages.map((p) => p.$);
     const titleCur = readTitle($, source.titleSelector);
-    const contentText = source.contentSelector ? T.extractContentText($, source.contentSelector, isElementVisible) : '';
+    const { text: contentText, viaJsonLd } = source.contentSelector
+        ? T.extractContentWithFallback($, source.contentSelector, isElementVisible)
+        : { text: '', viaJsonLd: false };
     const contentSel = T.safeSelect($, source.contentSelector);
     const contentCur = {
         valid: contentSel.ok,
         error: contentSel.error,
         length: contentText.length,
         preview: contentText.slice(0, 280),
-        mode: source.contentSelector && contentSel.ok ? (T.isMultiElementContentSelector(source.contentSelector) ? 'all matches' : 'first match only') : null,
+        mode: viaJsonLd ? 'JSON-LD articleBody (selector found only a stub)'
+            : source.contentSelector && contentSel.ok ? (T.isMultiElementContentSelector(source.contentSelector) ? 'all matches' : 'first match only') : null,
     };
     let imageCur = source.imageSelector ? readImages($, source.imageSelector, baseUrl) : { valid: false, error: 'No selector set', value: [] };
     // Production uses og:image for API-listed sources that prefer it, and as their fallback.

@@ -4,7 +4,7 @@ const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
-const { extractContentText } = require('./selectorTools');
+const { extractContentWithFallback } = require('./selectorTools');
 // The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
 const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
@@ -138,6 +138,15 @@ function resolveHref(href, source) {
     if (!href || href === ':' || href === '') return null;
     if (href.startsWith('//')) return 'https:' + href;
     if (href.startsWith('http')) return href;
+    // Root-relative hrefs resolve against the site ORIGIN, as a browser does. Joining them onto
+    // a baseUrl that carries a section path doubled it (/world/world/…), which 404'd every
+    // Emirates247 story from Oct 2026 and stored doubled Gulf News URLs. The href is appended
+    // verbatim (not re-serialised via URL) so stored URLs keep their exact form for dedupe.
+    if (href.startsWith('/')) {
+        try {
+            return `${new URL(source.baseUrl || source.url).origin}${href}`;
+        } catch { /* malformed baseUrl — fall back to the old join below */ }
+    }
     let baseUrl = source.baseUrl;
     if (!baseUrl) {
         try {
@@ -745,25 +754,10 @@ async function testSingleSource(sourceId, { overrides } = {}) {
             $(source.listSelector).each((_, element) => {
                 const $elem = $(element);
                 const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
-                if (linkHref) {
-                    let fullLink;
-                    if (linkHref.startsWith('http')) {
-                        fullLink = linkHref;
-                    } else {
-                        // Extract domain from source URL for proper base URL
-                        const baseUrl = source.baseUrl || (() => {
-                            try {
-                                const urlObj = new URL(source.url);
-                                return `${urlObj.protocol}//${urlObj.hostname}`;
-                            } catch {
-                                return source.url.replace(/\/$/, '');
-                            }
-                        })();
-                        fullLink = linkHref.startsWith('/') ? `${baseUrl}${linkHref}` : `${baseUrl}/${linkHref}`;
-                    }
-                    if (fullLink && !links.includes(fullLink)) {
-                        links.push(fullLink);
-                    }
+                // Same resolution as production (root-relative → site origin).
+                const fullLink = resolveHref(linkHref, source);
+                if (fullLink && !links.includes(fullLink)) {
+                    links.push(fullLink);
                 }
             });
         }
@@ -806,11 +800,9 @@ async function testSingleSource(sourceId, { overrides } = {}) {
                         $(source.listSelector).each((_, element) => {
                             const $elem = $(element);
                             const linkHref = $elem.find(source.linkSelector).attr('href') || $elem.attr('href');
-                            if (linkHref) {
-                                const fullLink = linkHref.startsWith('http') ? linkHref : `${source.baseUrl || source.url}${linkHref}`;
-                                if (fullLink && !links.includes(fullLink)) {
-                                    links.push(fullLink);
-                                }
+                            const fullLink = resolveHref(linkHref, source);
+                            if (fullLink && !links.includes(fullLink)) {
+                                links.push(fullLink);
                             }
                         });
                     }
@@ -919,7 +911,8 @@ async function testSingleSource(sourceId, { overrides } = {}) {
                         : (source.contentSelector || '.story-element.story-element-text p');
                 // Same multi-element vs container rule as production (scraper-job), so a
                 // selector production reads as a container is tested as one.
-                const content = extractContentText($$, contentSelector, isElementVisible);
+                const { text: content, viaJsonLd } = extractContentWithFallback($$, contentSelector, isElementVisible);
+                if (viaJsonLd && i === 0) testResults.steps.push('ℹ️ Selector content was a stub — using the page\'s JSON-LD articleBody, as production does');
 
                 // Extract images. KT inline <img> are lazy SVG placeholders (data: URIs);
                 // the real lead image is in .img-wrap, with og:image as fallback. Sites whose
