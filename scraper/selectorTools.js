@@ -165,7 +165,10 @@ function goodClasses(el) {
     return String((el.attribs && el.attribs.class) || '')
         .split(/\s+/)
         .filter((c) => c && c.length <= 40 && /^[a-zA-Z_-]/.test(c) && /[a-zA-Z]/.test(c)
-            && !/\d{4,}/.test(c) && !/^(css|sc|jsx|styled|emotion)-/.test(c) && !UTILITY_CLASS.test(c));
+            && !/\d{4,}/.test(c) && !/^(css|sc|jsx|styled|emotion)-/.test(c) && !UTILITY_CLASS.test(c)
+            // Build-hashed names (Times of India: "HNMDR" → "cMyCH" between builds) change on
+            // every deploy of the site; hand-written classes are lowercase/kebab or longer.
+            && !(/^[A-Za-z0-9]{4,7}$/.test(c) && /[A-Z]/.test(c)));
 }
 
 /**

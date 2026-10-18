@@ -214,9 +214,11 @@ function titleCandidates($) {
         if (text.length < 10 || text.length > 300) return;
         const sim = T.titleOverlap(text, ref);
         if (sim < 0.6) return;
-        const sel = T.selectorFor($, el, { accept: (s) => { const f = firstVisible($, s); return f && f[0] === el; } });
+        // A tag that occurs once on the page ("h1") outlives any class name — prefer it.
+        const bare = $(el.tagName).length === 1 ? el.tagName : null;
+        const sel = bare || T.selectorFor($, el, { accept: (s) => { const f = firstVisible($, s); return f && f[0] === el; } });
         if (!sel || out.has(sel)) return;
-        out.set(sel, { selector: sel, value: text.slice(0, 200), score: sim + (el.tagName === 'h1' ? 0.25 : 0) });
+        out.set(sel, { selector: sel, value: text.slice(0, 200), score: sim + (el.tagName === 'h1' ? 0.25 : 0) + (bare ? 0.1 : 0) });
     });
     return [...out.values()].sort((a, b) => b.score - a.score).slice(0, 4);
 }
@@ -321,10 +323,13 @@ async function diagnoseArticles(source, urls, apiCfg) {
             : source.contentSelector && contentSel.ok ? (T.isMultiElementContentSelector(source.contentSelector) ? 'all matches' : 'first match only') : null,
     };
     let imageCur = source.imageSelector ? readImages($, source.imageSelector, baseUrl) : { valid: false, error: 'No selector set', value: [] };
-    // Production uses og:image for API-listed sources that prefer it, and as their fallback.
-    if (apiCfg && (apiCfg.preferOgImage || !imageCur.value.length)) {
+    // Production falls back to og:image whenever the selector finds nothing (and always uses it
+    // for API-listed sources that prefer it) — skipping site logos.
+    if ((apiCfg && apiCfg.preferOgImage) || !imageCur.value.length) {
         const og = $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content');
-        if (og) imageCur = { valid: true, error: null, value: normalizeImages([og], baseUrl), viaOgImage: true };
+        if (og && !/\/(logo|default|placeholder)[^/]*$/i.test(og.split('?')[0])) {
+            imageCur = { valid: true, error: imageCur.error, value: normalizeImages([og], baseUrl), viaOgImage: true };
+        }
     }
 
     const titles = titleCandidates($).filter((c) => confirmOnAll($all, (p) => readTitle(p, c.selector).value.length > 5));
