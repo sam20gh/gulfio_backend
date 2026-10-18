@@ -672,6 +672,9 @@ async function testSingleSource(sourceId) {
         if (source.status && source.status !== 'active') {
             testResults.steps.push(`⚠️ WARNING: Source status is "${source.status}" - would be skipped during normal scraping`);
         }
+        if (source.skipArticles) {
+            testResults.steps.push('ℹ️ Media-only source - scheduled runs skip articles (videos and reels still run)');
+        }
 
         // Step 1: Fetch main page
         testResults.steps.push('Fetching main page...');

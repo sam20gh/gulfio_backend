@@ -17,6 +17,10 @@ const SourceSchema = new mongoose.Schema({
     // "API-listing adapter"). When set, links are discovered via this endpoint instead
     // of DOM selectors. Mixed so the shape can evolve without schema churn.
     listApi: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Media-only source: article scraping is skipped, videos/reels still run. For sites
+    // whose articles can't be scraped (e.g. alnassr.sa blocks all non-browser clients)
+    // but whose YouTube/Instagram feeds work — "suspended" would stop those too.
+    skipArticles: { type: Boolean, default: false },
     icon: String,
     lastScraped: Date,
     followers: { type: Number, default: 0 },

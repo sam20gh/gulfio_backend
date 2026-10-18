@@ -159,6 +159,8 @@ async function scrapeAllSources(frequency = null) {
 
     // Filter out suspended and only keep active sources
     sources = sources.filter(s => s.status === 'active' || !s.status); // Include sources without status field (backwards compatibility)
+    // Media-only sources (skipArticles) keep videos/reels but never scrape articles.
+    sources = sources.filter(s => !s.skipArticles);
     console.log(`📊 Filtered to ${sources.length} active sources`);
 
     if (frequency) {

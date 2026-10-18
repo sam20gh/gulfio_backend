@@ -93,6 +93,7 @@ const SOURCE_EDITABLE = [
     'name', 'groupName', 'url', 'baseUrl', 'type', 'category', 'frequency', 'language', 'icon',
     'listSelector', 'linkSelector', 'titleSelector', 'imageSelector', 'contentSelector', 'listApi',
     'instagramUsername', 'youtubeChannelId', 'bioSection', 'bioLink', 'status', 'articleType',
+    'skipArticles',
 ];
 const SOURCE_ADMIN_ONLY = ['revSharePercent', 'payoutCurrency'];
 const ARTICLE_EDITABLE = ['title', 'content', 'contentFormat', 'category', 'image', 'publishedAt', 'language', 'url', 'sourceId'];
@@ -840,6 +841,7 @@ const cleanSourceBody = (studio, body, { creating }) => {
         }
     }
     if (data.language) data.language = String(data.language).toLowerCase();
+    if (data.skipArticles !== undefined) data.skipArticles = data.skipArticles === true || data.skipArticles === 'true';
     return data;
 };
 
