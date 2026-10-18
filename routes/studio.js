@@ -1354,10 +1354,14 @@ router.patch('/users/:id', requireAdmin, async (req, res) => {
         }
         if (groups !== undefined) {
             if (!Array.isArray(groups)) return res.status(400).json({ message: 'Groups must be a list.' });
-            const known = new Set(await Source.distinct('groupName'));
-            const unknown = groups.filter((g) => !known.has(g));
-            if (unknown.length) return res.status(400).json({ message: `Unknown group: ${unknown.join(', ')}` });
-            update.publisher_group = [...new Set(groups)];
+            // Match case-insensitively and store the canonical name: group names get re-cased
+            // over time ("arab news" → "Arab News"), and an exact-match miss both rejected every
+            // save for that account and scoped the publisher to zero sources at sign-in.
+            const canonical = new Map((await Source.distinct('groupName')).filter(Boolean).map((g) => [g.trim().toLowerCase(), g]));
+            const resolved = groups.map((g) => canonical.get(String(g).trim().toLowerCase()));
+            const unknown = groups.filter((_, i) => !resolved[i]);
+            if (unknown.length) return res.status(400).json({ message: `Unknown group: ${unknown.join(', ')}. Remove it and save again.` });
+            update.publisher_group = [...new Set(resolved)];
         }
         if (update.type && update.type !== 'publisher' && groups === undefined) update.publisher_group = [];
 
