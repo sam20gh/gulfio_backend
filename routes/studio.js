@@ -204,6 +204,9 @@ const scopeKey = (studio) => (studio.sourceIds === null ? 'all' : studio.groups.
 
 router.use(requireStudio('admin', 'publisher'));
 
+// Publisher Portal review desk (admin-only inside).
+router.use('/applications', require('./studioApplications'));
+
 // ----------------------------------------------------------------------------
 // identity + metadata
 // ----------------------------------------------------------------------------

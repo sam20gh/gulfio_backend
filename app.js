@@ -265,6 +265,7 @@ app.use('/api/gamification', gamificationRoutes); // 🎮 Gamification routes
 console.log('🔧 Registering jobs router at /api/jobs');
 app.use('/api/jobs', jobsRouter);
 app.use('/api/studio', require('./routes/studio')); // Admin + publisher panel
+app.use('/api/publisher-portal', require('./routes/publisherPortal')); // Publisher applications
 console.log('✅ Jobs router registered successfully');
 
 // Image proxy endpoint for SSL certificate issues

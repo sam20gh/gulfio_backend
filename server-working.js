@@ -328,6 +328,14 @@ function loadRoutes() {
             console.error('❌ Failed to load studio routes:', studioErr.message);
         }
 
+        // Publisher Portal (applicants — any signed-in account, not just studio roles).
+        try {
+            app.use('/api/publisher-portal', require('./routes/publisherPortal'));
+            console.log('✅ Publisher portal routes mounted at /api/publisher-portal');
+        } catch (portalErr) {
+            console.error('❌ Failed to load publisher portal routes:', portalErr.message);
+        }
+
         console.log('🎉 All API routes loaded successfully!');
 
     } catch (error) {
