@@ -242,7 +242,13 @@ async function fetchApiListingLinks($, source, cfg) {
     const origin = new URL(source.url).origin;
     const links = [];
     for (const a of articles) {
-        let u = a && a[urlField];
+        if (!a) continue;
+        // Mirrors scraper-job: skipIfField drops link-out items, itemUrlTemplate builds the
+        // URL from item fields when the API has no URL field.
+        if (cfg.skipIfField && a[cfg.skipIfField]) continue;
+        let u = cfg.itemUrlTemplate
+            ? cfg.itemUrlTemplate.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(a[k] ?? ''))
+            : a[urlField];
         if (!u) continue;
         if (cfg.urlRewrite && cfg.urlRewrite.from) {
             const to = String(cfg.urlRewrite.to || '').replace(/\{(\w+)\}/g, (_, k) => values[k] ?? '');
