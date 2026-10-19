@@ -4,7 +4,9 @@ const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
-const { extractContentWithFallback } = require('./selectorTools');
+const { extractContentWithFallback, safeSelect, detectBlock } = require('./selectorTools');
+const { looksTruncated, stripReadMore } = require('../utils/rssTeaser');
+const { decodeEmailCloaks } = require('../utils/emailCloak');
 // The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
 const fetchWithPuppeteer = require('./fetchWithPuppeteer');
 
@@ -422,6 +424,44 @@ async function assessFreshness(source, links, publishDates, testResults) {
 }
 
 /**
+ * Production's RSS full-article read (scraper-job/scraper/rssScraperV3.js enhanceContent):
+ * same trigger, user agent, timeout, default selector and per-element text join, so the
+ * Studio test shows what the scraper will actually save. Runs from the backend's Cloud Run
+ * region, which also makes it the honest check for CDN/WAF blocks on article pages.
+ */
+const RSS_DEFAULT_CONTENT_SELECTOR = 'article p, .content p, .entry-content p, .post-content p, .article-body p, p';
+
+async function readRssArticlePage(url, source) {
+    const selector = source.contentSelector || RSS_DEFAULT_CONTENT_SELECTOR;
+    let response;
+    try {
+        response = await axios.get(url, {
+            timeout: 8000,
+            validateStatus: () => true,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' },
+        });
+    } catch (err) {
+        return { text: '', error: `Article page fetch failed: ${err.message}` };
+    }
+    const body = typeof response.data === 'string' ? response.data : '';
+    const block = detectBlock({ status: response.status, headers: response.headers || {}, body });
+    if (block) return { text: '', error: `Article page blocked by ${block.vendor} (${block.mode}, HTTP ${response.status})` };
+    if (response.status >= 400) return { text: '', error: `Article page answered HTTP ${response.status}` };
+
+    const $ = cheerio.load(body);
+    decodeEmailCloaks($);
+    const sel = safeSelect($, selector);
+    if (!sel.ok) return { text: '', error: `contentSelector “${selector}” can’t be used on article pages (${sel.error})`, selector };
+    sel.$els.find('script, style, noscript, template').remove();
+    const parts = [];
+    sel.$els.each((_, el) => {
+        const t = $(el).text().trim();
+        if (t.length > 10) parts.push(t);
+    });
+    return { text: parts.join('\n\n'), selector, defaulted: !source.contentSelector };
+}
+
+/**
  * Test RSS feed parsing for a single RSS source
  * @param {Object} source - Source document from MongoDB
  * @returns {Object} Test results including extracted RSS data and any errors
@@ -520,7 +560,7 @@ async function testRSSSource(source) {
                 content = content.replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1');
 
                 // Strip HTML tags from content for text length calculation
-                const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+                let textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
                 // Extract URL
                 let url = '';
@@ -529,6 +569,21 @@ async function testRSSSource(source) {
                 } else if (feedType === 'Atom') {
                     url = typeof item.link === 'object' ? item.link.href : item.link || item.id || '';
                 }
+
+                // Same rule as production: short or teaser text → read the article page.
+                const teaser = looksTruncated(textContent);
+                if ((textContent.length < 200 || teaser) && url && /^https?:\/\//i.test(String(url).trim())) {
+                    const page = await readRssArticlePage(String(url).trim(), source);
+                    if (page.error) {
+                        testResults.warnings.push(`Item ${i + 1}: ${page.error}. The feed text will be saved instead.`);
+                    } else if (page.text.length > textContent.length) {
+                        testResults.steps.push(`✅ Item ${i + 1}: feed had ${teaser ? 'a teaser' : 'short text'} (${textContent.length} chars) — read ${page.text.length} chars from the article page${page.defaulted ? ' with the default selector' : ''}`);
+                        textContent = page.text;
+                    } else {
+                        testResults.warnings.push(`Item ${i + 1}: the article page gave no more text than the feed (${page.text.length} vs ${textContent.length} chars). Check contentSelector.`);
+                    }
+                }
+                if (looksTruncated(textContent)) textContent = stripReadMore(textContent);
 
                 // Extract publication date
                 let pubDate = '';

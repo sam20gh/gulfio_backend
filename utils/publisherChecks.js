@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const dns = require('dns').promises;
 const cheerio = require('cheerio');
 const { safeGet, describeFetchError } = require('./safeFetch');
+const { looksTruncated } = require('./rssTeaser');
 
 const TOKEN_PREFIX = 'gulfio-site-verification';
 const META_NAME = 'gulfio-site-verification';
@@ -113,6 +114,12 @@ async function verifyDomain(host, token) {
 // ----------------------------------------------------------------------------
 
 const text = ($el) => ($el.first().text() || '').replace(/\s+/g, ' ').trim();
+/** An item's body field (escaped or CDATA HTML) as plain text, plus whether it carries an <img>. */
+const bodyOf = ($el) => {
+    const html = $el.first().text() || '';
+    const $b = cheerio.load(html);
+    return { text: $b.text().replace(/\s+/g, ' ').trim(), hasImg: $b('img[src]').length > 0 };
+};
 const toDate = (s) => {
     if (!s) return null;
     const d = new Date(s);
@@ -134,8 +141,16 @@ function parseFeed(body) {
                 title: text($i.find('title')),
                 url: text($i.find('link')) || $i.find('guid').first().text().trim(),
                 publishedAt: toDate(text($i.find('pubDate')) || text($i.find('dc\\:date'))),
-                hasImage: $i.find('enclosure[type^="image"], media\\:content, media\\:thumbnail').length > 0,
-                hasFullText: text($i.find('content\\:encoded')).length > 600,
+                ...(() => {
+                    const full = bodyOf($i.find('content\\:encoded'));
+                    const desc = bodyOf($i.find('description'));
+                    const main = full.text ? full : desc;
+                    return {
+                        hasImage: $i.find('enclosure[type^="image"], media\\:content, media\\:thumbnail').length > 0 || full.hasImg || desc.hasImg,
+                        hasFullText: main.text.length > 600 && !looksTruncated(main.text),
+                        isTeaser: looksTruncated(main.text),
+                    };
+                })(),
             };
         }).get();
     } else if (atom.length) {
@@ -147,8 +162,15 @@ function parseFeed(body) {
                 title: text($i.find('title')),
                 url: link,
                 publishedAt: toDate(text($i.find('published')) || text($i.find('updated'))),
-                hasImage: $i.find('media\\:content, media\\:thumbnail').length > 0,
-                hasFullText: text($i.find('content')).length > 600,
+                ...(() => {
+                    const content = bodyOf($i.find('content'));
+                    const main = content.text ? content : bodyOf($i.find('summary'));
+                    return {
+                        hasImage: $i.find('media\\:content, media\\:thumbnail').length > 0 || main.hasImg,
+                        hasFullText: main.text.length > 600 && !looksTruncated(main.text),
+                        isTeaser: looksTruncated(main.text),
+                    };
+                })(),
             };
         }).get();
     } else {
@@ -182,6 +204,7 @@ const summarise = (items) => {
         newestAt: dated[0] || null,
         withImages: items.filter((i) => i.hasImage).length,
         withFullText: items.filter((i) => i.hasFullText).length,
+        teasers: items.filter((i) => i.isTeaser).length,
         sample: items.slice(0, 5).map((i) => ({ title: i.title.slice(0, 200), url: i.url.slice(0, 500), publishedAt: i.publishedAt })),
     };
 };
@@ -253,6 +276,9 @@ async function probeFeed({ kind, url }, verifiedHost) {
     if (!summary.items) warnings.push('The feed is empty.');
     if (summary.newestAt && Date.now() - summary.newestAt.getTime() > 14 * 24 * 3600 * 1000) warnings.push('The newest item is more than two weeks old.');
     if (summary.items && !summary.newestAt) warnings.push('Items have no publish dates.');
+    if (summary.items && summary.teasers >= Math.ceil(summary.items / 2)) {
+        warnings.push('Items are summaries that end in “read more”, not full stories. We’ll read each story from your website instead, which takes a little extra setup. A full-text feed (content:encoded) goes live faster.');
+    }
     if (feed.format === 'sitemap-index') warnings.push('This is a sitemap index. Submit the news sitemap it links to instead.');
     return { ...result, ok: summary.items > 0 && feed.format !== 'sitemap-index', format: feed.format, ...summary, warnings };
 }

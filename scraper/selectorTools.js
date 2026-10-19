@@ -8,6 +8,7 @@
  * "container" selector, so a source could pass the test and save nothing (The Peninsula,
  * Nov 2025 – Oct 2026).
  */
+const { decodeEmailCloaks } = require('../utils/emailCloak');
 
 // ─────────────────────────────── production extraction parity ───────────────────────────────
 
@@ -50,6 +51,7 @@ function squash(text) {
  * match only. Lengths track what the scraper stores closely enough for health checks.
  */
 function extractContentText($, selector, isVisible = () => true) {
+    decodeEmailCloaks($);
     const sel = safeSelect($, selector);
     if (!sel.ok || sel.$els.length === 0) return '';
     if (isMultiElementContentSelector(selector)) {
