@@ -323,13 +323,12 @@ async function diagnoseArticles(source, urls, apiCfg) {
             : source.contentSelector && contentSel.ok ? (T.isMultiElementContentSelector(source.contentSelector) ? 'all matches' : 'first match only') : null,
     };
     let imageCur = source.imageSelector ? readImages($, source.imageSelector, baseUrl) : { valid: false, error: 'No selector set', value: [] };
-    // Production falls back to og:image whenever the selector finds nothing (and always uses it
-    // for API-listed sources that prefer it) — skipping site logos.
-    if ((apiCfg && apiCfg.preferOgImage) || !imageCur.value.length) {
-        const og = $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content');
-        if (og && !/\/(logo|default|placeholder)[^/]*$/i.test(og.split('?')[0])) {
-            imageCur = { valid: true, error: imageCur.error, value: normalizeImages([og], baseUrl), viaOgImage: true };
-        }
+    // Production falls back whenever the selector finds nothing (JSON-LD article image, then
+    // og:image) and always uses og:image for API-listed sources that prefer it — skipping site logos.
+    const preferOg = Boolean(apiCfg && apiCfg.preferOgImage);
+    if (preferOg || !imageCur.value.length) {
+        const fb = T.fallbackImage($, { preferOgImage: preferOg });
+        if (fb) imageCur = { valid: true, error: imageCur.error, value: normalizeImages([fb.url], baseUrl), viaOgImage: fb.via === 'og', viaJsonLd: fb.via === 'jsonld' };
     }
 
     const titles = titleCandidates($).filter((c) => confirmOnAll($all, (p) => readTitle(p, c.selector).value.length > 5));

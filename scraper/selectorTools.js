@@ -72,6 +72,50 @@ function extractContentText($, selector, isVisible = () => true) {
     return squash($c.text());
 }
 
+/** Site-wide graphic, not a story photo (logo/default/placeholder file, or any SVG) — mirrors scraper-job. */
+function isSiteChromeImage(url) {
+    const file = String(url || '').split(/[?#]/)[0].split('/').pop() || '';
+    return /(^|[-_.])(logo|default|placeholder)([-_.]|$)/i.test(file) || /\.svg$/i.test(file);
+}
+
+/** The Article node's own JSON-LD `image` (never publisher.logo) — mirrors scraper-job. */
+function jsonLdImage($) {
+    const found = [];
+    const urlOf = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? v.url || v.contentUrl || v['@id'] : null);
+    $('script[type="application/ld+json"]').each((_, el) => {
+        let data;
+        try { data = JSON.parse($(el).contents().text()); } catch { return; }
+        const stack = [data];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== 'object') continue;
+            if (Array.isArray(node)) { stack.push(...node); continue; }
+            if (node['@graph']) stack.push(node['@graph']);
+            const type = [].concat(node['@type'] || []).join(' ');
+            if (!/Article|BlogPosting|NewsArticle|Report/i.test(type)) continue;
+            for (const v of [].concat(node.image || [], node.thumbnailUrl || [])) {
+                const u = urlOf(v);
+                if (u && /^https?:\/\//i.test(u) && !isSiteChromeImage(u)) found.push(u);
+            }
+        }
+    });
+    return found[0] || null;
+}
+
+/**
+ * Production's image fallback when the selector finds nothing usable: JSON-LD article
+ * image, then og:image, skipping site logos. Returns { url, via } or null.
+ */
+function fallbackImage($, { preferOgImage = false } = {}) {
+    if (!preferOgImage) {
+        const ld = jsonLdImage($);
+        if (ld) return { url: ld, via: 'jsonld' };
+    }
+    const og = $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content');
+    if (og && !isSiteChromeImage(og)) return { url: og, via: 'og' };
+    return null;
+}
+
 /** schema.org JSON-LD articleBody (longest found), as plain text — mirrors scraper-job. */
 function jsonLdArticleBody($) {
     let best = '';
@@ -264,6 +308,9 @@ module.exports = {
     squash,
     extractContentText,
     jsonLdArticleBody,
+    isSiteChromeImage,
+    jsonLdImage,
+    fallbackImage,
     extractContentWithFallback,
     detectBlock,
     classifyFetchError,

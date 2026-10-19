@@ -4,7 +4,7 @@ const xml2js = require('xml2js');
 const mongoose = require('mongoose');
 const Source = require('../models/Source');
 const Article = require('../models/Article');
-const { extractContentWithFallback, safeSelect, detectBlock } = require('./selectorTools');
+const { extractContentWithFallback, safeSelect, detectBlock, fallbackImage } = require('./selectorTools');
 const { looksTruncated, stripReadMore } = require('../utils/rssTeaser');
 const { decodeEmailCloaks } = require('../utils/emailCloak');
 // The module exports the function itself (module.exports = fetchWithPuppeteer), not an object.
@@ -983,9 +983,14 @@ async function testSingleSource(sourceId, { overrides } = {}) {
                         .filter(Boolean);
                     images = normalizeImages(images, source.baseUrl || source.url);
                 }
-                if ((isKT || apiCfg) && images.length === 0) {
-                    const og = $$('meta[property="og:image"]').attr('content') || $$('meta[name="twitter:image"]').attr('content');
-                    if (og) images = normalizeImages([og], source.baseUrl || source.url);
+                // Production (scraper-job extractArticle) falls back for every source, not just
+                // KT/API ones: JSON-LD article image, then og:image, skipping site logos.
+                if (images.length === 0) {
+                    const fb = fallbackImage($$, { preferOgImage });
+                    if (fb) {
+                        images = normalizeImages([fb.url], source.baseUrl || source.url);
+                        if (i === 0 && fb.via === 'jsonld') testResults.steps.push('ℹ️ Image selector found only placeholders — using the page\'s JSON-LD image, as production does');
+                    }
                 }
 
                 const publishedAt = extractPublishedAt($$);
